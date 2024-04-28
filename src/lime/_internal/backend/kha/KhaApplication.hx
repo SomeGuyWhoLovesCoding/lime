@@ -177,10 +177,10 @@ class KhaApplication
 
 private class ApplicationEventInfo
 {
-	public var deltaTime:Int;
+	public var deltaTime:Float;
 	public var type:ApplicationEventType;
 
-	public function new(type:ApplicationEventType = null, deltaTime:Int = 0)
+	public function new(type:ApplicationEventType = null, deltaTime:Float = 0.0)
 	{
 		this.type = type;
 		this.deltaTime = deltaTime;

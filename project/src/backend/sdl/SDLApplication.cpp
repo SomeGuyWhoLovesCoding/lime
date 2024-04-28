@@ -42,9 +42,9 @@ namespace lime {
 
 		framePeriod = 1000.0 / 60.0;
 
-		currentUpdate = 0;
-		lastUpdate = 0;
-		nextUpdate = 0;
+		currentUpdate = 0.0;
+		lastUpdate = 0.0;
+		nextUpdate = 0.0;
 
 		ApplicationEvent applicationEvent;
 		ClipboardEvent clipboardEvent;
