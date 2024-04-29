@@ -8,14 +8,14 @@ namespace lime {
 	ValuePointer* ApplicationEvent::callback = 0;
 	ValuePointer* ApplicationEvent::eventObject = 0;
 
-	static int id_deltaTime;
+	static double id_deltaTime;
 	static int id_type;
 	static bool init = false;
 
 
 	ApplicationEvent::ApplicationEvent () {
 
-		deltaTime = 0;
+		deltaTime = 0.0;
 		type = UPDATE;
 
 	}
