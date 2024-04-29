@@ -31,13 +31,16 @@ import lime.system.CFFIPointer;
 #if (cpp && !cppia)
 import cpp.Float32;
 #else
-typedef Float32 = Single;
+typedef Float32 = Float;
 #end
 #if (lime_doc_gen && !lime_cffi)
 typedef CFFI = Dynamic;
 typedef CFFIPointer = Dynamic;
 #end
 
+// #if hl
+// typedef TNative_Application = hl.Abstract<"Application">;
+// #end
 #if !lime_debug
 @:fileXml('tags="haxe,release"')
 @:noDebug
