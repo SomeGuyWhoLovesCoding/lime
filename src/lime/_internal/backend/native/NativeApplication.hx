@@ -59,7 +59,7 @@ class NativeApplication
 
 	public var handle:Dynamic;
 
-	private var pauseTimer:Int;
+	private var pauseTimer:Float;
 	private var parent:Application;
 	private var toggleFullscreen:Bool;
 
@@ -73,7 +73,7 @@ class NativeApplication
 	public function new(parent:Application):Void
 	{
 		this.parent = parent;
-		pauseTimer = -1;
+		pauseTimer = -1.0;
 		toggleFullscreen = true;
 
 		AudioManager.init();
@@ -90,14 +90,14 @@ class NativeApplication
 	private function advanceTimer():Void
 	{
 		#if lime_cffi
-		if (pauseTimer > -1)
+		if (pauseTimer > -1.0)
 		{
 			var offset = System.getTimer() - pauseTimer;
 			for (i in 0...Timer.sRunningTimers.length)
 			{
 				if (Timer.sRunningTimers[i] != null) Timer.sRunningTimers[i].mFireAt += offset;
 			}
-			pauseTimer = -1;
+			pauseTimer = -1.0;
 		}
 		#end
 	}
@@ -254,8 +254,7 @@ class NativeApplication
 		if (window != null)
 		{
 			var type:KeyEventType = keyEventInfo.type;
-			var int32:Float = keyEventInfo.keyCode;
-			var keyCode:KeyCode = Std.int(int32);
+			var keyCode:KeyCode = Std.int(keyEventInfo.keyCode);
 			var modifier:KeyModifier = keyEventInfo.modifier;
 
 			switch (type)

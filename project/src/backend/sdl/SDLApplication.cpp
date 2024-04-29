@@ -826,7 +826,7 @@ namespace lime {
 
 	void SDLApplication::SetFrameRate (double frameRate) {
 
-		if (frameRate > 0) {
+		if (frameRate > 0.0) {
 
 			framePeriod = 1000.0 / frameRate;
 

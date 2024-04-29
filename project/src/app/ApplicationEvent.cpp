@@ -37,7 +37,7 @@ namespace lime {
 
 				value object = (value)ApplicationEvent::eventObject->Get ();
 
-				alloc_field (object, id_deltaTime, alloc_int (event->deltaTime));
+				alloc_field (object, id_deltaTime, alloc_float (event->deltaTime));
 				alloc_field (object, id_type, alloc_int (event->type));
 
 			} else {

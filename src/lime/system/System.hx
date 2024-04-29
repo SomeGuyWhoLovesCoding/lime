@@ -325,18 +325,18 @@ class System
 	/**
 		The number of milliseconds since the application was initialized.
 	**/
-	public static function getTimer():Int
+	public static function getTimer():Float
 	{
 		#if flash
 		return flash.Lib.getTimer();
 		#elseif ((js && !nodejs) || electron)
-		return Std.int(Browser.window.performance.now());
+		return Browser.window.performance.now();
 		#elseif (lime_cffi && !macro)
 		return cast NativeCFFI.lime_system_get_timer();
 		#elseif cpp
-		return Std.int(untyped __global__.__time_stamp() * 1000);
+		return untyped __global__.__time_stamp() * 1000.0;
 		#elseif sys
-		return Std.int(Sys.time() * 1000);
+		return Sys.time() * 1000.0;
 		#else
 		return 0;
 		#end
