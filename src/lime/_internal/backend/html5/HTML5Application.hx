@@ -373,7 +373,7 @@ class HTML5Application
 
 			for (window in parent.__windows)
 			{
-				parent.onUpdate.dispatch(deltaTime);
+				parent.onUpdate.dispatch(Std.int(deltaTime));
 				if (window.context != null) window.onRender.dispatch(window.context);
 			}
 
