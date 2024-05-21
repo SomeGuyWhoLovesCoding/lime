@@ -40,11 +40,11 @@ namespace lime {
 
 		currentApplication = this;
 
-		framePeriod = 1000.0 / 60.0;
+		framePeriod = 1000.0f / 60.0f;
 
-		currentUpdate = 0.0;
-		lastUpdate = 0.0;
-		nextUpdate = 0.0;
+		currentUpdate = 0.0f;
+		lastUpdate = 0.0f;
+		nextUpdate = 0.0f;
 
 		ApplicationEvent applicationEvent;
 		ClipboardEvent clipboardEvent;
@@ -136,7 +136,7 @@ namespace lime {
 
 					nextUpdate += framePeriod;
 
-					while (nextUpdate <= currentUpdate) {
+					if (nextUpdate < currentUpdate - 1) {
 
 						nextUpdate += framePeriod;
 
@@ -826,13 +826,13 @@ namespace lime {
 
 	void SDLApplication::SetFrameRate (double frameRate) {
 
-		if (frameRate > 0.0) {
+		if (frameRate > 0.0f) {
 
-			framePeriod = 1000.0 / frameRate;
+			framePeriod = 1000.0f / frameRate;
 
 		} else {
 
-			framePeriod = 1000.0;
+			framePeriod = 1000.0f;
 
 		}
 
