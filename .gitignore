@@ -15,6 +15,7 @@ templates/bin/hl/*
 project/all_objs
 project/obj
 project/vc*.pdb
+project/lib
 *.userprefs
 *.swp
 .idea/
