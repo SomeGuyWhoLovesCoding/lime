@@ -136,7 +136,7 @@ namespace lime {
 
 					nextUpdate += framePeriod;
 
-					if (nextUpdate < currentUpdate - 1) {
+					if (nextUpdate < currentUpdate - 1.3371f) {
 
 						nextUpdate += framePeriod;
 
