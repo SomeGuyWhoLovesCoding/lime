@@ -138,7 +138,7 @@ namespace lime {
 
 					while (nextUpdate <= currentUpdate) {
 
-						nextUpdate += applicationEvent.deltaTime;
+						nextUpdate += framePeriod;
 
 					}
 
