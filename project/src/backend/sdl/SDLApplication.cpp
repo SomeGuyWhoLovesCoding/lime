@@ -132,16 +132,15 @@ namespace lime {
 					currentUpdate = SDL_GetTicks ();
 					applicationEvent.type = UPDATE;
 					applicationEvent.deltaTime = currentUpdate - lastUpdate;
+					lastUpdate = currentUpdate;
 
 					nextUpdate += framePeriod;
 
-					if (nextUpdate < currentUpdate + 1.0f) {
+					while (nextUpdate <= currentUpdate) {
 
-						nextUpdate += framePeriod;
+						nextUpdate += applicationEvent.deltaTime;
 
 					}
-
-					lastUpdate = currentUpdate;
 
 					ApplicationEvent::Dispatch (&applicationEvent);
 					RenderEvent::Dispatch (&renderEvent);
@@ -896,7 +895,7 @@ namespace lime {
 
 		#if defined (IPHONE) || defined (EMSCRIPTEN)
 
-			if (currentUpdate > nextUpdate) {
+			if (currentUpdate >= nextUpdate) {
 
 				event.type = SDL_USEREVENT;
 				HandleEvent (&event);
@@ -906,7 +905,7 @@ namespace lime {
 
 		#else
 
-			if (currentUpdate > nextUpdate) {
+			if (currentUpdate >= nextUpdate) {
 
 				if (timerActive) SDL_RemoveTimer (timerID);
 				OnTimer (0, 0);
@@ -982,7 +981,7 @@ namespace lime {
 
 					if (!isBlocking) System::GCEnterBlocking ();
 					isBlocking = true;
-					Sleep(1);
+					SDL_Delay (1);
 					break;
 
 			}
