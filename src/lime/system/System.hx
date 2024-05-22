@@ -331,8 +331,6 @@ class System
 		return flash.Lib.getTimer();
 		#elseif ((js && !nodejs) || electron)
 		return Browser.window.performance.now();
-		#elseif cpp
-		return untyped __global__.__time_stamp() * 1000.0;
 		#elseif sys
 		return Sys.time() * 1000.0;
 		#else
