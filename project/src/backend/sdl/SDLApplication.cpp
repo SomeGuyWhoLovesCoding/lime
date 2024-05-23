@@ -129,14 +129,14 @@ namespace lime {
 
 				if (!inBackground) {
 
-					currentUpdate = SDL_GetTicks ();
+					currentUpdate = (double) SDL_GetTicks ();
 					applicationEvent.type = UPDATE;
 					applicationEvent.deltaTime = currentUpdate - lastUpdate;
 					lastUpdate = currentUpdate;
 
 					nextUpdate += framePeriod;
 
-					while (nextUpdate <= currentUpdate) {
+					while (nextUpdate < currentUpdate) {
 
 						nextUpdate += framePeriod;
 
@@ -155,10 +155,6 @@ namespace lime {
 
 				windowEvent.type = WINDOW_DEACTIVATE;
 				WindowEvent::Dispatch (&windowEvent);
-				break;
-
-			case SDL_APP_WILLENTERFOREGROUND:
-
 				break;
 
 			case SDL_APP_DIDENTERFOREGROUND:
@@ -329,8 +325,8 @@ namespace lime {
 	void SDLApplication::Init () {
 
 		active = true;
-		lastUpdate = SDL_GetTicks ();
-		nextUpdate = lastUpdate;
+		lastUpdate = (double) SDL_GetTicks ();
+		nextUpdate = lastUpdate - framePeriod;
 
 	}
 
@@ -891,11 +887,11 @@ namespace lime {
 
 			}
 
-			currentUpdate = SDL_GetTicks ();
+			currentUpdate = (double) SDL_GetTicks ();
 
 		#if defined (IPHONE) || defined (EMSCRIPTEN)
 
-			if (currentUpdate >= nextUpdate) {
+			if (currentUpdate > nextUpdate) {
 
 				event.type = SDL_USEREVENT;
 				HandleEvent (&event);
@@ -905,7 +901,7 @@ namespace lime {
 
 		#else
 
-			if (currentUpdate >= nextUpdate) {
+			if (currentUpdate > nextUpdate) {
 
 				if (timerActive) SDL_RemoveTimer (timerID);
 				OnTimer (0, 0);
