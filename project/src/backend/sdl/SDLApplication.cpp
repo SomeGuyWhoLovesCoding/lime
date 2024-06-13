@@ -2,6 +2,7 @@
 #include "SDLGamepad.h"
 #include "SDLJoystick.h"
 #include <system/System.h>
+#include <iostream>
 
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
@@ -40,11 +41,13 @@ namespace lime {
 
 		currentApplication = this;
 
-		framePeriod = 1000.0f / 60.0f;
+		framePeriod = 1000.0 / 60.0;
 
-		currentUpdate = 0.0f;
-		lastUpdate = 0.0f;
-		nextUpdate = 0.0f;
+		limitfps = true;
+
+		currentUpdate = 0;
+		lastUpdate = 0;
+		nextUpdate = 0;
 
 		ApplicationEvent applicationEvent;
 		ClipboardEvent clipboardEvent;
@@ -129,22 +132,24 @@ namespace lime {
 
 				if (!inBackground) {
 
-					currentUpdate = (double) SDL_GetTicks ();
+					uint64_t ticks = SDL_GetPerformanceCounter();
+					uint64_t frequency = SDL_GetPerformanceFrequency();
+					currentUpdate = ((double) ticks / (double) frequency) * 1000.0;
+
 					applicationEvent.type = UPDATE;
 					applicationEvent.deltaTime = currentUpdate - lastUpdate;
 					lastUpdate = currentUpdate;
 
-					nextUpdate += framePeriod;
+					if (limitfps)
+					{
+						nextUpdate += framePeriod; 
 
-					while (nextUpdate < currentUpdate) {
-
-						nextUpdate += framePeriod;
-
+						while (nextUpdate <= currentUpdate)
+							nextUpdate += framePeriod;						
 					}
-
+					
 					ApplicationEvent::Dispatch (&applicationEvent);
-					RenderEvent::Dispatch (&renderEvent);
-
+					RenderEvent::Dispatch (&renderEvent);	
 				}
 
 				break;
@@ -155,6 +160,10 @@ namespace lime {
 
 				windowEvent.type = WINDOW_DEACTIVATE;
 				WindowEvent::Dispatch (&windowEvent);
+				break;
+
+			case SDL_APP_WILLENTERFOREGROUND:
+
 				break;
 
 			case SDL_APP_DIDENTERFOREGROUND:
@@ -325,8 +334,12 @@ namespace lime {
 	void SDLApplication::Init () {
 
 		active = true;
-		lastUpdate = (double) SDL_GetTicks ();
-		nextUpdate = lastUpdate - framePeriod;
+		
+		uint64_t ticks = SDL_GetPerformanceCounter();
+		uint64_t frequency = SDL_GetPerformanceFrequency();
+
+		lastUpdate = ((double) ticks / (double) frequency) * 1000.0;
+		nextUpdate = lastUpdate;
 
 	}
 
@@ -822,21 +835,19 @@ namespace lime {
 
 	void SDLApplication::SetFrameRate (double frameRate) {
 
-		if (frameRate > 0.0f) {
+		uint32_t fps = (uint32_t) abs(frameRate);
 
-			framePeriod = 1000.0f / frameRate;
+		if (fps % 10 == 0)
+			fps--;
 
-		} else {
+		framePeriod = 1000.0 / fps;
+	}
 
-			framePeriod = 1000.0f;
-
-		}
-
+	void SDLApplication::LimitFPS (bool limit){
+		limitfps = limit;
 	}
 
 
-	static SDL_TimerID timerID = 0;
-	bool timerActive = false;
 	bool firstTime = true;
 
 	Uint32 OnTimer (Uint32 interval, void *) {
@@ -850,14 +861,16 @@ namespace lime {
 		event.type = SDL_USEREVENT;
 		event.user = userevent;
 
-		timerActive = false;
-		timerID = 0;
-
 		SDL_PushEvent (&event);
 
 		return 0;
 
 	}
+
+	void precise_delay(double ms) {
+
+
+	}	
 
 
 	bool SDLApplication::Update () {
@@ -887,32 +900,43 @@ namespace lime {
 
 			}
 
-			currentUpdate = (double) SDL_GetTicks ();
+			
+			uint64_t ticks = SDL_GetPerformanceCounter();
+			uint64_t frequency = SDL_GetPerformanceFrequency();
+
+			currentUpdate = ((double) ticks / (double) frequency)*1000;
 
 		#if defined (IPHONE) || defined (EMSCRIPTEN)
 
-			if (currentUpdate > nextUpdate) {
+			if (currentUpdate >= nextUpdate) {
 
 				event.type = SDL_USEREVENT;
 				HandleEvent (&event);
 				event.type = -1;
-
 			}
 
 		#else
 
-			if (currentUpdate > nextUpdate) {
-
-				if (timerActive) SDL_RemoveTimer (timerID);
+			if (currentUpdate >= nextUpdate) 
 				OnTimer (0, 0);
+			else if (!limitfps)
+				OnTimer(nextUpdate-currentUpdate,0);
+			else{
 
-			} else if (!timerActive) {
+				double delta = nextUpdate-currentUpdate;
 
-				timerActive = true;
-				timerID = SDL_AddTimer (nextUpdate - currentUpdate, OnTimer, 0);
+				// Busy-wait for the fractional part
+				uint64_t start = SDL_GetPerformanceCounter();
+				uint64_t end = start;
+				uint64_t freq = SDL_GetPerformanceFrequency();
+				uint64_t target_ticks = delta * freq / 1000; 
+
+				while ((end - start) < target_ticks)
+					end = SDL_GetPerformanceCounter();
+						
+				OnTimer(delta,0);
 
 			}
-
 		}
 
 		#endif
