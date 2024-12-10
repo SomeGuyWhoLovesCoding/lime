@@ -215,11 +215,11 @@ class NativeAudioSource
 		var buffer = new UInt8Array(length);
 		var read = 0, total = 0, readMax;
 
-		for (i in 0...STREAM_NUM_BUFFERS-1)
+		for (i in 0...STREAM_NUM_BUFFERS - 1)
 		{
 			bufferTimeBlocks[i] = bufferTimeBlocks[i + 1];
 		}
-		bufferTimeBlocks[STREAM_NUM_BUFFERS-1] = vorbisFile.timeTell();
+		bufferTimeBlocks[STREAM_NUM_BUFFERS - 1] = vorbisFile.timeTell();
 
 		while (total < length)
 		{
@@ -392,13 +392,44 @@ class NativeAudioSource
 		return 0;
 	}
 
-	public function setCurrentTime(value:Int):Int
+	public function getCurrentTimef():Float
+	{
+		if (completed)
+		{
+			return getLength();
+		}
+		else if (handle != null)
+		{
+			if (stream)
+			{
+				var time = (bufferTimeBlocks[0] * 1000) + AL.getSourcef(handle, AL.SEC_OFFSET) * 1000.0 - parent.offset;
+				if (time < 0) return 0;
+				return time;
+			}
+			else
+			{
+				var offset = AL.getSourcei(handle, AL.BYTE_OFFSET);
+				var ratio = (offset / dataLength);
+				var totalSeconds = samples / parent.buffer.sampleRate;
+
+				var time = totalSeconds * ratio * 1000 - parent.offset;
+
+				// var time = Std.int (AL.getSourcef (handle, AL.SEC_OFFSET) * 1000) - parent.offset;
+				if (time < 0) return 0;
+				return time;
+			}
+		}
+
+		return 0;
+	}
+
+	public function setCurrentTime(value:Float):Float
 	{
 		// `setCurrentTime()` has side effects and is never safe to skip.
 		/* if (value == getCurrentTime())
-		{
-			return value;
-		} */
+			{
+				return value;
+		}*/
 
 		if (handle != null)
 		{
@@ -425,7 +456,7 @@ class NativeAudioSource
 				if (secondOffset > totalSeconds) secondOffset = totalSeconds;
 
 				var ratio = (secondOffset / totalSeconds);
-				var totalOffset = Std.int(dataLength * ratio);
+				var totalOffset = dataLength * ratio;
 
 				AL.sourcei(handle, AL.BYTE_OFFSET, totalOffset);
 				if (playing) AL.sourcePlay(handle);
