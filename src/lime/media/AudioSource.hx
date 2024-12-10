@@ -13,7 +13,7 @@ class AudioSource
 {
 	public var onComplete = new Event<Void->Void>();
 	public var buffer:AudioBuffer;
-	public var currentTime(get, set):Int;
+	public var currentTime(get, set):Float;
 	public var gain(get, set):Float;
 	public var length(get, set):Int;
 	public var loops(get, set):Int;

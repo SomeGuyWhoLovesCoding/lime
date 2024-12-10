@@ -361,38 +361,7 @@ class NativeAudioSource
 	}
 
 	// Get & Set Methods
-	public function getCurrentTime():Int
-	{
-		if (completed)
-		{
-			return getLength();
-		}
-		else if (handle != null)
-		{
-			if (stream)
-			{
-				var time = (Std.int(bufferTimeBlocks[0] * 1000) + Std.int(AL.getSourcef(handle, AL.SEC_OFFSET) * 1000)) - parent.offset;
-				if (time < 0) return 0;
-				return time;
-			}
-			else
-			{
-				var offset = AL.getSourcei(handle, AL.BYTE_OFFSET);
-				var ratio = (offset / dataLength);
-				var totalSeconds = samples / parent.buffer.sampleRate;
-
-				var time = Std.int(totalSeconds * ratio * 1000) - parent.offset;
-
-				// var time = Std.int (AL.getSourcef (handle, AL.SEC_OFFSET) * 1000) - parent.offset;
-				if (time < 0) return 0;
-				return time;
-			}
-		}
-
-		return 0;
-	}
-
-	public function getCurrentTimef():Float
+	public function getCurrentTime():Float
 	{
 		if (completed)
 		{
