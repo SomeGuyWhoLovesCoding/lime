@@ -144,8 +144,8 @@ namespace lime {
 				if (!inBackground) {
 					applicationEvent.type = UPDATE;
 					applicationEvent.deltaTime = (int)(currentUpdate - lastUpdate);
-					lastUpdate = currentUpdate;
 
+					lastUpdate = currentUpdate;
 					ApplicationEvent::Dispatch (&applicationEvent);
 					RenderEvent::Dispatch (&renderEvent);
 				}
@@ -852,18 +852,17 @@ namespace lime {
 
 	bool SDLApplication::Update () {
 		currentUpdate = getTime();
+
 		SDL_Event event;
-		event.type = -1;
 		while (SDL_PollEvent (&event)) {
 				HandleEvent (&event);
 				event.type = -1;
 				if (!active)
 					return active;
 		}
-
 		if (currentUpdate >= nextUpdate) {
-			nextUpdate = currentUpdate + framePeriod;
 			PushUpdate();
+			nextUpdate = currentUpdate + framePeriod;
 		}
 
 		return active;

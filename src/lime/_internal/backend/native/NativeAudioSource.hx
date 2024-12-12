@@ -47,6 +47,7 @@ class NativeAudioSource
 		this.parent = parent;
 
 		position = new Vector4();
+		AL.deleteSource(handle);
 	}
 
 	public function dispose():Void
@@ -55,7 +56,6 @@ class NativeAudioSource
 		{
 			stop();
 			AL.sourcei(handle, AL.BUFFER, null);
-			AL.deleteSource(handle);
 			if (buffers != null)
 			{
 				for (buffer in buffers)

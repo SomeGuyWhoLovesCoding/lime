@@ -2,10 +2,6 @@ package lime._internal.format;
 
 import haxe.io.Bytes;
 import lime._internal.backend.native.NativeCFFI;
-#if flash
-import flash.utils.CompressionAlgorithm;
-import flash.utils.ByteArray;
-#end
 
 #if !lime_debug
 @:fileXml('tags="haxe,release"')

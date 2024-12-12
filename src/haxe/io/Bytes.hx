@@ -44,17 +44,12 @@ class Bytes
 	{
 		this.length = length;
 		this.b = b;
-		#if flash
-		b.endian = flash.utils.Endian.LITTLE_ENDIAN;
-		#end
 	}
 
 	public inline function get(pos:Int):Int
 	{
 		#if neko
 		return untyped $sget(b, pos);
-		#elseif flash
-		return b[pos];
 		#elseif (cpp || webassembly)
 		return untyped b[pos];
 		#elseif java
@@ -126,17 +121,7 @@ class Bytes
 
 	public function fill(pos:Int, len:Int, value:Int)
 	{
-		#if flash
-		var v4 = value & 0xFF;
-		v4 |= v4 << 8;
-		v4 |= v4 << 16;
-		b.position = pos;
-		for (i in 0...len >> 2)
-			b.writeUnsignedInt(v4);
-		pos += len & ~3;
-		for (i in 0...len & 3)
-			set(pos++, value);
-		#elseif (cpp || webassembly)
+		#if (cpp || webassembly)
 		untyped __global__.__hxcpp_memory_memset(b, pos, len, value);
 		#else
 		for (i in 0...len)
@@ -596,9 +581,7 @@ class Bytes
 
 	public static function ofData(b:BytesData)
 	{
-		#if flash
-		return new Bytes(b.length, b);
-		#elseif neko
+		#if neko
 		return new Bytes(untyped __dollar__ssize(b), b);
 		#elseif cs
 		return new Bytes(b.Length, b);
