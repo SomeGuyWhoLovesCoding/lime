@@ -21,9 +21,11 @@ namespace lime {
 	const int analogAxisDeadZone = 1000;
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
+	float start_counter = 0.0f;
 
 
 	SDLApplication::SDLApplication () {
+		start_counter = SDL_GetPerformanceCounter();
 
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
@@ -40,7 +42,7 @@ namespace lime {
 
 		currentApplication = this;
 
-		framePeriod = 1000.0 / 60.0;
+		framePeriod = 1.0;
 
 		currentUpdate = 0;
 		lastUpdate = 0;
@@ -113,6 +115,17 @@ namespace lime {
 
 	}
 
+	float getTime () {
+		const double frequency = (double)SDL_GetPerformanceFrequency();
+		const double counter = (double)SDL_GetPerformanceCounter() - start_counter;
+		return (counter / frequency) * 1000.0f;
+	}
+
+	void busyWait(double ms){
+		const double start = getTime();
+
+		while (getTime() - start < ms) {}
+	}
 
 	void SDLApplication::HandleEvent (SDL_Event* event) {
 
@@ -128,23 +141,12 @@ namespace lime {
 			case SDL_USEREVENT:
 
 				if (!inBackground) {
-
-					currentUpdate = SDL_GetTicks ();
 					applicationEvent.type = UPDATE;
-					applicationEvent.deltaTime = currentUpdate - lastUpdate;
+					applicationEvent.deltaTime = (int)(currentUpdate - lastUpdate);
+
 					lastUpdate = currentUpdate;
-
-					nextUpdate += framePeriod;
-
-					while (nextUpdate <= currentUpdate) {
-
-						nextUpdate += framePeriod;
-
-					}
-
 					ApplicationEvent::Dispatch (&applicationEvent);
 					RenderEvent::Dispatch (&renderEvent);
-
 				}
 
 				break;
@@ -327,11 +329,8 @@ namespace lime {
 
 
 	void SDLApplication::Init () {
-
 		active = true;
-		lastUpdate = SDL_GetTicks ();
-		nextUpdate = lastUpdate;
-
+		lastUpdate = getTime();
 	}
 
 
@@ -804,12 +803,10 @@ namespace lime {
 
 
 	int SDLApplication::Quit () {
-
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch (&applicationEvent);
 
 		SDL_Quit ();
-
 		return 0;
 
 	}
@@ -832,19 +829,13 @@ namespace lime {
 
 		} else {
 
-			framePeriod = 1000.0;
+			framePeriod = 0.0;
 
 		}
 
 	}
 
-
-	static SDL_TimerID timerID = 0;
-	bool timerActive = false;
-	bool firstTime = true;
-
-	Uint32 OnTimer (Uint32 interval, void *) {
-
+	void PushUpdate(void) {
 		SDL_Event event;
 		SDL_UserEvent userevent;
 		userevent.type = SDL_USEREVENT;
@@ -854,90 +845,31 @@ namespace lime {
 		event.type = SDL_USEREVENT;
 		event.user = userevent;
 
-		timerActive = false;
-		timerID = 0;
-
 		SDL_PushEvent (&event);
-
-		return 0;
-
 	}
 
 
 	bool SDLApplication::Update () {
+		currentUpdate = getTime();
 
 		SDL_Event event;
-		event.type = -1;
-
-		#if (!defined (IPHONE) && !defined (EMSCRIPTEN))
-
-		if (active && (firstTime || WaitEvent (&event))) {
-
-			firstTime = false;
-
-			HandleEvent (&event);
-			event.type = -1;
-			if (!active)
-				return active;
-
-		#endif
-
-			while (SDL_PollEvent (&event)) {
-
+		while (SDL_PollEvent (&event)) {
 				HandleEvent (&event);
 				event.type = -1;
 				if (!active)
 					return active;
-
-			}
-
-			currentUpdate = SDL_GetTicks ();
-
-		#if defined (IPHONE) || defined (EMSCRIPTEN)
-
-			if (currentUpdate >= nextUpdate) {
-
-				event.type = SDL_USEREVENT;
-				HandleEvent (&event);
-				event.type = -1;
-
-			}
-
-		#else
-
-			if (currentUpdate >= nextUpdate) {
-
-				if (timerActive) SDL_RemoveTimer (timerID);
-				OnTimer (0, 0);
-
-			} else if (!timerActive) {
-
-				timerActive = true;
-				timerID = SDL_AddTimer (nextUpdate - currentUpdate, OnTimer, 0);
-
-			}
-
+		}
+		if (currentUpdate >= nextUpdate) {
+			PushUpdate();
+			nextUpdate = currentUpdate + framePeriod;
 		}
 
-		#endif
-
 		return active;
-
 	}
 
 
 	void SDLApplication::UpdateFrame () {
-
-		#ifdef EMSCRIPTEN
-		System::GCTryExitBlocking ();
-		#endif
-
 		currentApplication->Update ();
-
-		#ifdef EMSCRIPTEN
-		System::GCTryEnterBlocking ();
-		#endif
-
 	}
 
 
@@ -946,52 +878,6 @@ namespace lime {
 		UpdateFrame ();
 
 	}
-
-
-	int SDLApplication::WaitEvent (SDL_Event *event) {
-
-		#if defined(HX_MACOS) || defined(ANDROID)
-
-		System::GCEnterBlocking ();
-		int result = SDL_WaitEvent (event);
-		System::GCExitBlocking ();
-		return result;
-
-		#else
-
-		bool isBlocking = false;
-
-		for(;;) {
-
-			SDL_PumpEvents ();
-
-			switch (SDL_PeepEvents (event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT)) {
-
-				case -1:
-
-					if (isBlocking) System::GCExitBlocking ();
-					return 0;
-
-				case 1:
-
-					if (isBlocking) System::GCExitBlocking ();
-					return 1;
-
-				default:
-
-					if (!isBlocking) System::GCEnterBlocking ();
-					isBlocking = true;
-					SDL_Delay (1);
-					break;
-
-			}
-
-		}
-
-		#endif
-
-	}
-
 
 	Application* CreateApplication () {
 
