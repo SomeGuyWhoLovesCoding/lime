@@ -23,6 +23,8 @@ namespace lime {
 	bool inBackground = false;
 	float start_counter = 0.0f;
 
+	double sleepAccuracyThreshold = 0.0;
+	bool sleepIsAccurate = false;
 
 	SDLApplication::SDLApplication () {
 		start_counter = SDL_GetPerformanceCounter();
@@ -47,6 +49,9 @@ namespace lime {
 		currentUpdate = 0;
 		lastUpdate = 0;
 		nextUpdate = 0;
+
+		sleepAccuracyThreshold = 0.0;
+		sleepIsAccurate = false;
 
 		ApplicationEvent applicationEvent;
 		ClipboardEvent clipboardEvent;
@@ -115,16 +120,53 @@ namespace lime {
 
 	}
 
-	float getTime () {
+	double getTime() {
 		const double frequency = (double)SDL_GetPerformanceFrequency();
 		const double counter = (double)SDL_GetPerformanceCounter() - start_counter;
-		return (counter / frequency) * 1000.0f;
+		return (counter / frequency) * 1000.0;
 	}
 
-	void busyWait(double ms){
+	void busyWait(double ms) {
 		const double start = getTime();
-
 		while (getTime() - start < ms) {}
+	}
+
+	void sleepAndImproveAccuracy() {
+		double pTime = getTime();
+		SDL_Delay(1);
+		double newThreshold = sleepAccuracyThreshold + (getTime() - pTime);
+		sleepAccuracyThreshold = newThreshold / 2;
+		sleepIsAccurate = true;
+	}
+
+	void coolSleep(double sleepFor) {
+		double pTime = getTime();
+		double threshold = sleepFor - sleepAccuracyThreshold;
+		double dt = 0.0;
+
+		while ((dt = getTime() - pTime) < threshold)
+		{
+			if (sleepIsAccurate)
+			{
+				SDL_Delay(1);
+			}
+			else
+			{
+				sleepAndImproveAccuracy();
+			}
+		}
+
+		if (dt > sleepFor)
+		{
+			sleepIsAccurate = false;
+		}
+
+		double remainder = sleepFor - dt;
+
+		if (remainder > 0)
+		{
+			busyWait(remainder);
+		}
 	}
 
 	void SDLApplication::HandleEvent (SDL_Event* event) {
@@ -145,8 +187,19 @@ namespace lime {
 					applicationEvent.deltaTime = (int)(currentUpdate - lastUpdate);
 
 					lastUpdate = currentUpdate;
+
+					double start = getTime();
+
 					ApplicationEvent::Dispatch (&applicationEvent);
 					RenderEvent::Dispatch (&renderEvent);
+
+					double end = getTime();
+					double error = end - start;
+
+					double sleepFor = framePeriod - error;
+					if (sleepFor > 0.0) {
+						coolSleep(sleepFor);
+					}
 				}
 
 				break;
@@ -863,7 +916,6 @@ namespace lime {
 			PushUpdate();
 			nextUpdate = currentUpdate + framePeriod;
 		}
-
 		return active;
 	}
 
