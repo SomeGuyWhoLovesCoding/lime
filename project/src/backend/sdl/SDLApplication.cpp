@@ -3,6 +3,10 @@
 #include "SDLJoystick.h"
 #include <system/System.h>
 
+#include <chrono>
+#include <thread>
+#include <math.h>
+
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
 #endif
@@ -22,7 +26,7 @@ namespace lime {
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
 	float start_counter = 0.0f;
-
+	double lastRenderDuration = 0.0;
 
 	SDLApplication::SDLApplication () {
 		start_counter = SDL_GetPerformanceCounter();
@@ -128,6 +132,36 @@ namespace lime {
 		}
 	}
 
+	void coolSleep(double seconds) {
+		using namespace std;
+		using namespace std::chrono;
+
+		static double estimate = 5e-3;
+		static double mean = 5e-3;
+		static double m2 = 0;
+		static int64_t count = 1;
+
+		while (seconds > estimate) {
+			auto start = high_resolution_clock::now();
+			this_thread::sleep_for(milliseconds(1));
+			auto end = high_resolution_clock::now();
+
+			double observed = (end - start).count() / 1e9;
+			seconds -= observed;
+
+			++count;
+			double delta = observed - mean;
+			mean += delta / count;
+			m2   += delta * (observed - mean);
+			double stddev = sqrt(m2 / (count - 1));
+			estimate = mean + stddev;
+		}
+
+		// spin lock
+		auto start = high_resolution_clock::now();
+		while ((high_resolution_clock::now() - start).count() / 1e9 < seconds);
+	}
+
 	void SDLApplication::HandleEvent (SDL_Event* event) {
 
 		#if defined(IPHONE) || defined(EMSCRIPTEN)
@@ -146,8 +180,13 @@ namespace lime {
 					applicationEvent.deltaTime = (int)(currentUpdate - lastUpdate);
 
 					lastUpdate = currentUpdate;
+					double start = getTime();
+
 					ApplicationEvent::Dispatch (&applicationEvent);
 					RenderEvent::Dispatch (&renderEvent);
+
+					double end = getTime();
+					lastRenderDuration = end - start;
 				}
 
 				break;
@@ -855,16 +894,19 @@ namespace lime {
 
 		SDL_Event event;
 		while (SDL_PollEvent (&event)) {
-				HandleEvent (&event);
-				event.type = -1;
-				if (!active)
-					return active;
+			HandleEvent (&event);
+			event.type = -1;
+			if (!active)
+				return active;
 		}
 		if (currentUpdate >= nextUpdate) {
 			PushUpdate();
 			nextUpdate = currentUpdate + framePeriod;
 		}
-
+		double sleepDuration = framePeriod - lastRenderDuration;
+		if (sleepDuration > 0) {
+			coolSleep(sleepDuration / 1000.0);
+		}
 		return active;
 	}
 
