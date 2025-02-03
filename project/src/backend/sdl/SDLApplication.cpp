@@ -177,7 +177,7 @@ namespace lime {
 
 				if (!inBackground) {
 					applicationEvent.type = UPDATE;
-					applicationEvent.deltaTime = (int)(currentUpdate - lastUpdate);
+					applicationEvent.deltaTime = currentUpdate - lastUpdate;
 
 					lastUpdate = currentUpdate;
 					double start = getTime();
