@@ -180,9 +180,9 @@ namespace lime {
 					applicationEvent.deltaTime = currentUpdate - lastUpdate;
 
 					lastUpdate = currentUpdate;
-					double start = getTime();
-
 					ApplicationEvent::Dispatch (&applicationEvent);
+
+					double start = getTime();
 					RenderEvent::Dispatch (&renderEvent);
 
 					double end = getTime();
