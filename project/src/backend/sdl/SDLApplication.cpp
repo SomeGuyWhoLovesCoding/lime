@@ -26,11 +26,11 @@ namespace lime {
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
 	float start_counter = 0.0f;
+
+	double performanceFrequency = 0.0;
 	double lastRenderDuration = 0.0;
 
 	SDLApplication::SDLApplication () {
-		start_counter = SDL_GetPerformanceCounter();
-
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
 		initFlags |= SDL_INIT_AUDIO;
@@ -41,6 +41,8 @@ namespace lime {
 			printf ("Could not initialize SDL: %s.\n", SDL_GetError ());
 
 		}
+		performanceFrequency = (double)SDL_GetPerformanceFrequency();
+		start_counter = SDL_GetPerformanceCounter();
 
 		SDL_LogSetPriority (SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_WARN);
 
@@ -120,9 +122,8 @@ namespace lime {
 	}
 
 	float getTime () {
-		const double frequency = (double)SDL_GetPerformanceFrequency();
 		const double counter = (double)SDL_GetPerformanceCounter() - start_counter;
-		return (counter / frequency) * 1000.0f;
+		return (counter / performanceFrequency) * 1000.0f;
 
 	}
 	void busyWait(double ms){
@@ -187,6 +188,11 @@ namespace lime {
 
 					double end = getTime();
 					lastRenderDuration = end - start;
+
+					double sleepDuration = framePeriod - lastRenderDuration;
+					if (sleepDuration > 0) {
+						coolSleep(sleepDuration / 1000.0);
+					}
 				}
 
 				break;
@@ -902,10 +908,6 @@ namespace lime {
 		if (currentUpdate >= nextUpdate) {
 			PushUpdate();
 			nextUpdate = currentUpdate + framePeriod;
-		}
-		double sleepDuration = framePeriod - lastRenderDuration;
-		if (sleepDuration > 0) {
-			coolSleep(sleepDuration / 1000.0);
 		}
 		return active;
 	}
