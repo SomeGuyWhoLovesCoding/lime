@@ -149,7 +149,7 @@ namespace lime {
 
 				if (!inBackground) {
 					applicationEvent.type = UPDATE;
-					applicationEvent.deltaTime = currentUpdate - lastUpdate;
+					applicationEvent.deltaTime = (currentUpdate - lastUpdate) / performanceFrequency * 1e+3;
 
 					lastUpdate = currentUpdate;
 					ApplicationEvent::Dispatch (&applicationEvent);
