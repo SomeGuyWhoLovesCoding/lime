@@ -588,20 +588,8 @@ class CommandLineTools
 				case ANDROID:
 					platform = new AndroidPlatform(command, project, targetFlags);
 
-				case BLACKBERRY:
-
-				// platform = new BlackBerryPlatform (command, project, targetFlags);
-
 				case IOS:
 					platform = new IOSPlatform(command, project, targetFlags);
-
-				case TIZEN:
-
-				// platform = new TizenPlatform (command, project, targetFlags);
-
-				case WEBOS:
-
-				// platform = new WebOSPlatform (command, project, targetFlags);
 
 				case WINDOWS:
 					platform = new WindowsPlatform(command, project, targetFlags);
@@ -612,24 +600,14 @@ class CommandLineTools
 				case LINUX:
 					platform = new LinuxPlatform(command, project, targetFlags);
 
-				case FLASH:
-					platform = new FlashPlatform(command, project, targetFlags);
-
 				case HTML5:
 					platform = new HTML5Platform(command, project, targetFlags);
-
-				// case FIREFOX:
-
-				// 	platform = new FirefoxPlatform (command, project, targetFlags);
 
 				case WEB_ASSEMBLY:
 					platform = new WebAssemblyPlatform(command, project, targetFlags);
 
 				case TVOS:
 					platform = new TVOSPlatform(command, project, targetFlags);
-
-				case AIR:
-					platform = new AIRPlatform(command, project, targetFlags);
 
 				default:
 			}

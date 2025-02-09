@@ -1,5 +1,6 @@
 package lime.media;
 
+import lime.system.System;
 import haxe.io.Bytes;
 import haxe.io.Path;
 import lime._internal.backend.native.NativeCFFI;
@@ -20,6 +21,13 @@ import js.html.Audio;
 #elseif flash
 import flash.media.Sound;
 import flash.net.URLRequest;
+#end
+#if cpp
+import cpp.vm.Gc;
+#elseif hl
+import hl.Gc;
+#elseif neko
+import neko.vm.Gc;
 #end
 
 @:access(lime._internal.backend.native.NativeCFFI)
@@ -43,7 +51,7 @@ class AudioBuffer
 	@:noCompletion private var __srcBuffer:#if lime_cffi ALBuffer #else Dynamic #end;
 	@:noCompletion private var __srcCustom:Dynamic;
 	@:noCompletion private var __srcHowl:#if lime_howlerjs Howl #else Dynamic #end;
-	@:noCompletion private var __srcSound:#if flash Sound #else Dynamic #end;
+	@:noCompletion private var __srcSound: Dynamic;
 	@:noCompletion private var __srcVorbisFile:#if lime_vorbis VorbisFile #else Dynamic #end;
 
 	#if commonjs
@@ -59,10 +67,14 @@ class AudioBuffer
 
 	public function new() {}
 
+
 	public function dispose():Void
 	{
 		#if (js && html5 && lime_howlerjs)
 		__srcHowl.unload();
+		#end
+		#if lime_cffi
+		AL.deleteBuffer(__srcBuffer);
 		#end
 	}
 
@@ -252,19 +264,7 @@ class AudioBuffer
 
 		if (audioBuffer != null)
 		{
-			#if flash
-			audioBuffer.__srcSound.addEventListener(flash.events.Event.COMPLETE, function(event)
-			{
-				promise.complete(audioBuffer);
-			});
-
-			audioBuffer.__srcSound.addEventListener(flash.events.ProgressEvent.PROGRESS, function(event)
-			{
-				promise.progress(Std.int(event.bytesLoaded), Std.int(event.bytesTotal));
-			});
-
-			audioBuffer.__srcSound.addEventListener(flash.events.IOErrorEvent.IO_ERROR, promise.error);
-			#elseif (js && html5 && lime_howlerjs)
+			#if (js && html5 && lime_howlerjs)
 			if (audioBuffer != null)
 			{
 				audioBuffer.__srcHowl.on("load", function()
