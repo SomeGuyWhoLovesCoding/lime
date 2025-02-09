@@ -44,7 +44,7 @@ namespace lime {
 
 		currentApplication = this;
 
-		framePeriod = 1.0;
+		framePeriod = 0.000001;
 
 		currentUpdate = 0;
 		lastUpdate = 0;
@@ -140,6 +140,10 @@ namespace lime {
 	}
 
 	void coolSleep(double sleepFor) {
+		if (sleepAccuracyThreshold >= sleepFor) {
+			sleepAccuracyThreshold *= 0.99875;
+		}
+
 		double pTime = getTime();
 		double threshold = sleepFor - sleepAccuracyThreshold;
 		double dt = 0.0;
