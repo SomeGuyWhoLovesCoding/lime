@@ -583,8 +583,8 @@ class NativeCFFI
 	private static var lime_window_get_width = new cpp.Callable<cpp.Object->Int>(cpp.Prime._loadPrime("lime", "lime_window_get_width", "oi", false));
 	private static var lime_window_get_x = new cpp.Callable<cpp.Object->Int>(cpp.Prime._loadPrime("lime", "lime_window_get_x", "oi", false));
 	private static var lime_window_get_y = new cpp.Callable<cpp.Object->Int>(cpp.Prime._loadPrime("lime", "lime_window_get_y", "oi", false));
-	private static var lime_window_get_mouse_pos_x = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_window_get_mouse_pos_x", "iv", false)); // LATER
-	private static var lime_window_get_mouse_pos_y = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_window_get_mouse_pos_y", "iv", false));
+	private static var lime_window_get_mouse_pos_x = new cpp.Callable<Void->Int>(cpp.Prime._loadPrime("lime", "lime_window_get_mouse_pos_x", "i", false));
+	private static var lime_window_get_mouse_pos_y = new cpp.Callable<Void->Int>(cpp.Prime._loadPrime("lime", "lime_window_get_mouse_pos_y", "i", false));
 	private static var lime_window_move = new cpp.Callable<cpp.Object->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_window_move", "oiiv", false));
 	private static var lime_window_read_pixels = new cpp.Callable<cpp.Object->cpp.Object->cpp.Object->cpp.Object>(cpp.Prime._loadPrime("lime",
 		"lime_window_read_pixels", "oooo", false));

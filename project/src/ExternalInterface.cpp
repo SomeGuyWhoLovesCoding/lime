@@ -3479,9 +3479,9 @@ namespace lime {
 
 	int lime_window_get_mouse_pos_x () {
 
-		int* x = 0;
+		int x = 0;
 
-		SDL_GetGlobalMouseState(*x, NULL);
+		SDL_GetGlobalMouseState(&x, NULL);
 
 		return x;
 
@@ -3490,10 +3490,9 @@ namespace lime {
 
 	HL_PRIM int HL_NAME(hl_window_get_mouse_pos_x) () {
 
+		int x = 0;
 
-		int* x = 0;
-
-		SDL_GetGlobalMouseState(*x, NULL);
+		SDL_GetGlobalMouseState(&x, NULL);
 
 		return x;
 
@@ -3502,9 +3501,9 @@ namespace lime {
 
 	int lime_window_get_mouse_pos_y () {
 
-		int* y = 0;
+		int y = 0;
 
-		SDL_GetGlobalMouseState(*y, NULL);
+		SDL_GetGlobalMouseState(NULL, &y);
 
 		return y;
 
@@ -3513,10 +3512,9 @@ namespace lime {
 
 	HL_PRIM int HL_NAME(hl_window_get_mouse_pos_y) () {
 
+		int y = 0;
 
-		int* y = 0;
-
-		SDL_GetGlobalMouseState(*y, NULL);
+		SDL_GetGlobalMouseState(NULL, &y);
 
 		return y;
 
