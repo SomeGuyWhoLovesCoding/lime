@@ -48,6 +48,9 @@
 #include <utils/compress/Zlib.h>
 #include <vm/NekoVM.h>
 
+#include <SDL.h>
+#include "SDL_mouse.h"
+
 #ifdef HX_WINDOWS
 #include <locale>
 #include <codecvt>
@@ -3474,6 +3477,52 @@ namespace lime {
 	}
 
 
+	int lime_window_get_mouse_pos_x () {
+
+		int* x = 0;
+
+		SDL_GetGlobalMouseState(*x, NULL);
+
+		return x;
+
+	}
+
+
+	HL_PRIM int HL_NAME(hl_window_get_mouse_pos_x) () {
+
+
+		int* x = 0;
+
+		SDL_GetGlobalMouseState(*x, NULL);
+
+		return x;
+
+	}
+
+
+	int lime_window_get_mouse_pos_y () {
+
+		int* y = 0;
+
+		SDL_GetGlobalMouseState(*y, NULL);
+
+		return y;
+
+	}
+
+
+	HL_PRIM int HL_NAME(hl_window_get_mouse_pos_y) () {
+
+
+		int* y = 0;
+
+		SDL_GetGlobalMouseState(*y, NULL);
+
+		return y;
+
+	}
+
+
 	HL_PRIM int HL_NAME(hl_window_get_y) (HL_CFFIPointer* window) {
 
 		Window* targetWindow = (Window*)window->ptr;
@@ -4051,6 +4100,8 @@ namespace lime {
 	DEFINE_PRIME1 (lime_window_get_width);
 	DEFINE_PRIME1 (lime_window_get_x);
 	DEFINE_PRIME1 (lime_window_get_y);
+	DEFINE_PRIME0 (lime_window_get_mouse_pos_x);
+	DEFINE_PRIME0 (lime_window_get_mouse_pos_y);
 	DEFINE_PRIME3v (lime_window_move);
 	DEFINE_PRIME3 (lime_window_read_pixels);
 	DEFINE_PRIME3v (lime_window_resize);
@@ -4240,6 +4291,8 @@ namespace lime {
 	DEFINE_HL_PRIM (_I32, hl_window_get_width, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_I32, hl_window_get_x, _TCFFIPOINTER);
 	DEFINE_HL_PRIM (_I32, hl_window_get_y, _TCFFIPOINTER);
+	DEFINE_HL_PRIM (_I32, hl_window_get_mouse_pos_x, _NO_ARG);
+	DEFINE_HL_PRIM (_I32, hl_window_get_mouse_pos_y, _NO_ARG);
 	DEFINE_HL_PRIM (_VOID, hl_window_move, _TCFFIPOINTER _I32 _I32);
 	DEFINE_HL_PRIM (_DYN, hl_window_read_pixels, _TCFFIPOINTER _TRECTANGLE _TIMAGEBUFFER);
 	DEFINE_HL_PRIM (_VOID, hl_window_resize, _TCFFIPOINTER _I32 _I32);

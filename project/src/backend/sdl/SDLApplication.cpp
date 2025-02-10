@@ -2,6 +2,7 @@
 #include "SDLGamepad.h"
 #include "SDLJoystick.h"
 #include <system/System.h>
+#include <thread>
 
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
@@ -128,7 +129,9 @@ namespace lime {
 
 	void busyWait(double ms) {
 		const double start = getTime();
-		while (getTime() - start < ms) {}
+		while (getTime() - start < ms) {
+			std::this_thread::yield();
+		}
 	}
 
 	void sleepAndImproveAccuracy() {
@@ -140,7 +143,7 @@ namespace lime {
 	}
 
 	void coolSleep(double sleepFor) {
-		if (sleepAccuracyThreshold >= sleepFor) {
+		if (sleepAccuracyThreshold >= sleepFor * 0.25) {
 			sleepAccuracyThreshold *= 0.99875;
 		}
 
