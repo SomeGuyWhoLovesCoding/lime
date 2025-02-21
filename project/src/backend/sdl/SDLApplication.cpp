@@ -24,9 +24,6 @@ namespace lime {
 	bool inBackground = false;
 	float start_counter = 0.0f;
 
-	double sleepAccuracyThreshold = 0.0;
-	bool sleepIsAccurate = false;
-
 	SDLApplication::SDLApplication () {
 		start_counter = SDL_GetPerformanceCounter();
 
@@ -45,14 +42,11 @@ namespace lime {
 
 		currentApplication = this;
 
-		framePeriod = 0.000001;
+		framePeriod = 0.0;
 
 		currentUpdate = 0;
 		lastUpdate = 0;
 		nextUpdate = 0;
-
-		sleepAccuracyThreshold = 0.0;
-		sleepIsAccurate = false;
 
 		ApplicationEvent applicationEvent;
 		ClipboardEvent clipboardEvent;
@@ -134,41 +128,21 @@ namespace lime {
 		}
 	}
 
-	void sleepAndImproveAccuracy() {
-		double pTime = getTime();
-		SDL_Delay(1);
-		double newThreshold = sleepAccuracyThreshold + (getTime() - pTime);
-		sleepAccuracyThreshold = newThreshold / 2;
-		sleepIsAccurate = true;
-	}
-
 	void coolSleep(double sleepFor) {
-		if (sleepAccuracyThreshold >= sleepFor * 0.25) {
-			sleepAccuracyThreshold *= 0.99875;
-		}
-
 		double pTime = getTime();
-		double threshold = sleepFor - sleepAccuracyThreshold;
+		double threshold = sleepFor - (0.9765625 * 2.2);
 		double dt = 0.0;
+
+		double start = getTime();
 
 		while ((dt = getTime() - pTime) < threshold)
 		{
-			if (sleepIsAccurate)
-			{
-				SDL_Delay(1);
-			}
-			else
-			{
-				sleepAndImproveAccuracy();
-			}
+			SDL_Delay(1);
 		}
 
-		if (dt > sleepFor)
-		{
-			sleepIsAccurate = false;
-		}
+		double end = getTime();
 
-		double remainder = sleepFor - dt;
+		double remainder = (start - end) - dt;
 
 		if (remainder > 0)
 		{
