@@ -7,6 +7,7 @@
 #include <chrono>
 #include <thread>
 #include <string>
+#include <stdio.h>
 #include "tscns.h"
 
 using namespace std;
@@ -133,28 +134,28 @@ namespace lime {
 		return d;
 	}
 
-	void busyWait(double ns) {
-		const double start = getTime();
+	void busyWait(int64_t ns) {
+		const int64_t start = getTime();
 		while (getTime() - start < ns) {
 			std::this_thread::yield();
 		}
 	}
 
-	void coolSleep(double sleepFor) {
-		double pTime = getTime();
-		double threshold = sleepFor - (0.9765625 * 2.2);
-		double dt = 0.0;
+	void coolSleep(int64_t sleepFor) {
+		int64_t pTime = getTime();
+		double threshold = sleepFor - (976562.5 * 2.2);
+		int64_t dt = 0.0;
 
-		double start = getTime();
+		int64_t start = getTime();
 
 		while ((dt = getTime() - pTime) < threshold)
 		{
 			SDL_Delay(1);
 		}
 
-		double end = getTime();
+		int64_t end = getTime();
 
-		double remainder = (start - end) - dt;
+		int64_t remainder = (start - end) - dt;
 
 		if (remainder > 0)
 		{
@@ -177,7 +178,7 @@ namespace lime {
 
 				if (!inBackground) {
 					applicationEvent.type = UPDATE;
-					applicationEvent.deltaTime = (int)((currentUpdate - lastUpdate) * 1000000);
+					applicationEvent.deltaTime = (int)(currentUpdate - lastUpdate);
 
 					lastUpdate = currentUpdate;
 
@@ -189,7 +190,7 @@ namespace lime {
 					double end = getTime();
 					double error = end - start;
 
-					double sleepFor = framePeriod - error;
+					int64_t sleepFor = (int64_t)framePeriod - error;
 					if (sleepFor > 0.0) {
 						coolSleep(sleepFor);
 					}
@@ -871,7 +872,7 @@ namespace lime {
 
 		if (frameRate > 0) {
 
-			framePeriod = 1000.0 / frameRate;
+			framePeriod = 1000000000.0 / frameRate;
 
 		} else {
 
