@@ -129,9 +129,7 @@ namespace lime {
 		int64_t a = tn.rdns();
 		tn.calibrate();
 		int64_t b = tn.rdns();
-		int64_t c = tn.rdsysns();
-		int64_t d = tn.rdns();
-		return d;
+		return b;
 	}
 
 	void busyWait(int64_t ns) {
@@ -143,7 +141,7 @@ namespace lime {
 
 	void coolSleep(int64_t sleepFor) {
 		int64_t pTime = getTime();
-		double threshold = sleepFor - (976562.5 * 2.2);
+		int64_t threshold = sleepFor - (int64_t)(976562.5 * 2.2);
 		int64_t dt = 0.0;
 
 		int64_t start = getTime();
@@ -178,17 +176,17 @@ namespace lime {
 
 				if (!inBackground) {
 					applicationEvent.type = UPDATE;
-					applicationEvent.deltaTime = (int)(currentUpdate - lastUpdate);
+					applicationEvent.deltaTime = currentUpdate - lastUpdate;
 
 					lastUpdate = currentUpdate;
 
-					double start = getTime();
+					int64_t start = getTime();
 
 					ApplicationEvent::Dispatch (&applicationEvent);
 					RenderEvent::Dispatch (&renderEvent);
 
-					double end = getTime();
-					double error = end - start;
+					int64_t end = getTime();
+					int64_t error = end - start;
 
 					int64_t sleepFor = (int64_t)framePeriod - error;
 					if (sleepFor > 0.0) {

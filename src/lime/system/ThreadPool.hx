@@ -3,6 +3,7 @@ package lime.system;
 import haxe.Constraints.Function;
 import lime.app.Application;
 import lime.app.Event;
+import haxe.Int64;
 #if sys
 #if haxe4
 import sys.thread.Deque;
@@ -168,7 +169,7 @@ class ThreadPool
 		}
 	}
 
-	@:noCompletion private function __update(deltaTime:Int):Void
+	@:noCompletion private function __update(deltaTime:Int64):Void
 	{
 		if (__workQueued > __workCompleted)
 		{

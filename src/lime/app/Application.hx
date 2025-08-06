@@ -15,6 +15,7 @@ import lime.ui.Touch;
 import lime.ui.Window;
 import lime.ui.WindowAttributes;
 import lime.utils.Preloader;
+import haxe.Int64;
 
 /**
 	The Application class forms the foundation for most Lime projects.
@@ -47,7 +48,7 @@ class Application extends Module
 	/**
 		Update events are dispatched each frame (usually just before rendering)
 	**/
-	public var onUpdate = new Event<Int->Void>();
+	public var onUpdate = new Event<Int64->Void>();
 
 	/**
 		Dispatched when a new window has been created by this application
@@ -455,7 +456,7 @@ class Application extends Module
 		Called when an update event is fired on the primary window
 		@param	deltaTime	The amount of time in milliseconds that has elapsed since the last update
 	**/
-	public function update(deltaTime:Int):Void {}
+	public function update(deltaTime:Int64):Void {}
 
 	@:noCompletion private function __addWindow(window:Window):Void
 	{
