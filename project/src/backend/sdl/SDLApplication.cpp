@@ -2,7 +2,16 @@
 #include "SDLGamepad.h"
 #include "SDLJoystick.h"
 #include <system/System.h>
+#include <iostream>
+#include <iomanip>
+#include <chrono>
 #include <thread>
+#include <string>
+#include "tscns.h"
+
+using namespace std;
+
+TSCNS tn;
 
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
@@ -22,10 +31,10 @@ namespace lime {
 	const int analogAxisDeadZone = 1000;
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
-	float start_counter = 0.0f;
 
 	SDLApplication::SDLApplication () {
-		start_counter = SDL_GetPerformanceCounter();
+		tn.init();
+		cout << std::setprecision(15) << "init tsc_ghz: " << tn.getTscGhz() << endl;
 
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
@@ -115,15 +124,18 @@ namespace lime {
 
 	}
 
-	double getTime() {
-		const double frequency = (double)SDL_GetPerformanceFrequency();
-		const double counter = (double)SDL_GetPerformanceCounter() - start_counter;
-		return (counter / frequency) * 1000.0;
+	int64_t getTime() {
+		int64_t a = tn.rdns();
+		tn.calibrate();
+		int64_t b = tn.rdns();
+		int64_t c = tn.rdsysns();
+		int64_t d = tn.rdns();
+		return d;
 	}
 
-	void busyWait(double ms) {
+	void busyWait(double ns) {
 		const double start = getTime();
-		while (getTime() - start < ms) {
+		while (getTime() - start < ns) {
 			std::this_thread::yield();
 		}
 	}
@@ -165,7 +177,7 @@ namespace lime {
 
 				if (!inBackground) {
 					applicationEvent.type = UPDATE;
-					applicationEvent.deltaTime = (int)((currentUpdate - lastUpdate) * 1000);
+					applicationEvent.deltaTime = (int)((currentUpdate - lastUpdate) * 1000000);
 
 					lastUpdate = currentUpdate;
 

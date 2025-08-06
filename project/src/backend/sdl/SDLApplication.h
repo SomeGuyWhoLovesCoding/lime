@@ -59,8 +59,8 @@ namespace lime {
 			bool active;
 			ApplicationEvent applicationEvent;
 			ClipboardEvent clipboardEvent;
-			double currentUpdate;
-			double framePeriod;
+			int64_t currentUpdate;
+			int64_t framePeriod;
 			DropEvent dropEvent;
 			GamepadEvent gamepadEvent;
 			JoystickEvent joystickEvent;
