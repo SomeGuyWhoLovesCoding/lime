@@ -364,16 +364,6 @@ class NativeCFFI
 	@:cffi private static function lime_zlib_compress(data:Dynamic, bytes:Dynamic):Dynamic;
 
 	@:cffi private static function lime_zlib_decompress(data:Dynamic, bytes:Dynamic):Dynamic;
-
-	@:cffi private static function miniaudio_init(paths:Dynamic):Void;
-	@:cffi private static function miniaudio_create():Void;
-	@:cffi private static function miniaudio_stop():Void;
-	@:cffi private static function miniaudio_destroy():Void;
-	@:cffi private static function miniaudio_decoderVolumeKnob(index:Int, volume:Float):Void;
-	@:cffi private static function miniaudio_deactivate_decoder(index:Int):Void;
-	@:cffi private static function miniaudio_seekToPCMFrame(pos:Dynamic):Void;
-	@:cffi private static function miniaudio_setPlaybackRate(playbackRate:Float):Void;
-
 	#else
 	private static var lime_application_create = new cpp.Callable<Void->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_application_create", "o", false));
 	private static var lime_application_event_manager_register = new cpp.Callable<cpp.Object->cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime",
@@ -640,16 +630,6 @@ class NativeCFFI
 		false));
 	private static var lime_zlib_decompress = new cpp.Callable<cpp.Object->cpp.Object->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_zlib_decompress", "ooo",
 		false));
-
-	private static var miniaudio_init = new cpp.Callable<cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_init", "v", false));
-	private static var miniaudio_loadFiles = new cpp.Callable<cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_loadFiles", "ov", false));
-	private static var miniaudio_create = new cpp.Callable<cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_create", "v", false));
-	private static var miniaudio_stop = new cpp.Callable<cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_stop", "v", false));
-	private static var miniaudio_destroy = new cpp.Callable<cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_destroy", "v", false));
-	private static var miniaudio_decoderVolumeKnob = new cpp.Callable<Int->Float->cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_decoderVolumeKnob", "idv", false));
-	private static var miniaudio_deactivate_decoder = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_deactivate_decoder", "iv", false));
-	private static var miniaudio_seekToPCMFrame = new cpp.Callable<cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_seekToPCMFrame", "ov", false));
-	private static var miniaudio_setPlaybackRate = new cpp.Callable<Float->cpp.Void>(cpp.Prime._loadPrime("lime", "miniaudio_setPlaybackRate", "dv", false));
 	#end
 	#end
 	#if (neko || cppia)
