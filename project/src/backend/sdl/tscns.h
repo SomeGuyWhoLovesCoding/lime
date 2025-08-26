@@ -144,7 +144,7 @@ public:
     param_seq_.store(++seq, std::memory_order_release);
   }
 
-  alignas(64) std::atomic<uint32_t> param_seq_;
+  alignas(64) std::atomic<uint32_t> param_seq_{0};
   double ns_per_tsc_;
   int64_t base_tsc_;
   int64_t base_ns_;
