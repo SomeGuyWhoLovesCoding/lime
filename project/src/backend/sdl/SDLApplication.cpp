@@ -34,7 +34,7 @@ namespace lime {
 	bool inBackground = false;
 
 	SDLApplication::SDLApplication () {
-		tn.init();
+		tn.init(100000000);
 		cout << std::setprecision(15) << "init tsc_ghz: " << tn.getTscGhz() << endl;
 
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
@@ -126,10 +126,7 @@ namespace lime {
 	}
 
 	int64_t getTime() {
-		int64_t a = tn.rdns();
-		tn.calibrate();
-		int64_t b = tn.rdns();
-		return b;
+		return tn.rdns();
 	}
 
 	void busyWait(int64_t ns) {
@@ -895,6 +892,7 @@ namespace lime {
 
 
 	bool SDLApplication::Update () {
+		tn.calibrate();
 		currentUpdate = getTime();
 
 		SDL_Event event;

@@ -152,21 +152,3 @@ public:
   int64_t base_ns_err_;
   int64_t next_calibrate_tsc_;
 };
-
-/**
- * This is jobf's error when he tries to compile this file
-Error: In file included from ./src/backend/sdl/SDLApplication.cpp:11:
-./src/backend/sdl/tscns.h:147:50: error: use of deleted function ‘std::atomic<unsigned int>::atomic(const std::atomic<unsigned int>&)’
-  147 |   alignas(64) std::atomic<uint32_t> param_seq_ = 0;
-      |                                                  ^
-In file included from ./src/backend/sdl/tscns.h:29:
-/usr/include/c++/15.1.1/atomic:862:7: note: declared here
-  862 |       atomic(const atomic&) = delete;
-      |       ^~~~~~
-./src/backend/sdl/tscns.h:147:50: note: use ‘-fdiagnostics-all-candidates’ to display considered candidates
-  147 |   alignas(64) std::atomic<uint32_t> param_seq_ = 0;
-      |                                                  ^
-/usr/include/c++/15.1.1/atomic:866:17: note:   after user-defined conversion: ‘constexpr std::atomic<unsigned int>::atomic(__integral_type)’
-  866 |       constexpr atomic(__integral_type __i) noexcept : __base_type(__i) { }
-      |                 ^~~~~~
-**/
