@@ -8,7 +8,6 @@
 #include <thread>
 #include <string>
 #include <stdio.h>
-#include "tscns.h"
 
 using namespace std;
 
@@ -34,9 +33,6 @@ namespace lime {
 	bool inBackground = false;
 
 	SDLApplication::SDLApplication () {
-		tn.init(100000000);
-		cout << std::setprecision(15) << "init tsc_ghz: " << tn.getTscGhz() << endl;
-
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
 		initFlags |= SDL_INIT_AUDIO;
@@ -126,7 +122,9 @@ namespace lime {
 	}
 
 	int64_t getTime() {
-		return tn.rdns();
+		return std::chrono::duration_cast<std::chrono::microseconds>(
+			now.time_since_epoch()
+			).count();
 	}
 
 	void busyWait(int64_t ns) {
@@ -138,7 +136,7 @@ namespace lime {
 
 	void coolSleep(int64_t sleepFor) {
 		int64_t pTime = getTime();
-		int64_t threshold = sleepFor - (int64_t)(976562.5 * 2.2);
+		int64_t threshold = sleepFor - (int64_t)(976.5625 * 2.2);
 		int64_t dt = 0.0;
 
 		int64_t start = getTime();
@@ -867,7 +865,7 @@ namespace lime {
 
 		if (frameRate > 0) {
 
-			framePeriod = 1000000000.0 / frameRate;
+			framePeriod = 1000000.0 / frameRate;
 
 		} else {
 
@@ -892,7 +890,6 @@ namespace lime {
 
 
 	bool SDLApplication::Update () {
-		tn.calibrate();
 		currentUpdate = getTime();
 
 		SDL_Event event;
