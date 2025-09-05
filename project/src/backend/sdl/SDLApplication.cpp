@@ -121,7 +121,7 @@ namespace lime {
 
 	int64_t getTime() {
 		return std::chrono::duration_cast<std::chrono::microseconds>(
-			now.time_since_epoch()
+			std::chrono::high_resolution_clock::now().time_since_epoch()
 			).count();
 	}
 
