@@ -11,8 +11,6 @@
 
 using namespace std;
 
-TSCNS tn;
-
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
 #endif
