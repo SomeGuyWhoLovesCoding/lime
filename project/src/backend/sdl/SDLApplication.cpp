@@ -868,12 +868,10 @@ namespace lime {
 
 	static int prevTime = 0;
 
-	// --- Update loop with fixed-step updates & render ---
 	static int updateAccumulator = 0;
 	static int renderAccumulator = 0;
 
 	bool SDLApplication::Update() {
-		// Handle events first
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			HandleEvent(&event);
@@ -885,13 +883,11 @@ namespace lime {
 		int deltaTime = currentTime - prevUpdateTime;
 		prevUpdateTime = currentTime;
 
-		// Cap deltaTime to prevent spiral of death (max 4 update steps = ~33ms)
 		const int MAX_DELTA = UPDATE_PERIOD * 4;
 		if (deltaTime > MAX_DELTA) {
 			deltaTime = MAX_DELTA;
 		}
 		
-		// Add time to both accumulators
 		updateAccumulator += deltaTime;
 		renderAccumulator += deltaTime;
 
@@ -909,7 +905,6 @@ namespace lime {
 			updateCount++;
 		}
 		
-		// If we're still behind after max updates, partially reset accumulator
 		if (updateAccumulator > UPDATE_PERIOD * 2) {
 			updateAccumulator = UPDATE_PERIOD;
 		}
@@ -924,14 +919,12 @@ namespace lime {
 			if (renderAccumulator < 0) renderAccumulator = 0;
 		}
 
-		// Sleep based on shortest period (UPDATE_PERIOD) to maintain responsiveness
 		int frameEnd = getTime();
 		int frameTime = frameEnd - currentTime;
 		int sleepTime = UPDATE_PERIOD - frameTime;
 		
-		// Sleep if we have meaningful time left (> 500μs)
 		if (sleepTime > 500) {
-			coolSleep(sleepTime);
+			sleep(sleepTime);
 		} else if (sleepTime > 0) {}
 
 		return active;
