@@ -30,6 +30,16 @@ namespace lime {
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
 
+	// --- timing constants for decoupled loop ---
+	static int64_t UPDATE_PERIOD = (int64_t)(1000000.0 / 120); // fixed update @ 240Hz
+	static int64_t RENDER_PERIOD = (int64_t)(1000000.0 / 60);  // render @ 60Hz
+
+	// --- storage for previous/current state timestamps ---
+	static int64_t prevUpdateTime = 0;
+	static int64_t nextUpdateTime = 0;
+	static int64_t nextRenderTime = 0;
+	static int64_t curUpdateTime = 0;
+
 	SDLApplication::SDLApplication () {
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
@@ -45,12 +55,6 @@ namespace lime {
 		SDL_LogSetPriority (SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_WARN);
 
 		currentApplication = this;
-
-		framePeriod = 0.0;
-
-		currentUpdate = 0;
-		lastUpdate = 0;
-		nextUpdate = 0;
 
 		ApplicationEvent applicationEvent;
 		ClipboardEvent clipboardEvent;
@@ -133,24 +137,19 @@ namespace lime {
 	}
 
 	void coolSleep(int64_t sleepFor) {
-		int64_t pTime = getTime();
-		int64_t threshold = sleepFor - (int64_t)(976.5625 * 2.2);
-		int64_t dt = 0.0;
+		if (sleepFor <= 0) return;
 
 		int64_t start = getTime();
+		int64_t threshold = sleepFor - 2000; // 2ms buffer for SDL_Delay overhead
 
-		while ((dt = getTime() - pTime) < threshold)
-		{
+		// Coarse sleep with SDL_Delay
+		while (getTime() - start < threshold) {
 			SDL_Delay(1);
 		}
 
-		int64_t end = getTime();
-
-		int64_t remainder = (start - end) - dt;
-
-		if (remainder > 0)
-		{
-			busyWait(remainder);
+		// Fine-tune with busy wait
+		while (getTime() - start < sleepFor) {
+			std::this_thread::yield();
 		}
 	}
 
@@ -164,30 +163,6 @@ namespace lime {
 		#endif
 
 		switch (event->type) {
-
-			case SDL_USEREVENT:
-
-				if (!inBackground) {
-					applicationEvent.type = UPDATE;
-					applicationEvent.deltaTime = currentUpdate - lastUpdate;
-
-					lastUpdate = currentUpdate;
-
-					int64_t start = getTime();
-
-					ApplicationEvent::Dispatch (&applicationEvent);
-					RenderEvent::Dispatch (&renderEvent);
-
-					int64_t end = getTime();
-					int64_t error = end - start;
-
-					int64_t sleepFor = (int64_t)framePeriod - error;
-					if (sleepFor > 0.0) {
-						coolSleep(sleepFor);
-					}
-				}
-
-				break;
 
 			case SDL_APP_WILLENTERBACKGROUND:
 
@@ -368,7 +343,12 @@ namespace lime {
 
 	void SDLApplication::Init () {
 		active = true;
-		lastUpdate = getTime();
+		int64_t now = getTime();
+		lastUpdate = now;
+		prevUpdateTime = now;
+		curUpdateTime = now;
+		nextUpdateTime = now + UPDATE_PERIOD;
+		nextRenderTime = now + RENDER_PERIOD;
 	}
 
 
@@ -863,44 +843,80 @@ namespace lime {
 
 		if (frameRate > 0) {
 
-			framePeriod = 1000000.0 / frameRate;
+			UPDATE_PERIOD = 1000000.0 / frameRate;
 
 		} else {
 
-			framePeriod = 0.0;
+			UPDATE_PERIOD = 1000000.0 / 120;
+			RENDER_PERIOD = 1000000.0 / 60;
 
 		}
 
 	}
 
-	void PushUpdate(void) {
-		SDL_Event event;
-		SDL_UserEvent userevent;
-		userevent.type = SDL_USEREVENT;
-		userevent.code = 0;
-		userevent.data1 = NULL;
-		userevent.data2 = NULL;
-		event.type = SDL_USEREVENT;
-		event.user = userevent;
 
-		SDL_PushEvent (&event);
+	void SDLApplication::SetRenderFrameRate (double renderFrameRate) {
+
+		if (renderFrameRate > 60) {
+
+			RENDER_PERIOD = 1000000.0 / renderFrameRate;
+
+		} else {
+
+			RENDER_PERIOD = 1000000.0 / 60;
+
+		}
+
 	}
 
+	// --- Update loop with fixed-step updates & render ---
+	int64_t renderTimer = 0;
+	int64_t updateAccumulator = 0;
 
-	bool SDLApplication::Update () {
-		currentUpdate = getTime();
-
+	bool SDLApplication::Update() {
 		SDL_Event event;
-		while (SDL_PollEvent (&event)) {
-				HandleEvent (&event);
-				event.type = -1;
-				if (!active)
-					return active;
+		while (SDL_PollEvent(&event)) {
+			HandleEvent(&event);
+			if (!active) return active;
 		}
-		if (currentUpdate >= nextUpdate) {
-			PushUpdate();
-			nextUpdate = currentUpdate + framePeriod;
+
+		int64_t currentTime = getTime();
+		int64_t deltaTime = currentTime - prevUpdateTime;
+
+		// Cap deltaTime to prevent spiral of death
+		if (deltaTime > UPDATE_PERIOD * 2) deltaTime = UPDATE_PERIOD * 2; // Max UPDATE_PERIOD * 2us
+
+		prevUpdateTime = currentTime;
+
+		// Add to accumulators
+		renderTimer += deltaTime;
+		updateAccumulator += deltaTime;
+
+		// Fixed-step updates (but limit how many per frame)
+		// Replace the while loop with:
+		if (updateAccumulator >= UPDATE_PERIOD) {
+			applicationEvent.type = UPDATE;
+			applicationEvent.deltaTime = UPDATE_PERIOD;
+			ApplicationEvent::Dispatch(&applicationEvent);
+			updateAccumulator -= UPDATE_PERIOD;
+			// Only do ONE update per frame, spread catch-up over time
 		}
+
+		// Render timing
+		if (renderTimer >= RENDER_PERIOD) {
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+			renderTimer -= RENDER_PERIOD;
+		}
+
+		// Sleep logic
+		int64_t end = getTime();
+		int64_t error = end - currentTime;
+		int64_t sleepFor = UPDATE_PERIOD - error;
+		if (sleepFor > 0) {
+			coolSleep(sleepFor);
+		}
+
 		return active;
 	}
 
