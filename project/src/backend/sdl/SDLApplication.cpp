@@ -36,8 +36,7 @@ namespace lime {
 
 	// --- storage for previous/current state timestamps ---
 	static int prevUpdateTime = 0;
-	static int nextUpdateTime = 0;
-	static int nextRenderTime = 0;
+	static int prevRenderTime = 0;
 	static int curUpdateTime = 0;
 
 	SDLApplication::SDLApplication () {
@@ -347,8 +346,6 @@ namespace lime {
 		lastUpdate = now;
 		prevUpdateTime = now;
 		curUpdateTime = now;
-		nextUpdateTime = now + UPDATE_PERIOD;
-		nextRenderTime = now + RENDER_PERIOD;
 	}
 
 
@@ -869,11 +866,14 @@ namespace lime {
 
 	}
 
+	static int prevTime = 0;
+
 	// --- Update loop with fixed-step updates & render ---
-	int renderTimer = 0;
-	int updateAccumulator = 0;
+	static int updateAccumulator = 0;
+	static int renderAccumulator = 0;
 
 	bool SDLApplication::Update() {
+		// Handle events first
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			HandleEvent(&event);
@@ -881,41 +881,58 @@ namespace lime {
 		}
 
 		int currentTime = getTime();
+		
 		int deltaTime = currentTime - prevUpdateTime;
-
-		// Cap deltaTime to prevent spiral of death
-		if (deltaTime > UPDATE_PERIOD * 2) deltaTime = UPDATE_PERIOD * 2; // Max UPDATE_PERIOD * 2us
-
 		prevUpdateTime = currentTime;
 
-		// Add to accumulators
-		renderTimer += deltaTime;
+		// Cap deltaTime to prevent spiral of death (max 4 update steps = ~33ms)
+		const int MAX_DELTA = UPDATE_PERIOD * 4;
+		if (deltaTime > MAX_DELTA) {
+			deltaTime = MAX_DELTA;
+		}
+		
+		// Add time to both accumulators
 		updateAccumulator += deltaTime;
+		renderAccumulator += deltaTime;
 
-		// Fixed-step updates (but limit how many per frame)
-		// Replace the while loop with:
-		if (updateAccumulator >= UPDATE_PERIOD) {
+		// Fixed-step updates at 120Hz
+		// With 120Hz updates and typical frame times, we usually do 1-2 updates per frame
+		int updateCount = 0;
+		const int MAX_UPDATES_PER_FRAME = 4; // Allow some catch-up
+		
+		while (updateAccumulator >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
+			
 			updateAccumulator -= UPDATE_PERIOD;
-			// Only do ONE update per frame, spread catch-up over time
+			updateCount++;
+		}
+		
+		// If we're still behind after max updates, partially reset accumulator
+		if (updateAccumulator > UPDATE_PERIOD * 2) {
+			updateAccumulator = UPDATE_PERIOD;
 		}
 
-		// Render timing
-		if (renderTimer >= RENDER_PERIOD) {
+		// Render at 60Hz - should trigger every other update cycle on average
+		if (renderAccumulator >= RENDER_PERIOD) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-			renderTimer -= RENDER_PERIOD;
+			renderAccumulator -= RENDER_PERIOD;
+			
+			// Prevent render accumulator drift
+			if (renderAccumulator < 0) renderAccumulator = 0;
 		}
 
-		// Sleep logic
-		int end = getTime();
-		int error = end - currentTime;
-		int sleepFor = UPDATE_PERIOD - error;
-		if (sleepFor > 0) {
-			coolSleep(sleepFor);
-		}
+		// Sleep based on shortest period (UPDATE_PERIOD) to maintain responsiveness
+		int frameEnd = getTime();
+		int frameTime = frameEnd - currentTime;
+		int sleepTime = UPDATE_PERIOD - frameTime;
+		
+		// Sleep if we have meaningful time left (> 500μs)
+		if (sleepTime > 500) {
+			coolSleep(sleepTime);
+		} else if (sleepTime > 0) {}
 
 		return active;
 	}
