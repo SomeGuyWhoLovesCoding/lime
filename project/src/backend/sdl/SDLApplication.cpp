@@ -866,8 +866,6 @@ namespace lime {
 
 	}
 
-	static int prevTime = 0;
-
 	// --- Update loop with fixed-step updates & render ---
 	static int updateAccumulator = 0;
 	static int renderAccumulator = 0;
