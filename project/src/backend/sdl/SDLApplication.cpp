@@ -867,8 +867,8 @@ namespace lime {
 	}
 
 	// --- Update loop with fixed-step updates & render ---
-	static int updateAccumulator = 0;
-	static int renderAccumulator = 0;
+	static int lastUpdateTime = 0;
+	static int lastRenderTime = 0;
 
 	bool SDLApplication::Update() {
 		// Handle events first
@@ -880,57 +880,54 @@ namespace lime {
 
 		int currentTime = getTime();
 		
-		int deltaTime = currentTime - prevUpdateTime;
-		prevUpdateTime = currentTime;
-
-		// Cap deltaTime to prevent spiral of death (max 4 update steps = ~33ms)
-		const int MAX_DELTA = UPDATE_PERIOD * 4;
-		if (deltaTime > MAX_DELTA) {
-			deltaTime = MAX_DELTA;
+		// Initialize timestamps on first run
+		if (lastUpdateTime == 0) {
+			lastUpdateTime = currentTime;
+			lastRenderTime = currentTime;
 		}
-		
-		// Add time to both accumulators
-		updateAccumulator += deltaTime;
-		renderAccumulator += deltaTime;
 
 		// Fixed-step updates at 120Hz
-		// With 120Hz updates and typical frame times, we usually do 1-2 updates per frame
 		int updateCount = 0;
-		const int MAX_UPDATES_PER_FRAME = 4; // Allow some catch-up
+		const int MAX_UPDATES_PER_FRAME = 4;
 		
-		while (updateAccumulator >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
+		while (currentTime - lastUpdateTime >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 			
-			updateAccumulator -= UPDATE_PERIOD;
+			lastUpdateTime += UPDATE_PERIOD;
 			updateCount++;
 		}
 		
-		// If we're still behind after max updates, partially reset accumulator
-		if (updateAccumulator > UPDATE_PERIOD * 2) {
-			updateAccumulator = UPDATE_PERIOD;
+		// If we're too far behind, reset to avoid permanent lag
+		if (currentTime - lastUpdateTime > UPDATE_PERIOD * 4) {
+			lastUpdateTime = currentTime - UPDATE_PERIOD;
 		}
 
-		// Render at 60Hz - should trigger every other update cycle on average
-		if (renderAccumulator >= RENDER_PERIOD) {
+		// Render at 60Hz - only when enough time has passed
+		if (currentTime - lastRenderTime >= RENDER_PERIOD) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-			renderAccumulator -= RENDER_PERIOD;
+			lastRenderTime += RENDER_PERIOD;
 			
-			// Prevent render accumulator drift
-			if (renderAccumulator < 0) renderAccumulator = 0;
+			// Prevent render timestamp from drifting too far behind
+			if (currentTime - lastRenderTime > RENDER_PERIOD * 2) {
+				lastRenderTime = currentTime - RENDER_PERIOD;
+			}
 		}
 
-		// Sleep based on shortest period (UPDATE_PERIOD) to maintain responsiveness
+		// Sleep based on when next event is due
+		int nextUpdateTime = lastUpdateTime + UPDATE_PERIOD;
+		int nextRenderTime = lastRenderTime + RENDER_PERIOD;
+		int nextEventTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
+		
 		int frameEnd = getTime();
-		int frameTime = frameEnd - currentTime;
-		int sleepTime = UPDATE_PERIOD - frameTime;
+		int sleepTime = nextEventTime - frameEnd;
 		
 		// Sleep if we have meaningful time left (> 500μs)
 		if (sleepTime > 500) {
-			coolSleep(sleepTime);
-		} else if (sleepTime > 0) {}
+			coolSleep(sleepTime - 200);  // Wake up slightly early to avoid oversleeping
+		}
 
 		return active;
 	}
