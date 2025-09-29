@@ -62,7 +62,7 @@ Building from Source
 
 Clone the Lime repository, as well as the submodules:
 
-    git clone --recursive https://github.com/openfl/lime
+    git clone --recursive https://github.com/SomeGuyWhoLovesCoding/lime
 
 Tell haxelib where your development copy of Lime is installed:
 
