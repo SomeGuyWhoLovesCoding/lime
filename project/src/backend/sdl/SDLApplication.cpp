@@ -34,11 +34,6 @@ namespace lime {
 	static int UPDATE_PERIOD = (int)(1000000.0 / 120); // fixed update @ 240Hz
 	static int RENDER_PERIOD = (int)(1000000.0 / 60);  // render @ 60Hz
 
-	// --- storage for previous/current state timestamps ---
-	static int prevUpdateTime = 0;
-	static int prevRenderTime = 0;
-	static int curUpdateTime = 0;
-
 	SDLApplication::SDLApplication () {
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
@@ -344,8 +339,6 @@ namespace lime {
 		active = true;
 		int now = getTime();
 		lastUpdate = now;
-		prevUpdateTime = now;
-		curUpdateTime = now;
 	}
 
 
@@ -866,12 +859,12 @@ namespace lime {
 
 	}
 
-	// --- Update loop with fixed-step updates & render ---
 	static int lastUpdateTime = 0;
 	static int lastRenderTime = 0;
+	static int frameTimeHistory[4] = {0}; // Rolling average
+	static int historyIndex = 0;
 
 	bool SDLApplication::Update() {
-		// Handle events first
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			HandleEvent(&event);
@@ -880,16 +873,20 @@ namespace lime {
 
 		int currentTime = getTime();
 		
-		// Initialize timestamps on first run
 		if (lastUpdateTime == 0) {
 			lastUpdateTime = currentTime;
 			lastRenderTime = currentTime;
 		}
 
-		// Fixed-step updates at 120Hz
+		// Track frame time for smoothing
+		int frameTime = currentTime - lastUpdateTime;
+		frameTimeHistory[historyIndex] = frameTime;
+		historyIndex = (historyIndex + 1) % 4;
+
+		// 120Hz updates
 		int updateCount = 0;
 		const int MAX_UPDATES_PER_FRAME = 4;
-		
+
 		while (currentTime - lastUpdateTime >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
@@ -898,36 +895,31 @@ namespace lime {
 			lastUpdateTime += UPDATE_PERIOD;
 			updateCount++;
 		}
-		
-		// If we're too far behind, reset to avoid permanent lag
-		if (currentTime - lastUpdateTime > UPDATE_PERIOD * 4) {
+
+		// More aggressive catch-up reset during heavy load
+		if (currentTime - lastUpdateTime > UPDATE_PERIOD * 3) {
 			lastUpdateTime = currentTime - UPDATE_PERIOD;
 		}
 
-		// Render at 60Hz - only when enough time has passed
+		// 60Hz render
 		if (currentTime - lastRenderTime >= RENDER_PERIOD) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 			lastRenderTime += RENDER_PERIOD;
-			
-			// Prevent render timestamp from drifting too far behind
+
 			if (currentTime - lastRenderTime > RENDER_PERIOD * 2) {
 				lastRenderTime = currentTime - RENDER_PERIOD;
 			}
 		}
 
-		// Sleep based on when next event is due
 		int nextUpdateTime = lastUpdateTime + UPDATE_PERIOD;
 		int nextRenderTime = lastRenderTime + RENDER_PERIOD;
 		int nextEventTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
-		
+
 		int frameEnd = getTime();
 		int sleepTime = nextEventTime - frameEnd;
-		
-		// Sleep if we have meaningful time left (> 500μs)
-		if (sleepTime > 500) {
-			coolSleep(sleepTime - 200);  // Wake up slightly early to avoid oversleeping
-		}
+
+		coolSleep(sleepTime);
 
 		return active;
 	}
