@@ -861,83 +861,76 @@ namespace lime {
 
 	static int lastUpdateTime = 0;
 	static int lastRenderTime = 0;
-	static int frameTimeHistory[4] = {0};
-	static int historyIndex = 0;
 	static int prevFrameTime = 0;
 
 	bool SDLApplication::Update() {
-static int lastUpdateTime = 0;
-static int lastRenderTime = 0;
-static int prevFrameTime = 0;
+		SDL_Event event;
+		while (SDL_PollEvent(&event)) {
+			HandleEvent(&event);
+			if (!active) return active;
+		}
 
-bool SDLApplication::Update() {
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-        HandleEvent(&event);
-        if (!active) return active;
-    }
+		int currentTime = getTime();
+		
+		if (lastUpdateTime == 0) {
+			lastUpdateTime = currentTime;
+			lastRenderTime = currentTime;
+			prevFrameTime = currentTime;
+		}
 
-    int currentTime = getTime();
-    
-    if (lastUpdateTime == 0) {
-        lastUpdateTime = currentTime;
-        lastRenderTime = currentTime;
-        prevFrameTime = currentTime;
-    }
+		// Detect long pauses (Alt-Tab, debugger breakpoint, sleep/resume, focus loss)
+		int deltaTime = currentTime - prevFrameTime;
+		if (deltaTime > 100000) {  // If paused for >100ms
+			// Reset all timing to avoid catch-up spiral
+			lastUpdateTime = currentTime;
+			lastRenderTime = currentTime;
+			prevFrameTime = currentTime;
+		}
 
-    // Detect long pauses (Alt-Tab, debugger breakpoint, sleep/resume, focus loss)
-    int deltaTime = currentTime - prevFrameTime;
-    if (deltaTime > 100000) {  // If paused for >100ms
-        // Reset all timing to avoid catch-up spiral
-        lastUpdateTime = currentTime;
-        lastRenderTime = currentTime;
-        prevFrameTime = currentTime;
-    }
+		prevFrameTime = currentTime;
 
-    prevFrameTime = currentTime;
+		// 120Hz updates
+		int updateCount = 0;
+		const int MAX_UPDATES_PER_FRAME = 4;
 
-    // 120Hz updates
-    int updateCount = 0;
-    const int MAX_UPDATES_PER_FRAME = 4;
+		while (currentTime - lastUpdateTime >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
+			applicationEvent.type = UPDATE;
+			applicationEvent.deltaTime = UPDATE_PERIOD;
+			ApplicationEvent::Dispatch(&applicationEvent);
+			
+			lastUpdateTime += UPDATE_PERIOD;
+			updateCount++;
+		}
 
-    while (currentTime - lastUpdateTime >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
-        applicationEvent.type = UPDATE;
-        applicationEvent.deltaTime = UPDATE_PERIOD;
-        ApplicationEvent::Dispatch(&applicationEvent);
-        
-        lastUpdateTime += UPDATE_PERIOD;
-        updateCount++;
-    }
+		// Reset if too far behind
+		if (currentTime - lastUpdateTime > UPDATE_PERIOD * 4) {
+			lastUpdateTime = currentTime - UPDATE_PERIOD;
+		}
 
-    // Reset if too far behind
-    if (currentTime - lastUpdateTime > UPDATE_PERIOD * 4) {
-        lastUpdateTime = currentTime - UPDATE_PERIOD;
-    }
+		// 60Hz render
+		if (currentTime - lastRenderTime >= RENDER_PERIOD) {
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+			lastRenderTime += RENDER_PERIOD;
 
-    // 60Hz render
-    if (currentTime - lastRenderTime >= RENDER_PERIOD) {
-        renderEvent.type = RENDER;
-        RenderEvent::Dispatch(&renderEvent);
-        lastRenderTime += RENDER_PERIOD;
+			// Prevent drift
+			if (currentTime - lastRenderTime > RENDER_PERIOD * 2) {
+				lastRenderTime = currentTime - RENDER_PERIOD;
+			}
+		}
 
-        // Prevent drift
-        if (currentTime - lastRenderTime > RENDER_PERIOD * 2) {
-            lastRenderTime = currentTime - RENDER_PERIOD;
-        }
-    }
+		// Sleep until next event
+		int nextUpdateTime = lastUpdateTime + UPDATE_PERIOD;
+		int nextRenderTime = lastRenderTime + RENDER_PERIOD;
+		int nextEventTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
 
-    // Sleep until next event
-    int nextUpdateTime = lastUpdateTime + UPDATE_PERIOD;
-    int nextRenderTime = lastRenderTime + RENDER_PERIOD;
-    int nextEventTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
+		int frameEnd = getTime();
+		int sleepTime = nextEventTime - frameEnd;
 
-    int frameEnd = getTime();
-    int sleepTime = nextEventTime - frameEnd;
+		coolSleep(sleepTime);
 
-    coolSleep(sleepTime);
-
-    return active;
-}
+		return active;
+	}
 
 
 	void SDLApplication::UpdateFrame () {
