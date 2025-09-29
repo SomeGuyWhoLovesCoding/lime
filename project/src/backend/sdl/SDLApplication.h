@@ -57,23 +57,21 @@ namespace lime {
 
 			static SDLApplication* currentApplication;
 
-			bool active;
 			ApplicationEvent applicationEvent;
 			ClipboardEvent clipboardEvent;
 			DropEvent dropEvent;
 			GamepadEvent gamepadEvent;
 			JoystickEvent joystickEvent;
 			KeyEvent keyEvent;
-			double lastUpdate;
-
 			MouseEvent mouseEvent;
-			double nextUpdate;
-
 			RenderEvent renderEvent;
 			SensorEvent sensorEvent;
 			TextEvent textEvent;
 			TouchEvent touchEvent;
 			WindowEvent windowEvent;
+
+			double lastUpdate;
+			bool active;
 
 	};
 

@@ -8,7 +8,6 @@
 #include <thread>
 #include <string>
 #include <stdio.h>
-#include <atomic>
 
 using namespace std;
 
@@ -860,11 +859,11 @@ namespace lime {
 
 	}
 
-	static std::atomic<int> lastUpdateTime{0};
-	static std::atomic<int> lastRenderTime{0};
+	static int lastUpdateTime = 0;
+	static int lastRenderTime = 0;
 	static int frameTimeHistory[4] = {0};
 	static int historyIndex = 0;
-	static std::atomic<int> prevFrameTime{0};
+	static int prevFrameTime = 0;
 
 	bool SDLApplication::Update() {
 		SDL_Event event;
@@ -875,30 +874,19 @@ namespace lime {
 
 		int currentTime = getTime();
 		
-		// Load atomic values once per frame for consistency
-		int lastUpdate = lastUpdateTime.load(std::memory_order_relaxed);
-		int lastRender = lastRenderTime.load(std::memory_order_relaxed);
-		int prevFrame = prevFrameTime.load(std::memory_order_relaxed);
-		
-		if (lastUpdate == 0) {
-			lastUpdateTime.store(currentTime, std::memory_order_relaxed);
-			lastRenderTime.store(currentTime, std::memory_order_relaxed);
-			prevFrameTime.store(currentTime, std::memory_order_relaxed);
-			lastUpdate = currentTime;
-			lastRender = currentTime;
-			prevFrame = currentTime;
+		if (lastUpdateTime == 0) {
+			lastUpdateTime = currentTime;
+			lastRenderTime = currentTime;
+			prevFrameTime = currentTime;
 		}
 
 		// Detect long pauses (Alt-Tab, debugger breakpoint, sleep/resume, focus loss)
-		int deltaTime = currentTime - prevFrame;
+		int deltaTime = currentTime - prevFrameTime;
 		if (deltaTime > 100000) {  // If paused for >100ms
 			// Reset all timing to avoid catch-up spiral
-			lastUpdateTime.store(currentTime, std::memory_order_relaxed);
-			lastRenderTime.store(currentTime, std::memory_order_relaxed);
-			prevFrameTime.store(currentTime, std::memory_order_relaxed);
-			lastUpdate = currentTime;
-			lastRender = currentTime;
-			prevFrame = currentTime;
+			lastUpdateTime = currentTime;
+			lastRenderTime = currentTime;
+			prevFrameTime = currentTime;
 			// Clear frame history
 			for (int i = 0; i < 4; i++) {
 				frameTimeHistory[i] = 0;
@@ -907,8 +895,8 @@ namespace lime {
 		}
 
 		// Track frame time for monitoring/debugging
-		int frameTime = currentTime - prevFrame;
-		prevFrameTime.store(currentTime, std::memory_order_relaxed);
+		int frameTime = currentTime - prevFrameTime;
+		prevFrameTime = currentTime;
 		frameTimeHistory[historyIndex] = frameTime;
 		historyIndex = (historyIndex + 1) % 4;
 
@@ -916,41 +904,35 @@ namespace lime {
 		int updateCount = 0;
 		const int MAX_UPDATES_PER_FRAME = 4;
 
-		while (currentTime - lastUpdate >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
+		while (currentTime - lastUpdateTime >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 			
-			lastUpdate += UPDATE_PERIOD;
+			lastUpdateTime += UPDATE_PERIOD;
 			updateCount++;
 		}
 
 		// Reset if too far behind
-		if (currentTime - lastUpdate > UPDATE_PERIOD * 4) {
-			lastUpdate = currentTime - UPDATE_PERIOD;
+		if (currentTime - lastUpdateTime > UPDATE_PERIOD * 4) {
+			lastUpdateTime = currentTime - UPDATE_PERIOD;
 		}
-		
-		// Store updated value back
-		lastUpdateTime.store(lastUpdate, std::memory_order_relaxed);
 
 		// 60Hz render
-		if (currentTime - lastRender >= RENDER_PERIOD) {
+		if (currentTime - lastRenderTime >= RENDER_PERIOD) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-			lastRender += RENDER_PERIOD;
+			lastRenderTime += RENDER_PERIOD;
 
 			// Prevent drift
-			if (currentTime - lastRender > RENDER_PERIOD * 2) {
-				lastRender = currentTime - RENDER_PERIOD;
+			if (currentTime - lastRenderTime > RENDER_PERIOD * 2) {
+				lastRenderTime = currentTime - RENDER_PERIOD;
 			}
 		}
-		
-		// Store updated value back
-		lastRenderTime.store(lastRender, std::memory_order_relaxed);
 
 		// Sleep until next event
-		int nextUpdateTime = lastUpdate + UPDATE_PERIOD;
-		int nextRenderTime = lastRender + RENDER_PERIOD;
+		int nextUpdateTime = lastUpdateTime + UPDATE_PERIOD;
+		int nextRenderTime = lastRenderTime + RENDER_PERIOD;
 		int nextEventTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
 
 		int frameEnd = getTime();
