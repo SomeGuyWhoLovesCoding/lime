@@ -11,6 +11,7 @@ typedef WindowAttributes =
 	// @:optional public var display:Int;
 	@:optional public var element:#if (js && html5 && !doc_gen) js.html.Element #else Dynamic #end;
 	@:optional public var frameRate:Float;
+	@:optional public var renderFrameRate:Float;
 	@:optional public var fullscreen:Bool;
 	@:optional public var height:Int;
 	@:optional public var hidden:Bool;

@@ -44,6 +44,7 @@ class NativeWindow
 	private var cursor:MouseCursor;
 	private var displayMode:DisplayMode;
 	private var frameRate:Float;
+	private var renderFrameRate:Float;
 	private var mouseLock:Bool;
 	private var parent:Window;
 	private var useHardware:Bool;
@@ -175,6 +176,7 @@ class NativeWindow
 		parent.context = context;
 
 		setFrameRate(Reflect.hasField(attributes, "frameRate") ? attributes.frameRate : 60);
+		setFrameRate(Reflect.hasField(attributes, "renderFrameRate") ? attributes.renderFrameRate : 120);
 		#end
 	}
 
@@ -285,6 +287,11 @@ class NativeWindow
 	public function getFrameRate():Float
 	{
 		return frameRate;
+	}
+
+	public function getRenderFrameRate():Float
+	{
+		return renderFrameRate;
 	}
 
 	public function getMouseLock():Bool
@@ -592,8 +599,6 @@ class NativeWindow
 
 	public function setFrameRate(value:Float):Float
 	{
-		// TODO: Support multiple independent frame rates per window
-
 		if (handle != null)
 		{
 			#if (!macro && lime_cffi)
@@ -602,6 +607,18 @@ class NativeWindow
 		}
 
 		return frameRate = value;
+	}
+
+	public function setRenderFrameRate(value:Float):Float
+	{
+		if (handle != null)
+		{
+			#if (!macro && lime_cffi)
+			NativeCFFI.lime_application_set_render_frame_rate(parent.application.__backend.handle, value);
+			#end
+		}
+
+		return renderFrameRate = value;
 	}
 
 	public function setFullscreen(value:Bool):Bool

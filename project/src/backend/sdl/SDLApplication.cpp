@@ -837,7 +837,7 @@ namespace lime {
 
 		} else {
 
-			UPDATE_PERIOD = 1000000.0 / 120;
+			UPDATE_PERIOD = 0;
 			RENDER_PERIOD = 1000000.0 / 60;
 
 		}
@@ -850,6 +850,10 @@ namespace lime {
 		if (renderFrameRate > 60) {
 
 			RENDER_PERIOD = 1000000.0 / renderFrameRate;
+
+		} else if (renderFrameRate == 0) {
+
+			RENDER_PERIOD = 0.0;
 
 		} else {
 

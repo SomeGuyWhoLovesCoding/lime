@@ -45,6 +45,7 @@ class Window
 	 * perform more quickly on displays with a higher refresh rate
 	**/
 	public var frameRate(get, set):Float;
+	public var renderFrameRate(get, set):Float;
 
 	public var fullscreen(get, set):Bool;
 	public var height(get, set):Int;
@@ -521,6 +522,16 @@ class Window
 	@:noCompletion private inline function set_frameRate(value:Float):Float
 	{
 		return __backend.setFrameRate(value);
+	}
+
+	@:noCompletion private inline function get_renderFrameRate():Float
+	{
+		return __backend.getRenderFrameRate();
+	}
+
+	@:noCompletion private inline function set_renderFrameRate(value:Float):Float
+	{
+		return __backend.setRenderFrameRate(value);
 	}
 
 	@:noCompletion private inline function get_fullscreen():Bool
