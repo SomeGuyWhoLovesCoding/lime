@@ -89,21 +89,21 @@ namespace lime {
 
 			#if defined (HX_WINDOWS) && defined (NATIVE_TOOLKIT_SDL_ANGLE)
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
+			//SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+			//SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
 			SDL_SetHint (SDL_HINT_VIDEO_WIN_D3DCOMPILER, "d3dcompiler_47.dll");
 			#endif
 
 			#if defined (RASPBERRYPI)
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
+			//SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+			//SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
 			SDL_SetHint (SDL_HINT_RENDER_DRIVER, "opengles2");
 			#endif
 
 			#if defined (IPHONE) || defined (APPLETV)
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+			//SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 			#endif
 
 			if (flags & WINDOW_FLAG_DEPTH_BUFFER) {
@@ -153,7 +153,7 @@ namespace lime {
 		if (sdlWindow && !SDL_GL_CreateContext (sdlWindow)) {
 
 			SDL_DestroyWindow (sdlWindow);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+			//SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
 
 			sdlWindow = SDL_CreateWindow (title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width, height, sdlWindowFlags);
 
@@ -199,21 +199,9 @@ namespace lime {
 
 			sdlRendererFlags |= SDL_RENDERER_ACCELERATED;
 
-			// if (window->flags & WINDOW_FLAG_VSYNC) {
-
 			#ifdef EMSCRIPTEN
 			sdlRendererFlags |= SDL_RENDERER_PRESENTVSYNC;
 			#endif
-
-			// }
-
-			// sdlRenderer = SDL_CreateRenderer (sdlWindow, -1, sdlRendererFlags);
-
-			// if (sdlRenderer) {
-
-			// 	context = SDL_GL_GetCurrentContext ();
-
-			// }
 
 			context = SDL_GL_CreateContext (sdlWindow);
 
@@ -235,6 +223,10 @@ namespace lime {
 
 				int version = 0;
 				glGetIntegerv (GL_MAJOR_VERSION, &version);
+
+				int versionm = 0;
+				glGetIntegerv (GL_MINOR_VERSION, &versionm);
+				printf("GL Version %i.%i\n", version, versionm);
 
 				if (version == 0) {
 
