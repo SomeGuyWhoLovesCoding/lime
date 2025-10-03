@@ -871,7 +871,7 @@ namespace lime {
 		}
 
 		int currentTime = getTime();
-		
+
 		if (lastUpdateTime == 0) {
 			lastUpdateTime = currentTime;
 			lastRenderTime = currentTime;
@@ -881,7 +881,6 @@ namespace lime {
 		// Detect long pauses (Alt-Tab, debugger breakpoint, sleep/resume, focus loss)
 		int deltaTime = currentTime - prevFrameTime;
 		if (deltaTime > 100000) {  // If paused for >100ms
-			// Reset all timing to avoid catch-up spiral
 			lastUpdateTime = currentTime;
 			lastRenderTime = currentTime;
 			prevFrameTime = currentTime;
@@ -889,7 +888,20 @@ namespace lime {
 
 		prevFrameTime = currentTime;
 
-		// 120Hz updates
+		// --- Render first (60Hz) ---
+		if (currentTime - lastRenderTime >= RENDER_PERIOD) {
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+
+			lastRenderTime += RENDER_PERIOD;
+
+			// Prevent drift
+			if (currentTime - lastRenderTime > RENDER_PERIOD * 2) {
+				lastRenderTime = currentTime - RENDER_PERIOD;
+			}
+		}
+
+		// --- Then handle updates (120Hz) ---
 		int updateCount = 0;
 		const int MAX_UPDATES_PER_FRAME = 4;
 
@@ -897,7 +909,7 @@ namespace lime {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
-			
+
 			lastUpdateTime += UPDATE_PERIOD;
 			updateCount++;
 		}
@@ -905,18 +917,6 @@ namespace lime {
 		// Reset if too far behind
 		if (currentTime - lastUpdateTime > UPDATE_PERIOD * 4) {
 			lastUpdateTime = currentTime - UPDATE_PERIOD;
-		}
-
-		// 60Hz render
-		if (currentTime - lastRenderTime >= RENDER_PERIOD) {
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
-			lastRenderTime += RENDER_PERIOD;
-
-			// Prevent drift
-			if (currentTime - lastRenderTime > RENDER_PERIOD * 2) {
-				lastRenderTime = currentTime - RENDER_PERIOD;
-			}
 		}
 
 		// Sleep until next event
