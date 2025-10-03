@@ -834,11 +834,12 @@ namespace lime {
 		if (frameRate > 0) {
 
 			UPDATE_PERIOD = 1000000.0 / frameRate;
+			RENDER_PERIOD = 1000000.0 / 60;
 
 		} else {
 
 			UPDATE_PERIOD = 0;
-			RENDER_PERIOD = 1000000.0 / 60;
+			RENDER_PERIOD = 0;
 
 		}
 
