@@ -6,7 +6,6 @@
 #define NEKO_COMPATIBLE
 #endif
 
-#include "Bindless.h"
 #include <system/CFFI.h>
 
 #include <app/Application.h>
@@ -3980,47 +3979,6 @@ namespace lime {
 
 	}
 
-	value opengl_bindless_texture_gettexturehandle (int texture) {
-
-		return GetTextureHandle(texture);
-
-	}
-
-
-	HL_PRIM value HL_NAME(hl_opengl_bindless_texture_gettexturehandle) (int texture) {
-
-		return GetTextureHandle(texture);
-
-	}
-
-
-	void opengl_bindless_texture_maketextureresident (value handle) {
-
-		MakeTextureResident((uint64_t)handle);
-
-	}
-
-
-	HL_PRIM void HL_NAME(hl_opengl_bindless_texture_maketextureresident) (value handle) {
-
-		MakeTextureResident((uint64_t)handle);
-
-	}
-
-
-	void opengl_bindless_texture_maketexturenonresident (value handle) {
-
-		MakeTextureNonResident((uint64_t)handle);
-
-	}
-
-
-	HL_PRIM void HL_NAME(hl_opengl_bindless_texture_maketexturenonresident) (value handle) {
-
-		MakeTextureNonResident((uint64_t)handle);
-
-	}
-
 
 	DEFINE_PRIME0 (lime_application_create);
 	DEFINE_PRIME2v (lime_application_event_manager_register);
@@ -4182,9 +4140,6 @@ namespace lime {
 	DEFINE_PRIME2v (lime_window_set_opacity);
 	DEFINE_PRIME2 (lime_zlib_compress);
 	DEFINE_PRIME2 (lime_zlib_decompress);
-	DEFINE_PRIME1 (opengl_bindless_texture_gettexturehandle);
-	DEFINE_PRIME1v (opengl_bindless_texture_maketextureresident);
-	DEFINE_PRIME1v (opengl_bindless_texture_maketexturenonresident);
 
 
 	#define _ENUM "?"
@@ -4377,9 +4332,6 @@ namespace lime {
 	DEFINE_HL_PRIM (_VOID, hl_window_set_opacity, _TCFFIPOINTER _F64);
 	DEFINE_HL_PRIM (_TBYTES, hl_zlib_compress, _TBYTES _TBYTES);
 	DEFINE_HL_PRIM (_TBYTES, hl_zlib_decompress, _TBYTES _TBYTES);
-	DEFINE_HL_PRIM (_I64, hl_opengl_bindless_texture_gettexturehandle, _I32);
-	DEFINE_HL_PRIM (_VOID, hl_opengl_bindless_texture_maketextureresident, _I64);
-	DEFINE_HL_PRIM (_VOID, hl_opengl_bindless_texture_maketexturenonresident, _I64);
 
 
 }
