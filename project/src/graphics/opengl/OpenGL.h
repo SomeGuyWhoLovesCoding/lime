@@ -47,7 +47,7 @@
 
 #elif defined (HX_MACOS)
 
-//#define LIME_GLES3_API
+#define LIME_GLES3_API
 #define NEED_EXTENSIONS
 #define DYNAMIC_OGL
 #define GL_GLEXT_PROTOTYPES
@@ -73,7 +73,7 @@
 
 #elif defined (HX_WINDOWS)
 
-//#define LIME_GLES3_API
+#define LIME_GLES3_API
 #include <windows.h>
 #ifndef NATIVE_TOOLKIT_SDL_ANGLE
 #include <gl/GL.h>
