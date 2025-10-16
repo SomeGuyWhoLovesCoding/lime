@@ -9,6 +9,21 @@
 #include <string>
 #include <stdio.h>
 
+#include <thread>
+#if defined(_MSC_VER)
+  #include <immintrin.h> // _mm_pause
+#elif defined(__GNUC__) || defined(__clang__)
+  #include <x86intrin.h> // _mm_pause
+#endif
+
+inline void cpu_relax() noexcept {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    _mm_pause(); // x86 PAUSE instruction
+#else
+    std::this_thread::yield(); // fallback
+#endif
+}
+
 using namespace std;
 
 #ifdef HX_MACOS
@@ -143,7 +158,7 @@ namespace lime {
 
 		// Fine-tune with busy wait
 		while (getTime() - start < sleepFor) {
-			std::this_thread::yield();
+    		cpu_relax();
 		}
 	}
 
