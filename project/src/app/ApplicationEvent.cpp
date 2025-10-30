@@ -8,7 +8,7 @@ namespace lime {
 	ValuePointer* ApplicationEvent::callback = 0;
 	ValuePointer* ApplicationEvent::eventObject = 0;
 
-	static int64_t id_deltaTime;
+	static int id_deltaTime;
 	static int id_type;
 	static bool init = false;
 
