@@ -132,9 +132,9 @@ namespace lime {
 
 	}
 
-	int getTime() {
+	int64_t getTime() {
 		return std::chrono::duration_cast<std::chrono::microseconds>(
-			std::chrono::high_resolution_clock::now().time_since_epoch()
+			std::chrono::steady_clock::now().time_since_epoch()
 			).count();
 	}
 
@@ -145,11 +145,29 @@ namespace lime {
 		}
 	}
 
+	int64_t lastTime = 0;
 	void coolSleep(int sleepFor) {
 		if (sleepFor <= 0) return;
 
-		int start = getTime();
-		int threshold = sleepFor - 1120; // 2ms buffer for SDL_Delay overhead
+		int64_t start = getTime();
+		int64_t buffer = 562;
+		int64_t delta = start - lastTime;
+
+		//printf("%llu\n", delta);
+
+		// This is what keeps the sleep in sync
+		// kinda similar to how dimensionscape does this with sleepAccuracy: https://github.com/DimensionscapeOrg/crossbyte/blob/main/src/crossbyte/core/CrossByte.hx
+		// but this is just better than that–
+		while (delta > UPDATE_PERIOD) {
+			buffer *= 2;
+			delta /= 2;
+		}
+
+		//printf("%llu\n", buffer);
+
+		int64_t threshold = sleepFor - buffer; // 2ms buffer for SDL_Delay overhead
+
+		lastTime = getTime();
 
 		// Coarse sleep with SDL_Delay
 		while (getTime() - start < threshold) {
