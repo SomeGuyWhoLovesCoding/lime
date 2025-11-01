@@ -26,6 +26,11 @@ inline void cpu_relax() noexcept {
 
 using namespace std;
 
+#ifdef HX_WINDOWS
+#include <windows.h>
+#include <cstdint>
+#endif
+
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
 #endif
@@ -50,6 +55,15 @@ namespace lime {
 	static int RENDER_PERIOD = (int)(1000000.0 / 60);  // render @ 60Hz
 
 	SDLApplication::SDLApplication () {
+		#ifdef HX_WINDOWS
+		// Pin thread to a single core
+		DWORD_PTR mask = 1ull << 0; // core 0
+		SetThreadAffinityMask(GetCurrentThread(), mask);
+
+		// Optional: reduce context-switch jitter
+		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+		#endif
+
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
 		initFlags |= SDL_INIT_AUDIO;
@@ -133,48 +147,75 @@ namespace lime {
 	}
 
 	int64_t getTime() {
+		#ifdef HX_WINDOWS
+		LARGE_INTEGER freq, counter;
+		QueryPerformanceFrequency(&freq);
+		QueryPerformanceCounter(&counter);
+		return (counter.QuadPart * 1'000'000) / freq.QuadPart;
+		#elif defined(__GNUC__) || defined(__clang__)
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		return ts.tv_sec * 1'000'000 + ts.tv_nsec / 1000;
+		#else
 		return std::chrono::duration_cast<std::chrono::microseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()
 			).count();
+		#endif
 	}
 
-	void busyWait(int us) {
-		const int start = getTime();
-		while (getTime() - start < us) {
-			std::this_thread::yield();
+	#if defined(__GNUC__) || defined(__clang__)
+	// add microseconds to a timespec
+	inline void timespecAddUs(struct timespec &ts, int64_t us) {
+		ts.tv_nsec += (us % 1'000'000) * 1000;
+		ts.tv_sec  += us / 1'000'000;
+		if (ts.tv_nsec >= 1'000'000'000) {
+			ts.tv_nsec -= 1'000'000'000;
+			ts.tv_sec++;
 		}
 	}
+	#endif
 
-	int64_t lastTime = 0;
-	void coolSleep(int sleepFor) {
-		if (sleepFor <= 0) return;
+	void coolSleep(int64_t sleepForUs) {
+		if (sleepForUs <= 0) return;
+
+		static HANDLE timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+		static int64_t bias = 0;       // adaptive correction
+		static int64_t smooth = 0;     // smoothed overshoot
+		const int64_t maxBias = 200;   // limit ±200 µs
+		const double smoothFactor = 0.2;
+		const int64_t spinThreshold = 150; // µs to switch to active spin
 
 		int64_t start = getTime();
-		int64_t delta = start - lastTime;
-		int64_t buffer = 1120;
+		int64_t adjustedSleep = sleepForUs - bias;
 
-		// If we lagged TOO hard, just reset and don't try to compensate
-		if (delta > UPDATE_PERIOD * 2) {  // e.g., 3 frames behind
-			lastTime = start;  // Reset timing baseline
-			buffer = 1000;     // Use conservative buffer
-		} else {
-			// Normal adaptive logic
-			while (delta > UPDATE_PERIOD) {
-				buffer += 1120;
-				delta -= 1120;
-			}
-			lastTime = start;
+		if (adjustedSleep > spinThreshold) {
+			#if HX_WINDOWS
+			// set up waitable timer for coarse sleep
+			LARGE_INTEGER due;
+			due.QuadPart = -adjustedSleep * 10; // 100ns units, negative = relative
+			SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+			WaitForSingleObject(timer, INFINITE);
+			#elif defined(__GNUC__) || defined(__clang__)
+			struct timespec now, wake;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			wake = now;
+			timespecAddUs(wake, adjustedSleep);
+			clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
+			#endif
 		}
 
-		int64_t threshold = sleepFor - buffer;
-
-		while (getTime() - start < threshold) {
-			SDL_Delay(1);
-		}
-
-		while (getTime() - start < sleepFor) {
+		// spin loop for last few hundred microseconds
+		int64_t now;
+		while ((now = getTime()) - start < sleepForUs)
 			cpu_relax();
-		}
+
+		// compute overshoot and smooth it
+		int64_t elapsed = now - start;
+		int64_t overshoot = elapsed - sleepForUs;
+		smooth = static_cast<int64_t>(smooth * (1.0 - smoothFactor) + overshoot * smoothFactor);
+		bias += smooth / 2;
+		if (bias > maxBias) bias = maxBias;
+		if (bias < -maxBias) bias = -maxBias;
 	}
 
 	void SDLApplication::HandleEvent (SDL_Event* event) {
@@ -961,6 +1002,7 @@ namespace lime {
 
 		int frameEnd = getTime();
 		int sleepTime = nextEventTime - frameEnd;
+		//printf("%d", sleepTime);
 
 		coolSleep(sleepTime);
 
