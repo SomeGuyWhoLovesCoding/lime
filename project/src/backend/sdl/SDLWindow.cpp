@@ -144,6 +144,7 @@ namespace lime {
 				SDL_GL_SetAttribute (SDL_GL_BLUE_SIZE, 5);
 
 			}
+			SDL_SetHint (SDL_HINT_RENDER_DRIVER, "opengles3");
 
 		}
 
@@ -240,6 +241,7 @@ namespace lime {
 
 					SDL_GL_DeleteContext (context);
 					context = 0;
+					
 
 				}
 
