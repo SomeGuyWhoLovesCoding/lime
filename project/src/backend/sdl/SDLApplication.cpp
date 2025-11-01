@@ -159,8 +159,8 @@ namespace lime {
 		// kinda similar to how dimensionscape does this with sleepAccuracy: https://github.com/DimensionscapeOrg/crossbyte/blob/main/src/crossbyte/core/CrossByte.hx
 		// but this is just better than that–
 		while (delta > UPDATE_PERIOD) {
-			buffer *= 2;
-			delta /= 2;
+			buffer += 562;
+			delta -= 562;
 		}
 
 		//printf("%llu\n", buffer);
