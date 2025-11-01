@@ -1,6 +1,7 @@
 package lime.graphics;
 
-#if (lime_doc_gen || (sys && lime_cffi && !doc_gen) || lime_opengl || lime_opengles)
+#if (!lime_doc_gen || lime_opengl || lime_opengles)
+#if (lime_doc_gen || (sys && lime_cffi && !doc_gen))
 import haxe.Int64;
 import haxe.io.Bytes;
 import lime._internal.backend.native.NativeOpenGLRenderContext;
@@ -4854,13 +4855,11 @@ public inline function waitSync(sync:GLSync, flags:Int, timeout:Int64):Void
 
 @:from private static function fromGL(gl:Class<GL>):OpenGLES3RenderContext
 {
-	Sys.println('H, that\'s the REAL case rogjt tjere!');
 	return cast GL.context;
 }
 
 @:from private static function fromRenderContext(context:RenderContext):OpenGLES3RenderContext
 {
-	Sys.println('H, that\'s the REAL case rogjt tjere!');
 	return context.gles3;
 }
 }
@@ -4873,32 +4872,28 @@ abstract OpenGLES3RenderContext(Dynamic) from Dynamic to Dynamic
 {
 	@:from private static function fromRenderContext(context:RenderContext):OpenGLES3RenderContext
 	{
-		Sys.println('H, that\'s the case rogjt tjere!');
 		return null;
 	}
 
 	@:from private static function fromGL(gl:Class<GL>):OpenGLES3RenderContext
 	{
-		Sys.println('H, that\'s the case rogjt tjere!');
 		return null;
 	}
 
 	@:from private static function fromOpenGLES2RenderContext(context:OpenGLES2RenderContext):OpenGLES3RenderContext
 	{
-		Sys.println('H, that\'s the case rogjt tjere!');
 		return null;
 	}
 
 	@:from private static function fromWebGLRenderContext(context:WebGLRenderContext):OpenGLES3RenderContext
 	{
-		Sys.println('H, that\'s the case rogjt tjere!');
 		return null;
 	}
 
 	@:from private static function fromWebGL2RenderContext(context:WebGL2RenderContext):OpenGLES3RenderContext
 	{
-		Sys.println('H, that\'s the case rogjt tjere!');
 		return null;
 	}
 }
+#end
 #end

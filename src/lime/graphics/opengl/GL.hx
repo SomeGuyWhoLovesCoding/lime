@@ -581,10 +581,10 @@ class GL
 	public static inline var INVALID_INDEX = 0xFFFFFFFF;
 	public static inline var TIMEOUT_IGNORED = -1;
 	public static inline var MAX_CLIENT_WAIT_TIMEOUT_WEBGL = 0x9247;
-	#if lime_opengles3
-	public static var context(default, null):OpenGLES3RenderContext;
-	#elseif lime_opengl
+	#if lime_opengl
 	public static var context(default, null):OpenGLRenderContext;
+	#elseif lime_opengles
+	public static var context(default, null):OpenGLES3RenderContext;
 	#elseif lime_webgl
 	public static var context(default, null):WebGL2RenderContext;
 	#else

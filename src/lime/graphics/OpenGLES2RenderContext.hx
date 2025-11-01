@@ -79,7 +79,8 @@ import lime.graphics.opengl.*;
 	uniform4fv, uniform4i, uniform4iv, uniformMatrix2fv, uniformMatrix3fv, uniformMatrix4fv, useProgram, validateProgram, vertexAttrib1f, vertexAttrib1fv,
 	vertexAttrib2f, vertexAttrib2fv, vertexAttrib3f, vertexAttrib3fv, vertexAttrib4f, vertexAttrib4fv, vertexAttribPointer, viewport, EXTENSIONS, type, version)
 @:transitive
-abstract OpenGLES2RenderContext(OpenGLRenderContext) from OpenGLRenderContext
+abstract OpenGLES2RenderContext(OpenGLES3RenderContext) from OpenGLES3RenderContext
+	#if (!doc_gen && lime_opengl) from OpenGLRenderContext #end
 {
 	@:from private static function fromGL(gl:Class<GL>):OpenGLES2RenderContext
 	{
