@@ -178,44 +178,20 @@ namespace lime {
 	void coolSleep(int64_t sleepForUs) {
 		if (sleepForUs <= 0) return;
 
+		#if HX_WINDOWS
 		static HANDLE timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
-		static int64_t bias = 0;       // adaptive correction
-		static int64_t smooth = 0;     // smoothed overshoot
-		const int64_t maxBias = 200;   // limit ±200 µs
-		const double smoothFactor = 0.2;
-		const int64_t spinThreshold = 150; // µs to switch to active spin
-
-		int64_t start = getTime();
-		int64_t adjustedSleep = sleepForUs - bias;
-
-		if (adjustedSleep > spinThreshold) {
-			#if HX_WINDOWS
-			// set up waitable timer for coarse sleep
-			LARGE_INTEGER due;
-			due.QuadPart = -adjustedSleep * 10; // 100ns units, negative = relative
-			SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-			WaitForSingleObject(timer, INFINITE);
-			#elif defined(__GNUC__) || defined(__clang__)
-			struct timespec now, wake;
-			clock_gettime(CLOCK_MONOTONIC, &now);
-			wake = now;
-			timespecAddUs(wake, adjustedSleep);
-			clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
-			#endif
-		}
-
-		// spin loop for last few hundred microseconds
-		int64_t now;
-		while ((now = getTime()) - start < sleepForUs)
-			cpu_relax();
-
-		// compute overshoot and smooth it
-		int64_t elapsed = now - start;
-		int64_t overshoot = elapsed - sleepForUs;
-		smooth = static_cast<int64_t>(smooth * (1.0 - smoothFactor) + overshoot * smoothFactor);
-		bias += smooth / 2;
-		if (bias > maxBias) bias = maxBias;
-		if (bias < -maxBias) bias = -maxBias;
+		// set up waitable timer for coarse sleep
+		LARGE_INTEGER due;
+		due.QuadPart = -sleepForUs * 10; // 100ns units, negative = relative
+		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+		WaitForSingleObject(timer, INFINITE);
+		#elif defined(__GNUC__) || defined(__clang__)
+		struct timespec now, wake;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		wake = now;
+		timespecAddUs(wake, sleepForUs);
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
+		#endif
 	}
 
 	void SDLApplication::HandleEvent (SDL_Event* event) {
