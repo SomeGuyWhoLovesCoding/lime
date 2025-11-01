@@ -150,33 +150,30 @@ namespace lime {
 		if (sleepFor <= 0) return;
 
 		int64_t start = getTime();
-		int64_t buffer = 562;
 		int64_t delta = start - lastTime;
+		int64_t buffer = 1120;
 
-		//printf("%llu\n", delta);
-
-		// This is what keeps the sleep in sync
-		// kinda similar to how dimensionscape does this with sleepAccuracy: https://github.com/DimensionscapeOrg/crossbyte/blob/main/src/crossbyte/core/CrossByte.hx
-		// but this is just better than that–
-		while (delta > UPDATE_PERIOD) {
-			buffer += 562;
-			delta -= 562;
+		// If we lagged TOO hard, just reset and don't try to compensate
+		if (delta > UPDATE_PERIOD * 2) {  // e.g., 3 frames behind
+			lastTime = start;  // Reset timing baseline
+			buffer = 1000;     // Use conservative buffer
+		} else {
+			// Normal adaptive logic
+			while (delta > UPDATE_PERIOD) {
+				buffer += 1120;
+				delta -= 1120;
+			}
+			lastTime = start;
 		}
 
-		//printf("%llu\n", buffer);
+		int64_t threshold = sleepFor - buffer;
 
-		int64_t threshold = sleepFor - buffer; // 2ms buffer for SDL_Delay overhead
-
-		lastTime = getTime();
-
-		// Coarse sleep with SDL_Delay
 		while (getTime() - start < threshold) {
 			SDL_Delay(1);
 		}
 
-		// Fine-tune with busy wait
 		while (getTime() - start < sleepFor) {
-    		cpu_relax();
+			cpu_relax();
 		}
 	}
 
