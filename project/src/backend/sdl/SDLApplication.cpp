@@ -149,7 +149,7 @@ namespace lime {
 		if (sleepFor <= 0) return;
 
 		int start = getTime();
-		int threshold = sleepFor - 2000; // 2ms buffer for SDL_Delay overhead
+		int threshold = sleepFor - 1120; // 2ms buffer for SDL_Delay overhead
 
 		// Coarse sleep with SDL_Delay
 		while (getTime() - start < threshold) {
