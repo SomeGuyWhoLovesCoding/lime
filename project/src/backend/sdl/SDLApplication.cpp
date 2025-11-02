@@ -45,16 +45,16 @@ namespace lime {
 
 	SDLApplication::SDLApplication () {
 		#ifdef HX_WINDOWS
-  WORD numGroups = GetActiveProcessorGroupCount();
-  WORD targetGroup = numGroups - 1;
-  DWORD coresInGroup = GetActiveProcessorCount(targetGroup);
-  
-  GROUP_AFFINITY affinity = {0};
-  affinity.Group = targetGroup;
-  affinity.Mask = 1ULL << (coresInGroup - 1);
-  
-  SetThreadGroupAffinity(GetCurrentThread(), &affinity, NULL);
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+		WORD numGroups = GetActiveProcessorGroupCount();
+		WORD targetGroup = numGroups - 1;
+		DWORD coresInGroup = GetActiveProcessorCount(targetGroup);
+
+		GROUP_AFFINITY affinity = {0};
+		affinity.Group = targetGroup;
+		affinity.Mask = 1ULL << (coresInGroup - 1);
+
+		SetThreadGroupAffinity(GetCurrentThread(), &affinity, NULL);
+		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
 		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 		#endif
@@ -853,25 +853,24 @@ namespace lime {
 
 	}
 
-	int64_t lastUpdateTime = 0;
 	int64_t prevFrameTime = 0;
 
 	int64_t getTime() {
 		#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {0};
 		static LARGE_INTEGER start = {0};
-		
+
 		if (freq.QuadPart == 0) {
 			QueryPerformanceFrequency(&freq);
 			QueryPerformanceCounter(&start);
 		}
-		
+
 		LARGE_INTEGER counter;
 		QueryPerformanceCounter(&counter);
-		
+
 		// Calculate elapsed ticks since start
 		int64_t elapsed = counter.QuadPart - start.QuadPart;
-		
+
 		// Convert to microseconds without overflow
 		return (elapsed * 1'000'000) / freq.QuadPart;
 		#elif defined(__GNUC__) || defined(__clang__)
@@ -900,7 +899,7 @@ namespace lime {
 	void coolSleepUntil(int64_t wakeTimeUs) {
 		int64_t currentTime = getTime();
 		int64_t sleepForUs = wakeTimeUs - currentTime;
-		
+
 		if (sleepForUs <= 0) return;
 
 		#if HX_WINDOWS
@@ -924,70 +923,73 @@ namespace lime {
 	}
 
 	bool SDLApplication::Update() {
-		static int64_t nextWakeTime = 0;
-		static int64_t renderAccumulator = 0;
-		
+		static int64_t baseTime = 0;
+		static int64_t updateCounter = 0;
+		static int64_t renderCounter = 0;
+
 		int64_t currentTime = getTime();
-		
-		// Sleep if we're ahead of schedule
-		if (nextWakeTime > 0 && currentTime < nextWakeTime) {
-			coolSleepUntil(nextWakeTime);
-			currentTime = getTime();
+
+		// Initialize on first run
+		if (baseTime == 0) {
+			baseTime = currentTime;
+			prevFrameTime = currentTime;
+			updateCounter = 0;
+			renderCounter = 0;
 		}
-		
+
+		// Detect long pauses - reset everything
+		int64_t deltaTime = currentTime - prevFrameTime;
+		if (deltaTime > 100000) {
+			baseTime = currentTime;
+			updateCounter = 0;
+			renderCounter = 0;
+		}
+		prevFrameTime = currentTime;
+
+		// Poll events first (non-blocking)
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			HandleEvent(&event);
 			if (!active) return active;
 		}
 
-		// Initialize on first run
-		if (lastUpdateTime == 0) {
-			lastUpdateTime = currentTime;
-			prevFrameTime = currentTime;
-			nextWakeTime = currentTime + UPDATE_PERIOD;
-			renderAccumulator = 0;
+		// Recalculate time after event processing
+		currentTime = getTime();
+
+		// Calculate next times from base
+		int64_t nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
+		int64_t nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
+
+		// Process all due updates (with catch-up limit)
+		int updateCount = 0;
+		while (currentTime >= nextUpdateTime && updateCount < 4) {
+			applicationEvent.type = UPDATE;
+			applicationEvent.deltaTime = UPDATE_PERIOD;
+			ApplicationEvent::Dispatch(&applicationEvent);
+
+			updateCounter++;
+			updateCount++;
+			nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
 		}
 
-		// Detect long pauses
-		int64_t deltaTime = currentTime - prevFrameTime;
-		if (deltaTime > 100000) {
-			lastUpdateTime = currentTime;
-			nextWakeTime = currentTime + UPDATE_PERIOD;
-			renderAccumulator = 0;
-		}
-		prevFrameTime = currentTime;
-
-		// --- Always do update (120Hz) ---
-		if (currentTime >= lastUpdateTime + UPDATE_PERIOD) {
-			int updateCount = 0;
-			const int MAX_UPDATES_PER_FRAME = 4;
-			
-			while (currentTime >= lastUpdateTime + UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
-				applicationEvent.type = UPDATE;
-				applicationEvent.deltaTime = UPDATE_PERIOD;
-				ApplicationEvent::Dispatch(&applicationEvent);
-				
-				lastUpdateTime += UPDATE_PERIOD;
-				renderAccumulator += UPDATE_PERIOD;
-				updateCount++;
-			}
-			
-			// Reset if catastrophically behind
-			if (currentTime - lastUpdateTime > UPDATE_PERIOD * MAX_UPDATES_PER_FRAME) {
-				lastUpdateTime = currentTime;
-			}
-		}
-
-		// --- Render when accumulator reaches threshold (60Hz) ---
-		if (renderAccumulator >= RENDER_PERIOD) {
+		// Process render if due
+		if (currentTime >= nextRenderTime) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-			renderAccumulator -= RENDER_PERIOD;
+			renderCounter++;
+			nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 		}
 
-		// Always wake at next update time (consistent 120Hz)
-		nextWakeTime = lastUpdateTime + UPDATE_PERIOD;
+		// Sleep until next event, waking slightly early
+		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
+		int64_t frameRateNow = (1000000 / UPDATE_PERIOD);
+
+		// Adjust buffer dynamically depending on update framerate
+		int64_t sleepUntil = nextEventTime - (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000));
+
+		if (sleepUntil > currentTime) {
+			coolSleepUntil(sleepUntil);
+		}
 
 		return active;
 	}
