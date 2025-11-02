@@ -850,9 +850,8 @@ namespace lime {
 
 	}
 
-	static int64_t lastUpdateTime = 0;
-	static int64_t lastRenderTime = 0;
-	static int64_t prevFrameTime = 0;
+	int64_t lastUpdateTime = 0;
+	int64_t prevFrameTime = 0;
 
 	int64_t getTime() {
 		#ifdef HX_WINDOWS
