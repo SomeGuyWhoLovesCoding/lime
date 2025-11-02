@@ -39,6 +39,10 @@ namespace lime {
 	static int UPDATE_PERIOD = (int)(1000000.0 / 120); // fixed update @ 240Hz
 	static int RENDER_PERIOD = (int)(1000000.0 / 60);  // render @ 60Hz
 
+    #if HX_WINDOWS
+    HANDLE timer;
+    #endif
+
 	SDLApplication::SDLApplication () {
 		#ifdef HX_WINDOWS
 		SYSTEM_INFO sysInfo;
@@ -50,6 +54,8 @@ namespace lime {
 		DWORD_PTR mask = 1ULL << targetCore;
 		SetThreadAffinityMask(GetCurrentThread(), mask);
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
+		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 		#endif
 
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
@@ -97,10 +103,6 @@ namespace lime {
 		#endif
 
 	}
-
-    #if HX_WINDOWS
-    HANDLE timer;
-    #endif
 
 
 	SDLApplication::~SDLApplication () {
@@ -901,7 +903,6 @@ namespace lime {
 		if (sleepForUs <= 0) return;
 
 		#if HX_WINDOWS
-		if (timer == null) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 		LARGE_INTEGER due;
 		due.QuadPart = -sleepForUs * 10; // 100ns units, negative = relative
 		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
