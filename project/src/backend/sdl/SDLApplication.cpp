@@ -56,11 +56,14 @@ namespace lime {
 
 	SDLApplication::SDLApplication () {
 		#ifdef HX_WINDOWS
-		// Pin thread to a single core
-		DWORD_PTR mask = 1ull << 0; // core 0
-		SetThreadAffinityMask(GetCurrentThread(), mask);
+		SYSTEM_INFO sysInfo;
+		GetSystemInfo(&sysInfo);
+		int numCores = sysInfo.dwNumberOfProcessors;
 
-		// Optional: reduce context-switch jitter
+		// Pin to the last core (usually least used)
+		int targetCore = numCores - 1;
+		DWORD_PTR mask = 1ULL << targetCore;
+		SetThreadAffinityMask(GetCurrentThread(), mask);
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 		#endif
 
