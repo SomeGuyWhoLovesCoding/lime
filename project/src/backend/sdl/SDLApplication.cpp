@@ -45,15 +45,16 @@ namespace lime {
 
 	SDLApplication::SDLApplication () {
 		#ifdef HX_WINDOWS
-		SYSTEM_INFO sysInfo;
-		GetSystemInfo(&sysInfo);
-		int numCores = sysInfo.dwNumberOfProcessors;
-
-		// Pin to the last core (usually least used)
-		int targetCore = numCores - 1;
-		DWORD_PTR mask = 1ULL << targetCore;
-		SetThreadAffinityMask(GetCurrentThread(), mask);
-		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  WORD numGroups = GetActiveProcessorGroupCount();
+  WORD targetGroup = numGroups - 1;
+  DWORD coresInGroup = GetActiveProcessorCount(targetGroup);
+  
+  GROUP_AFFINITY affinity = {0};
+  affinity.Group = targetGroup;
+  affinity.Mask = 1ULL << (coresInGroup - 1);
+  
+  SetThreadGroupAffinity(GetCurrentThread(), &affinity, NULL);
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
 		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 		#endif
