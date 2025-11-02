@@ -113,10 +113,16 @@ namespace lime {
 
 	}
 
+    #if HX_WINDOWS
+    HANDLE timer;
+    #endif
+
 
 	SDLApplication::~SDLApplication () {
 
-
+		#if HX_WINDOWS
+        CloseHandle(timer);
+		#endif
 
 	}
 
@@ -911,7 +917,7 @@ namespace lime {
 		if (sleepForUs <= 0) return;
 
 		#if HX_WINDOWS
-		static HANDLE timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+		if (timer == null) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 		LARGE_INTEGER due;
 		due.QuadPart = -sleepForUs * 10; // 100ns units, negative = relative
 		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
