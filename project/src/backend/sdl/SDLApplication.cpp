@@ -40,7 +40,7 @@ namespace lime {
 	static int RENDER_PERIOD = (int)(1000000.0 / 60);  // render @ 60Hz
 
     #if HX_WINDOWS
-    HANDLE timer;
+    static HANDLE timer;
     #endif
 
 	SDLApplication::SDLApplication () {
