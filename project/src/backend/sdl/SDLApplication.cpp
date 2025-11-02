@@ -108,7 +108,7 @@ namespace lime {
 	SDLApplication::~SDLApplication () {
 
 		#if HX_WINDOWS
-        CloseHandle(timer);
+		if (timer) CloseHandle(timer);
 		#endif
 
 	}
