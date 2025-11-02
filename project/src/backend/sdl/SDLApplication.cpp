@@ -146,54 +146,6 @@ namespace lime {
 
 	}
 
-	int64_t getTime() {
-		#ifdef HX_WINDOWS
-		LARGE_INTEGER freq, counter;
-		QueryPerformanceFrequency(&freq);
-		QueryPerformanceCounter(&counter);
-		return (counter.QuadPart * 1'000'000) / freq.QuadPart;
-		#elif defined(__GNUC__) || defined(__clang__)
-		struct timespec ts;
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		return ts.tv_sec * 1'000'000 + ts.tv_nsec / 1000;
-		#else
-		return std::chrono::duration_cast<std::chrono::microseconds>(
-			std::chrono::steady_clock::now().time_since_epoch()
-			).count();
-		#endif
-	}
-
-	#if defined(__GNUC__) || defined(__clang__)
-	// add microseconds to a timespec
-	inline void timespecAddUs(struct timespec &ts, int64_t us) {
-		ts.tv_nsec += (us % 1'000'000) * 1000;
-		ts.tv_sec  += us / 1'000'000;
-		if (ts.tv_nsec >= 1'000'000'000) {
-			ts.tv_nsec -= 1'000'000'000;
-			ts.tv_sec++;
-		}
-	}
-	#endif
-
-	void coolSleep(int64_t sleepForUs) {
-		if (sleepForUs <= 0) return;
-
-		#if HX_WINDOWS
-		static HANDLE timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
-		// set up waitable timer for coarse sleep
-		LARGE_INTEGER due;
-		due.QuadPart = -sleepForUs * 10; // 100ns units, negative = relative
-		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-		WaitForSingleObject(timer, INFINITE);
-		#elif defined(__GNUC__) || defined(__clang__)
-		struct timespec now, wake;
-		clock_gettime(CLOCK_MONOTONIC, &now);
-		wake = now;
-		timespecAddUs(wake, sleepForUs);
-		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
-		#endif
-	}
-
 	void SDLApplication::HandleEvent (SDL_Event* event) {
 
 		#if defined(IPHONE) || defined(EMSCRIPTEN)
@@ -379,13 +331,6 @@ namespace lime {
 
 		}
 
-	}
-
-
-	void SDLApplication::Init () {
-		active = true;
-		int now = getTime();
-		lastUpdate = now;
 	}
 
 
@@ -911,76 +856,143 @@ namespace lime {
 
 	}
 
-	static int lastUpdateTime = 0;
-	static int lastRenderTime = 0;
-	static int prevFrameTime = 0;
+	static int64_t lastUpdateTime = 0;
+	static int64_t lastRenderTime = 0;
+	static int64_t prevFrameTime = 0;
+
+	int64_t getTime() {
+		#ifdef HX_WINDOWS
+		static LARGE_INTEGER freq = {0};
+		static LARGE_INTEGER start = {0};
+		
+		if (freq.QuadPart == 0) {
+			QueryPerformanceFrequency(&freq);
+			QueryPerformanceCounter(&start);
+		}
+		
+		LARGE_INTEGER counter;
+		QueryPerformanceCounter(&counter);
+		
+		// Calculate elapsed ticks since start
+		int64_t elapsed = counter.QuadPart - start.QuadPart;
+		
+		// Convert to microseconds without overflow
+		return (elapsed * 1'000'000) / freq.QuadPart;
+		#elif defined(__GNUC__) || defined(__clang__)
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		return ts.tv_sec * 1'000'000 + ts.tv_nsec / 1000;
+		#else
+		return std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()
+		).count();
+		#endif
+	}
+
+	#if defined(__GNUC__) || defined(__clang__)
+	// add microseconds to a timespec
+	inline void timespecAddUs(struct timespec &ts, int64_t us) {
+		ts.tv_nsec += (us % 1'000'000) * 1000;
+		ts.tv_sec  += us / 1'000'000;
+		if (ts.tv_nsec >= 1'000'000'000) {
+			ts.tv_nsec -= 1'000'000'000;
+			ts.tv_sec++;
+		}
+	}
+	#endif
+
+	void coolSleepUntil(int64_t wakeTimeUs) {
+		int64_t currentTime = getTime();
+		int64_t sleepForUs = wakeTimeUs - currentTime;
+		
+		if (sleepForUs <= 0) return;
+
+		#if HX_WINDOWS
+		static HANDLE timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+		LARGE_INTEGER due;
+		due.QuadPart = -sleepForUs * 10; // 100ns units, negative = relative
+		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+		WaitForSingleObject(timer, INFINITE);
+		#elif defined(__GNUC__) || defined(__clang__)
+		struct timespec wake;
+		wake.tv_sec = wakeTimeUs / 1'000'000;
+		wake.tv_nsec = (wakeTimeUs % 1'000'000) * 1000;
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
+		#endif
+	}
+
+	int64_t startTimestamp;
+	void SDLApplication::Init () {
+		active = true;
+		int now = getTime();
+		startTimestamp = lastUpdate = now;
+	}
 
 	bool SDLApplication::Update() {
+		static int64_t nextWakeTime = 0;
+		static int64_t renderAccumulator = 0;
+		
+		int64_t currentTime = getTime();
+		
+		// Sleep if we're ahead of schedule
+		if (nextWakeTime > 0 && currentTime < nextWakeTime) {
+			coolSleepUntil(nextWakeTime);
+			currentTime = getTime();
+		}
+		
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			HandleEvent(&event);
 			if (!active) return active;
 		}
 
-		int currentTime = getTime();
-
+		// Initialize on first run
 		if (lastUpdateTime == 0) {
 			lastUpdateTime = currentTime;
-			lastRenderTime = currentTime;
 			prevFrameTime = currentTime;
+			nextWakeTime = currentTime + UPDATE_PERIOD;
+			renderAccumulator = 0;
 		}
 
-		// Detect long pauses (Alt-Tab, debugger breakpoint, sleep/resume, focus loss)
-		int deltaTime = currentTime - prevFrameTime;
-		if (deltaTime > 100000) {  // If paused for >100ms
+		// Detect long pauses
+		int64_t deltaTime = currentTime - prevFrameTime;
+		if (deltaTime > 100000) {
 			lastUpdateTime = currentTime;
-			lastRenderTime = currentTime;
-			prevFrameTime = currentTime;
+			nextWakeTime = currentTime + UPDATE_PERIOD;
+			renderAccumulator = 0;
 		}
-
 		prevFrameTime = currentTime;
 
-		// --- Render first (60Hz) ---
-		if (currentTime - lastRenderTime >= RENDER_PERIOD) {
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
-
-			lastRenderTime += RENDER_PERIOD;
-
-			// Prevent drift
-			if (currentTime - lastRenderTime > RENDER_PERIOD * 2) {
-				lastRenderTime = currentTime - RENDER_PERIOD;
+		// --- Always do update (120Hz) ---
+		if (currentTime >= lastUpdateTime + UPDATE_PERIOD) {
+			int updateCount = 0;
+			const int MAX_UPDATES_PER_FRAME = 4;
+			
+			while (currentTime >= lastUpdateTime + UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
+				applicationEvent.type = UPDATE;
+				applicationEvent.deltaTime = UPDATE_PERIOD;
+				ApplicationEvent::Dispatch(&applicationEvent);
+				
+				lastUpdateTime += UPDATE_PERIOD;
+				renderAccumulator += UPDATE_PERIOD;
+				updateCount++;
+			}
+			
+			// Reset if catastrophically behind
+			if (currentTime - lastUpdateTime > UPDATE_PERIOD * MAX_UPDATES_PER_FRAME) {
+				lastUpdateTime = currentTime;
 			}
 		}
 
-		// --- Then handle updates (120Hz) ---
-		int updateCount = 0;
-		const int MAX_UPDATES_PER_FRAME = 4;
-
-		while (currentTime - lastUpdateTime >= UPDATE_PERIOD && updateCount < MAX_UPDATES_PER_FRAME) {
-			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = UPDATE_PERIOD;
-			ApplicationEvent::Dispatch(&applicationEvent);
-
-			lastUpdateTime += UPDATE_PERIOD;
-			updateCount++;
+		// --- Render when accumulator reaches threshold (60Hz) ---
+		if (renderAccumulator >= RENDER_PERIOD) {
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+			renderAccumulator -= RENDER_PERIOD;
 		}
 
-		// Reset if too far behind
-		if (currentTime - lastUpdateTime > UPDATE_PERIOD * 4) {
-			lastUpdateTime = currentTime - UPDATE_PERIOD;
-		}
-
-		// Sleep until next event
-		int nextUpdateTime = lastUpdateTime + UPDATE_PERIOD;
-		int nextRenderTime = lastRenderTime + RENDER_PERIOD;
-		int nextEventTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
-
-		int frameEnd = getTime();
-		int sleepTime = nextEventTime - frameEnd;
-		//printf("%d", sleepTime);
-
-		coolSleep(sleepTime);
+		// Always wake at next update time (consistent 120Hz)
+		nextWakeTime = lastUpdateTime + UPDATE_PERIOD;
 
 		return active;
 	}
