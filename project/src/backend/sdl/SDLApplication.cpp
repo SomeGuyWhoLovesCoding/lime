@@ -49,14 +49,12 @@ namespace lime {
 		WORD targetGroup = numGroups - 1;
 		DWORD coresInGroup = GetActiveProcessorCount(targetGroup);
 
-		// Set process affinity to the last core (affects all threads)
-		DWORD_PTR processMask = 1ull << (GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) - 1);
-		HANDLE hProcess = GetCurrentProcess();
-		SetProcessAffinityMask(hProcess, processMask);
+		GROUP_AFFINITY affinity = {0};
+		affinity.Group = targetGroup;
+		affinity.Mask = 1ULL << (coresInGroup - 1);
 
-		// Set current thread priority + thread affinity (optional)
+		SetThreadGroupAffinity(GetCurrentThread(), &affinity, NULL);
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-		SetThreadAffinityMask(GetCurrentThread(), processMask);
 
 		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 		#endif
@@ -925,75 +923,72 @@ namespace lime {
 	}
 
 	bool SDLApplication::Update() {
-		static int64_t prevTime = 0;
-		static int64_t updateAccumulator = 0;
-		static int64_t renderAccumulator = 0;
-		static bool firstRun = true;
+		static int64_t baseTime = 0;
+		static int64_t updateCounter = 0;
+		static int64_t renderCounter = 0;
 
-		// Poll events early to maximize input responsivity
+		int64_t currentTime = getTime();
+
+		// Initialize on first run
+		if (baseTime == 0) {
+			baseTime = currentTime;
+			prevFrameTime = currentTime;
+			updateCounter = 0;
+			renderCounter = 0;
+		}
+
+		// Detect long pauses - reset everything
+		int64_t deltaTime = currentTime - prevFrameTime;
+		if (deltaTime > 100000) {
+			baseTime = currentTime;
+			updateCounter = 0;
+			renderCounter = 0;
+		}
+		prevFrameTime = currentTime;
+
+		// Poll events first (non-blocking)
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			HandleEvent(&event);
 			if (!active) return active;
 		}
 
-		int64_t currentTime = getTime();
+		// Recalculate time after event processing
+		currentTime = getTime();
 
-		if (firstRun) {
-			prevTime = currentTime;
-			firstRun = false;
-		}
+		// Calculate next times from base
+		int64_t nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
+		int64_t nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 
-		int64_t deltaTime = currentTime - prevTime;
-		prevTime = currentTime;
-
-		// Reset accumulators if long pause
-		if (deltaTime > 100000) {
-			updateAccumulator = 0;
-			renderAccumulator = 0;
-		} else {
-			updateAccumulator += deltaTime;
-			renderAccumulator += deltaTime;
-		}
-
-		// Fixed-step updates (max 4 per frame)
+		// Process all due updates (with catch-up limit)
 		int updateCount = 0;
-		while (updateAccumulator >= UPDATE_PERIOD && updateCount < 4) {
+		while (currentTime >= nextUpdateTime && updateCount < 4) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			updateAccumulator -= UPDATE_PERIOD;
+			updateCounter++;
 			updateCount++;
+			nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
 		}
 
-		// Render if enough time has passed (60 Hz)
-		if (renderAccumulator >= RENDER_PERIOD) {
+		// Process render if due
+		if (currentTime >= nextRenderTime) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-
-			renderAccumulator -= RENDER_PERIOD;
+			renderCounter++;
+			nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 		}
 
-		// Determine next target event (update or render)
-		int64_t nextUpdateTime = prevTime + (UPDATE_PERIOD - updateAccumulator);
-		int64_t nextRenderTime = prevTime + (RENDER_PERIOD - renderAccumulator);
+		// Sleep until next event, waking slightly early
 		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
+		int64_t frameRateNow = (1000000 / UPDATE_PERIOD);
 
-		int64_t remaining = nextEventTime - getTime();
+		// Adjust buffer dynamically depending on update framerate
+		int64_t sleepUntil = nextEventTime - (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000));
 
-		// Sleep until close to target
-		if (remaining > 2000) { // >2ms
-			coolSleepUntil(getTime() + (remaining - 1000));
-		}
-
-		// Spin for last ~1ms to minimize jitter and maximize input latency
-		while (getTime() < nextEventTime) {
-			#if defined(_MSC_VER)
-			_mm_pause();
-			#elif defined(__GNUC__) || defined(__clang__)
-			__builtin_ia32_pause();
-			#endif
+		if (sleepUntil > currentTime) {
+			coolSleepUntil(sleepUntil);
 		}
 
 		return active;
