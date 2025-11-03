@@ -45,16 +45,23 @@ namespace lime {
 
 	SDLApplication::SDLApplication () {
 		#ifdef HX_WINDOWS
+		HANDLE hThread = GetCurrentThread();
 		WORD numGroups = GetActiveProcessorGroupCount();
 		WORD targetGroup = numGroups - 1;
 		DWORD coresInGroup = GetActiveProcessorCount(targetGroup);
 
+		// Set process affinity to the last core (affects all threads)
+		DWORD_PTR processMask = 1ull << (GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) - 1);
+		HANDLE hProcess = GetCurrentProcess();
+		SetProcessAffinityMask(hProcess, processMask);
+
+		// Set current thread priority + thread affinity (optional)
+		SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST); // NOT TIME_CRITICAL
+
 		GROUP_AFFINITY affinity = {0};
 		affinity.Group = targetGroup;
 		affinity.Mask = 1ULL << (coresInGroup - 1);
-
-		SetThreadGroupAffinity(GetCurrentThread(), &affinity, NULL);
-		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+		SetThreadGroupAffinity(hThread, &affinity, NULL);
 
 		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 		#endif
@@ -947,11 +954,15 @@ namespace lime {
 		prevFrameTime = currentTime;
 
 		// Poll events first (non-blocking)
+		int64_t startPollTime = getTime();
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			HandleEvent(&event);
 			if (!active) return active;
 		}
+		int64_t endPollTime = getTime();
+		int64_t eventPollingOverhead = endPollTime - startPollTime;
+		//printf("%lld\n", eventPollingOverhead);
 
 		// Recalculate time after event processing
 		currentTime = getTime();
@@ -985,7 +996,7 @@ namespace lime {
 		int64_t frameRateNow = (1000000 / UPDATE_PERIOD);
 
 		// Adjust buffer dynamically depending on update framerate
-		int64_t sleepUntil = nextEventTime - (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000));
+		int64_t sleepUntil = (nextEventTime - (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000))) - eventPollingOverhead;
 
 		if (sleepUntil > currentTime) {
 			coolSleepUntil(sleepUntil);
