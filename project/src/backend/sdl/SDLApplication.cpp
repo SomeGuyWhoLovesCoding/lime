@@ -121,11 +121,11 @@ namespace lime {
 			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
 
 		// Convert period to approximate FPS
-		int fps = (updatePeriodUs > 0) ? static_cast<int>(1'000'000 / updatePeriodUs) : 120;
+		int fps = (updatePeriodUs > 0) ? static_cast<int>(1000000 / updatePeriodUs) : 120;
 		//printf("FPS SET TO %d\n", fps);
 
 		// Map FPS to ideal timer resolution (microseconds)
-		ULONG resolutionUs = (fps > 0) ? (ULONG)(10'000'000 / fps) : 10000;
+		ULONG resolutionUs = (fps > 0) ? (ULONG)(10000000 / fps) : 10000;
 
 		//printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
 
@@ -912,11 +912,11 @@ namespace lime {
 		int64_t elapsed = counter.QuadPart - start.QuadPart;
 
 		// Convert to microseconds without overflow
-		return (elapsed * 1'000'000) / freq.QuadPart;
+		return (elapsed * 1000000) / freq.QuadPart;
 		#elif defined(__GNUC__) || defined(__clang__)
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
-		return ts.tv_sec * 1'000'000 + ts.tv_nsec / 1000;
+		return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 		#else
 		return std::chrono::duration_cast<std::chrono::microseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()
