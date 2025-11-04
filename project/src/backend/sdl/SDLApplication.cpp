@@ -117,41 +117,24 @@ namespace lime {
 		ULONG minRes = 0, maxRes = 0, curRes = 0;
 		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
 
-		printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
+		//printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
 			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
 
 		// Convert period to approximate FPS
 		int fps = (updatePeriodUs > 0) ? static_cast<int>(1'000'000 / updatePeriodUs) : 120;
-		printf("FPS SET TO %d\n", fps);
+		//printf("FPS SET TO %d\n", fps);
 
 		// Map FPS to ideal timer resolution (microseconds)
-		ULONG resolutionUs = 0;
-		switch (fps) {
-			case 120: resolutionUs = 83333; break;
-			case 180: resolutionUs = 55555; break;
-			case 240: resolutionUs = 41666; break;
-			case 300: resolutionUs = 33333; break;
-			case 360: resolutionUs = 27777; break;
-			case 480: resolutionUs = 20833; break;
-			case 600: resolutionUs = 16666; break;
-			case 720: resolutionUs = 13889; break;
-			case 900: resolutionUs = 11111; break;
-			case 960: resolutionUs = 10416; break;
-			case 1000: resolutionUs = 10000; break;
-			default:
-				printf("Unexpected FPS (%d), calculating dynamically...\n", fps);
-				resolutionUs = (fps > 0) ? (ULONG)(10'000'000 / fps) : 10000;
-				break;
-		}
+		ULONG resolutionUs = (fps > 0) ? (ULONG)(10'000'000 / fps) : 10000;
 
-		printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
+		//printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
 
 		// Apply new resolution
-		ULONG current = 0;
+		ULONG current;
 		NTSTATUS status = NtSetTimerResolution(resolutionUs, TRUE, &current);
 
-		printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
-			(unsigned int)status, current / 10000.0);
+		/*printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
+			(unsigned int)status, current / 10000.0);*/
 
 		// Re-query after setting
 		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
