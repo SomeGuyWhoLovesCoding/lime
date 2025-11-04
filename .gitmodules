@@ -1,9 +1,6 @@
 [submodule "project/lib/vorbis"]
 	path = project/lib/vorbis
 	url = https://github.com/openfl/libvorbis
-[submodule "project/lib/sdl"]
-	path = project/lib/sdl
-	url = https://github.com/SomeGuyWhoLovesCoding/libsdl
 [submodule "project/lib/openal"]
 	path = project/lib/openal
 	url = https://github.com/openfl/libopenal
