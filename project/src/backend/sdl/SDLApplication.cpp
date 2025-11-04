@@ -44,28 +44,6 @@ namespace lime {
     #endif
 
 	SDLApplication::SDLApplication () {
-		#ifdef HX_WINDOWS
-		HANDLE hThread = GetCurrentThread();
-		WORD numGroups = GetActiveProcessorGroupCount();
-		WORD targetGroup = numGroups - 1;
-		DWORD coresInGroup = GetActiveProcessorCount(targetGroup);
-
-		// Set process affinity to the last core (affects all threads)
-		DWORD_PTR processMask = 1ull << (GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) - 1);
-		HANDLE hProcess = GetCurrentProcess();
-		SetProcessAffinityMask(hProcess, processMask);
-
-		// Set current thread priority + thread affinity (optional)
-		SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST); // NOT TIME_CRITICAL
-
-		GROUP_AFFINITY affinity = {0};
-		affinity.Group = targetGroup;
-		affinity.Mask = 1ULL << (coresInGroup - 1);
-		SetThreadGroupAffinity(hThread, &affinity, NULL);
-
-		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
-		#endif
-
 		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
 		initFlags |= SDL_INIT_AUDIO;
@@ -110,13 +88,84 @@ namespace lime {
 		CFRelease (resourcesURL);
 		#endif
 
+		#ifdef HX_WINDOWS
+		HANDLE hThread = GetCurrentThread();
+		// Set current thread priority
+		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
+		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+		#endif
+
 	}
+
+	#if HX_WINDOWS
+	static HMODULE ntdll;
+	void adjustTimerResolutionDynamic(int updatePeriodUs) {
+		typedef NTSTATUS (NTAPI *NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
+		typedef NTSTATUS (NTAPI *NtQueryTimerResolution_t)(PULONG, PULONG, PULONG);
+
+		if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
+		if (!ntdll) return;
+
+		static NtSetTimerResolution_t NtSetTimerResolution =
+			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
+		static NtQueryTimerResolution_t NtQueryTimerResolution =
+			(NtQueryTimerResolution_t)GetProcAddress(ntdll, "NtQueryTimerResolution");
+
+		if (!NtSetTimerResolution || !NtQueryTimerResolution) return;
+
+		// Query current, min, and max timer resolutions
+		ULONG minRes = 0, maxRes = 0, curRes = 0;
+		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
+
+		printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
+			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
+
+		// Convert period to approximate FPS
+		int fps = (updatePeriodUs > 0) ? static_cast<int>(1'000'000 / updatePeriodUs) : 120;
+		printf("FPS SET TO %d\n", fps);
+
+		// Map FPS to ideal timer resolution (microseconds)
+		ULONG resolutionUs = 0;
+		switch (fps) {
+			case 120: resolutionUs = 83333; break;
+			case 180: resolutionUs = 55555; break;
+			case 240: resolutionUs = 41666; break;
+			case 300: resolutionUs = 33333; break;
+			case 360: resolutionUs = 27777; break;
+			case 480: resolutionUs = 20833; break;
+			case 600: resolutionUs = 16666; break;
+			case 720: resolutionUs = 13889; break;
+			case 900: resolutionUs = 11111; break;
+			case 960: resolutionUs = 10416; break;
+			case 1000: resolutionUs = 10000; break;
+			default:
+				printf("Unexpected FPS (%d), calculating dynamically...\n", fps);
+				resolutionUs = (fps > 0) ? (ULONG)(10'000'000 / fps) : 10000;
+				break;
+		}
+
+		printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
+
+		// Apply new resolution
+		ULONG current = 0;
+		NTSTATUS status = NtSetTimerResolution(resolutionUs, TRUE, &current);
+
+		printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
+			(unsigned int)status, current / 10000.0);
+
+		// Re-query after setting
+		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
+		printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
+			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
+	}
+	#endif
 
 
 	SDLApplication::~SDLApplication () {
 
 		#if HX_WINDOWS
 		if (timer) CloseHandle(timer);
+		if (ntdll) FreeLibrary(ntdll);
 		#endif
 
 	}
@@ -860,6 +909,7 @@ namespace lime {
 
 	}
 
+
 	int64_t prevFrameTime = 0;
 
 	int64_t getTime() {
@@ -930,28 +980,7 @@ namespace lime {
 	}
 
 	bool SDLApplication::Update() {
-		static int64_t baseTime = 0;
-		static int64_t updateCounter = 0;
-		static int64_t renderCounter = 0;
-
-		int64_t currentTime = getTime();
-
-		// Initialize on first run
-		if (baseTime == 0) {
-			baseTime = currentTime;
-			prevFrameTime = currentTime;
-			updateCounter = 0;
-			renderCounter = 0;
-		}
-
-		// Detect long pauses - reset everything
-		int64_t deltaTime = currentTime - prevFrameTime;
-		if (deltaTime > 100000) {
-			baseTime = currentTime;
-			updateCounter = 0;
-			renderCounter = 0;
-		}
-		prevFrameTime = currentTime;
+		adjustTimerResolutionDynamic(UPDATE_PERIOD);
 
 		// Poll events first (non-blocking)
 		int64_t startPollTime = getTime();
@@ -963,6 +992,26 @@ namespace lime {
 		int64_t endPollTime = getTime();
 		int64_t eventPollingOverhead = endPollTime - startPollTime;
 		//printf("%lld\n", eventPollingOverhead);
+
+		static int64_t baseTime = 0; // persistent base
+		static int64_t updateCounter = 0;
+		static int64_t renderCounter = 0;
+
+		int64_t currentTime = getTime();
+
+		// Initialize on first run
+		if (baseTime == 0) {
+			baseTime = currentTime;
+			prevFrameTime = currentTime;
+		}
+
+		// Detect long pauses or drift and adjust baseTime
+		int64_t deltaTime = currentTime - prevFrameTime;
+		if (deltaTime > 100000 || currentTime > baseTime + (updateCounter + 1) * UPDATE_PERIOD * 1000) {
+			baseTime = currentTime - updateCounter * UPDATE_PERIOD;
+		}
+
+		prevFrameTime = currentTime;
 
 		// Recalculate time after event processing
 		currentTime = getTime();
