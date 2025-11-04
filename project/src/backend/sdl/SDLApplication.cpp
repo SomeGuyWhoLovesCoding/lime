@@ -927,10 +927,10 @@ namespace lime {
 	#if defined(__GNUC__) || defined(__clang__)
 	// add microseconds to a timespec
 	inline void timespecAddUs(struct timespec &ts, int64_t us) {
-		ts.tv_nsec += (us % 1'000'000) * 1000;
-		ts.tv_sec  += us / 1'000'000;
-		if (ts.tv_nsec >= 1'000'000'000) {
-			ts.tv_nsec -= 1'000'000'000;
+		ts.tv_nsec += (us % 1000000) * 1000;
+		ts.tv_sec  += us / 1000000;
+		if (ts.tv_nsec >= 1000000000) {
+			ts.tv_nsec -= 1000000000;
 			ts.tv_sec++;
 		}
 	}
@@ -949,8 +949,8 @@ namespace lime {
 		WaitForSingleObject(timer, INFINITE);
 		#elif defined(__GNUC__) || defined(__clang__)
 		struct timespec wake;
-		wake.tv_sec = wakeTimeUs / 1'000'000;
-		wake.tv_nsec = (wakeTimeUs % 1'000'000) * 1000;
+		wake.tv_sec = wakeTimeUs / 1000000;
+		wake.tv_nsec = (wakeTimeUs % 1000000) * 1000;
 		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
 		#endif
 	}
