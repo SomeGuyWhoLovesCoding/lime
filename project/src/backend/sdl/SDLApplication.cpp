@@ -117,8 +117,8 @@ namespace lime {
 		ULONG minRes = 0, maxRes = 0, curRes = 0;
 		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
 
-		//printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
-			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
+		/*printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
+			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
 
 		// Convert period to approximate FPS
 		int fps = (updatePeriodUs > 0) ? static_cast<int>(1'000'000 / updatePeriodUs) : 120;
@@ -138,8 +138,8 @@ namespace lime {
 
 		// Re-query after setting
 		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
-		printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
-			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
+		/*printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
+			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
 	}
 	#endif
 
@@ -963,8 +963,6 @@ namespace lime {
 	}
 
 	bool SDLApplication::Update() {
-		adjustTimerResolutionDynamic(UPDATE_PERIOD);
-
 		// Poll events first (non-blocking)
 		int64_t startPollTime = getTime();
 		SDL_Event event;
@@ -996,14 +994,12 @@ namespace lime {
 
 		prevFrameTime = currentTime;
 
-		// Recalculate time after event processing
-		currentTime = getTime();
-
 		// Calculate next times from base
 		int64_t nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
 		int64_t nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 
 		// Process all due updates (with catch-up limit)
+		int64_t startTime_process = getTime();
 		int updateCount = 0;
 		while (currentTime >= nextUpdateTime && updateCount < 4) {
 			applicationEvent.type = UPDATE;
@@ -1022,6 +1018,14 @@ namespace lime {
 			renderCounter++;
 			nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 		}
+		int64_t endTime_process = getTime();
+
+		#if HX_WINDOWS
+		int64_t timerResolution = UPDATE_PERIOD - eventPollingOverhead - (endTime_process - startTime_process);
+		if (timerResolution < 500) timerResolution = UPDATE_PERIOD - eventPollingOverhead;
+
+		adjustTimerResolutionDynamic(timerResolution);
+		#endif
 
 		// Sleep until next event, waking slightly early
 		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
