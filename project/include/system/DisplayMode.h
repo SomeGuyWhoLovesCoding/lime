@@ -16,12 +16,12 @@ namespace lime {
 			hl_type* t;
 			int height;
 			PixelFormat pixelFormat;
-			int refreshRate;
+			double refreshRate;
 			int width;
 
 			DisplayMode ();
 			DisplayMode (value DisplayMode);
-			DisplayMode (int width, int height, PixelFormat pixelFormat, int refreshRate);
+			DisplayMode (int width, int height, PixelFormat pixelFormat, double refreshRate);
 
 			void CopyFrom (DisplayMode* other);
 			void* Value ();

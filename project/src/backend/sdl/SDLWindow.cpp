@@ -570,6 +570,7 @@ namespace lime {
 		}
 
 		displayMode->refreshRate = mode.refresh_rate;
+		//printf("%f\n", mode.refresh_rate);
 
 	}
 

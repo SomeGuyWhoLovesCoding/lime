@@ -20,15 +20,16 @@ class DisplayMode
 
 	/**
 	 * refresh rate in Hz
+	 * (changed to a Float to keep consistency in check)
 	**/
-	public var refreshRate(default, null):Int;
+	public var refreshRate(default, null):Float;
 
 	/**
 	 * horizontal resolution
 	**/
 	public var width(default, null):Int;
 
-	@:noCompletion private function new(width:Int, height:Int, refreshRate:Int, pixelFormat:PixelFormat)
+	@:noCompletion private function new(width:Int, height:Int, refreshRate:Float, pixelFormat:PixelFormat)
 	{
 		this.width = width;
 		this.height = height;

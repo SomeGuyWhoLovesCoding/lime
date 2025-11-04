@@ -6,7 +6,7 @@ namespace lime {
 
 	static int id_height;
 	static int id_pixelFormat;
-	static int id_refreshRate;
+	static double id_refreshRate;
 	static int id_width;
 	static bool init = false;
 
@@ -26,12 +26,12 @@ namespace lime {
 		width = val_int (val_field (displayMode, id_width));
 		height = val_int (val_field (displayMode, id_height));
 		pixelFormat = (PixelFormat)val_int (val_field (displayMode, id_pixelFormat));
-		refreshRate = val_int (val_field (displayMode, id_refreshRate));
+		refreshRate = val_float (val_field (displayMode, id_refreshRate));
 
 	}
 
 
-	DisplayMode::DisplayMode (int _width, int _height, PixelFormat _pixelFormat, int _refreshRate) {
+	DisplayMode::DisplayMode (int _width, int _height, PixelFormat _pixelFormat, double _refreshRate) {
 
 		width = _width;
 		height = _height;
@@ -76,7 +76,7 @@ namespace lime {
 			value displayMode = alloc_empty_object ();
 			alloc_field (displayMode, id_height, alloc_int (height));
 			alloc_field (displayMode, id_pixelFormat, alloc_int (pixelFormat));
-			alloc_field (displayMode, id_refreshRate, alloc_int (refreshRate));
+			alloc_field (displayMode, id_refreshRate, alloc_float (refreshRate));
 			alloc_field (displayMode, id_width, alloc_int (width));
 			return displayMode;
 
