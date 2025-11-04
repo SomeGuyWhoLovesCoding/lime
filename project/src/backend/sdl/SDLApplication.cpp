@@ -91,7 +91,18 @@ namespace lime {
 		#ifdef HX_WINDOWS
 		HANDLE hThread = GetCurrentThread();
 		// Set current thread priority
-		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
+		SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST);
+
+		// Disable power throttling for this process
+		PROCESS_POWER_THROTTLING_STATE PowerThrottling;
+		PowerThrottling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+		PowerThrottling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+		PowerThrottling.StateMask = 0; // Disable throttling
+		SetProcessInformation(GetCurrentProcess(), 
+							ProcessPowerThrottling, 
+							&PowerThrottling, 
+							sizeof(PowerThrottling));
+
 		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 		#endif
 
@@ -99,48 +110,6 @@ namespace lime {
 
 	#if HX_WINDOWS
 	static HMODULE ntdll;
-	void adjustTimerResolutionDynamic(int updatePeriodUs) {
-		typedef NTSTATUS (NTAPI *NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
-		typedef NTSTATUS (NTAPI *NtQueryTimerResolution_t)(PULONG, PULONG, PULONG);
-
-		if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
-		if (!ntdll) return;
-
-		static NtSetTimerResolution_t NtSetTimerResolution =
-			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
-		static NtQueryTimerResolution_t NtQueryTimerResolution =
-			(NtQueryTimerResolution_t)GetProcAddress(ntdll, "NtQueryTimerResolution");
-
-		if (!NtSetTimerResolution || !NtQueryTimerResolution) return;
-
-		// Query current, min, and max timer resolutions
-		ULONG minRes = 0, maxRes = 0, curRes = 0;
-		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
-
-		/*printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
-			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
-
-		// Convert period to approximate FPS
-		int fps = (updatePeriodUs > 0) ? static_cast<int>(1000000 / updatePeriodUs) : 120;
-		//printf("FPS SET TO %d\n", fps);
-
-		// Map FPS to ideal timer resolution (microseconds)
-		ULONG resolutionUs = (fps > 0) ? (ULONG)(10000000 / fps) : 10000;
-
-		//printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
-
-		// Apply new resolution
-		ULONG current;
-		NTSTATUS status = NtSetTimerResolution(resolutionUs, TRUE, &current);
-
-		/*printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
-			(unsigned int)status, current / 10000.0);*/
-
-		// Re-query after setting
-		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
-		/*printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
-			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
-	}
 	#endif
 
 
@@ -895,6 +864,51 @@ namespace lime {
 
 	int64_t prevFrameTime = 0;
 
+	#if HX_WINDOWS
+	void adjustTimerResolutionDynamic(int updatePeriodUs) {
+		typedef NTSTATUS (NTAPI *NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
+		typedef NTSTATUS (NTAPI *NtQueryTimerResolution_t)(PULONG, PULONG, PULONG);
+
+		if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
+		if (!ntdll) return;
+
+		static NtSetTimerResolution_t NtSetTimerResolution =
+			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
+		static NtQueryTimerResolution_t NtQueryTimerResolution =
+			(NtQueryTimerResolution_t)GetProcAddress(ntdll, "NtQueryTimerResolution");
+
+		if (!NtSetTimerResolution || !NtQueryTimerResolution) return;
+
+		// Query current, min, and max timer resolutions
+		ULONG minRes = 0, maxRes = 0, curRes = 0;
+		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
+
+		/*printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
+			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
+
+		// Convert period to approximate FPS
+		int fps = (updatePeriodUs > 0) ? static_cast<int>(1000000 / updatePeriodUs) : 120;
+		//printf("FPS SET TO %d\n", fps);
+
+		// Map FPS to ideal timer resolution (microseconds)
+		ULONG resolutionUs = (fps > 0) ? (ULONG)(10000000 / fps) : 10000;
+
+		//printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
+
+		// Apply new resolution
+		ULONG current;
+		NTSTATUS status = NtSetTimerResolution(resolutionUs, TRUE, &current);
+
+		/*printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
+			(unsigned int)status, current / 10000.0);*/
+
+		// Re-query after setting
+		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
+		/*printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
+			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
+	}
+	#endif
+
 	int64_t getTime() {
 		#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {0};
@@ -962,6 +976,8 @@ namespace lime {
 		startTimestamp = lastUpdate = now;
 	}
 
+	// Most of this rewritten function were generated with claude.ai with a side of chatgpt
+	// also look at power throttling in this class it's disabled for a very good reason
 	bool SDLApplication::Update() {
 		// Poll events first (non-blocking)
 		int64_t startPollTime = getTime();
@@ -1035,7 +1051,7 @@ namespace lime {
 		int64_t sleepUntil = (nextEventTime - (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000))) - eventPollingOverhead;
 
 		if (sleepUntil > currentTime) {
-			coolSleepUntil(sleepUntil);
+			coolSleepUntil(sleepUntil - 50); // subtract by to compensate
 		}
 
 		return active;
