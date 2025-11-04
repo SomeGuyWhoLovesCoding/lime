@@ -999,7 +999,7 @@ namespace lime {
 		int64_t nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 
 		// Process all due updates (with catch-up limit)
-		int64_t startTime_process = getTime();
+		//int64_t startTime_process = getTime();
 		int updateCount = 0;
 		while (currentTime >= nextUpdateTime && updateCount < 4) {
 			applicationEvent.type = UPDATE;
@@ -1018,10 +1018,11 @@ namespace lime {
 			renderCounter++;
 			nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 		}
-		int64_t endTime_process = getTime();
+		//int64_t endTime_process = getTime();
 
 		#if HX_WINDOWS
-		int64_t timerResolution = UPDATE_PERIOD - eventPollingOverhead - (endTime_process - startTime_process);
+		// removed the subtraction cuz rendering literally happens in between an update for whatever reason so whatevs
+		int64_t timerResolution = UPDATE_PERIOD - (int64_t)(eventPollingOverhead / 3);
 		if (timerResolution < 500) timerResolution = UPDATE_PERIOD - eventPollingOverhead;
 
 		adjustTimerResolutionDynamic(timerResolution);
