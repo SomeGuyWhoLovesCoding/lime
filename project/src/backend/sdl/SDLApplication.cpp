@@ -1022,8 +1022,8 @@ namespace lime {
 		int64_t endTime_process = getTime();
 
 		#if HX_WINDOWS
-		int64_t timerResolution = UPDATE_PERIOD - eventPollingOverhead - (endTime_process - startTime_process);
-		if (timerResolution < 500) timerResolution = UPDATE_PERIOD - eventPollingOverhead;
+		int64_t timerResolution = UPDATE_PERIOD - eventPollingOverhead;
+		if (timerResolution < 500) timerResolution = UPDATE_PERIOD;
 
 		adjustTimerResolutionDynamic(timerResolution);
 		#endif
@@ -1036,10 +1036,11 @@ namespace lime {
 		int64_t sleepUntil = nextEventTime;
 
 		#if HX_WINDOWS
-		sleepUntil -= (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000)) - eventPollingOverhead;
+		int64_t subtract = (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000)) + eventPollingOverhead;
+		if (UPDATE - subtract > 0) sleepUntil -= subtract;
 		sleepUntil -= 50; // subtract by 50us to compensate for NtSetTimerResolution overhead
 		#else
-		sleepUntil -= 120;
+		sleepUntil -= 120 + eventPollingOverhead;
 		#endif
 
 		if (sleepUntil > currentTime) {
