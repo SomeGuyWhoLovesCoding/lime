@@ -10,6 +10,9 @@
 [submodule "project/lib/ogg"]
 	path = project/lib/ogg
 	url = https://github.com/openfl/libogg
+[submodule "project/lib/sdl"]
+	path = project/lib/sdl
+	url = https://github.com/SomeGuyWhoLovesCoding/libsdl
 [submodule "project/lib/zlib"]
 	path = project/lib/zlib
 	url = https://github.com/openfl/libzlib
