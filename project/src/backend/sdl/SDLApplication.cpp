@@ -867,24 +867,14 @@ namespace lime {
 	#if HX_WINDOWS
 	void adjustTimerResolutionDynamic(int updatePeriodUs) {
 		typedef NTSTATUS (NTAPI *NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
-		typedef NTSTATUS (NTAPI *NtQueryTimerResolution_t)(PULONG, PULONG, PULONG);
 
 		if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
 		if (!ntdll) return;
 
 		static NtSetTimerResolution_t NtSetTimerResolution =
 			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
-		static NtQueryTimerResolution_t NtQueryTimerResolution =
-			(NtQueryTimerResolution_t)GetProcAddress(ntdll, "NtQueryTimerResolution");
 
-		if (!NtSetTimerResolution || !NtQueryTimerResolution) return;
-
-		// Query current, min, and max timer resolutions
-		ULONG minRes = 0, maxRes = 0, curRes = 0;
-		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
-
-		/*printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
-			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
+		if (!NtSetTimerResolution) return;
 
 		// Convert period to approximate FPS
 		int fps = (updatePeriodUs > 0) ? static_cast<int>(1000000 / updatePeriodUs) : 120;
@@ -901,11 +891,6 @@ namespace lime {
 
 		/*printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
 			(unsigned int)status, current / 10000.0);*/
-
-		// Re-query after setting
-		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
-		/*printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
-			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);*/
 	}
 	#endif
 
@@ -1004,7 +989,7 @@ namespace lime {
 
 		// Detect long pauses or drift and adjust baseTime
 		int64_t deltaTime = currentTime - prevFrameTime;
-		if (deltaTime > 100000 || currentTime > baseTime + (updateCounter + 1) * UPDATE_PERIOD * 1000) {
+		if (deltaTime > 100000) {
 			baseTime = currentTime - updateCounter * UPDATE_PERIOD;
 		}
 
@@ -1048,10 +1033,17 @@ namespace lime {
 		int64_t frameRateNow = (1000000 / UPDATE_PERIOD);
 
 		// Adjust buffer dynamically depending on update framerate
-		int64_t sleepUntil = (nextEventTime - (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000))) - eventPollingOverhead;
+		int64_t sleepUntil = nextEventTime;
+
+		#if HX_WINDOWS
+		sleepUntil -= (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000)) - eventPollingOverhead;
+		sleepUntil -= 50; // subtract by 50us to compensate for NtSetTimerResolution overhead
+		#else
+		sleepUntil -= 120;
+		#endif
 
 		if (sleepUntil > currentTime) {
-			coolSleepUntil(sleepUntil - 50); // subtract by to compensate
+			coolSleepUntil(sleepUntil);
 		}
 
 		return active;
