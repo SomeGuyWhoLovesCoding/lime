@@ -1034,9 +1034,7 @@ namespace lime {
 
 		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
 
-		if (nextEventTime > currentTime) {
-			coolSleepUntil(nextEventTime);
-		}
+		coolSleepUntil(nextEventTime);
 
 		return active;
 	}
