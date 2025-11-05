@@ -103,17 +103,9 @@ namespace lime {
 		// Set current thread priority
 		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
 
-		// Disable power throttling for this process
-		PROCESS_POWER_THROTTLING_STATE PowerThrottling;
-		PowerThrottling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-		PowerThrottling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-		PowerThrottling.StateMask = 0; // Disable throttling
-		SetProcessInformation(GetCurrentProcess(), 
-							ProcessPowerThrottling, 
-							&PowerThrottling, 
-							sizeof(PowerThrottling));
+		// Set process priority to real-time
+		SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
 
-							
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
 												CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
