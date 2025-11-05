@@ -17,16 +17,13 @@
 #include <thread>
 #include <string>
 #include <stdio.h>
+#include <vector>
 
 using namespace std;
 
 #ifdef HX_WINDOWS
 #include <windows.h>
 #include <cstdint>
-#endif
-
-#if defined(__GNUC__) || defined(__clang__)
-#include <immintrin.h>
 #endif
 
 #ifdef HX_MACOS
@@ -194,6 +191,35 @@ namespace lime {
 				WindowEvent::Dispatch(&windowEvent);
 				break;
 
+			// Quit event
+			case SDL_QUIT:
+				active = false;
+				break;
+
+			#ifndef EMSCRIPTEN
+			case SDL_RENDER_DEVICE_RESET:
+				renderEvent.type = RENDER_CONTEXT_LOST;
+				RenderEvent::Dispatch(&renderEvent);
+
+				renderEvent.type = RENDER_CONTEXT_RESTORED;
+				RenderEvent::Dispatch(&renderEvent);
+				break;
+			#endif
+
+			// Controller joystick accelerometer fallback
+			default:
+				break;
+		}
+	}
+
+	void SDLApplication::HandleInputEvent(SDL_Event* event) {
+
+		#if defined(IPHONE) || defined(EMSCRIPTEN)
+		int top = 0;
+		gc_set_top_of_stack(&top, false);
+		#endif
+
+		switch (event->type) {
 			// Clipboard
 			case SDL_CLIPBOARDUPDATE:
 				ProcessClipboardEvent(event);
@@ -275,11 +301,6 @@ namespace lime {
 				}
 				break;
 
-			// Quit event
-			case SDL_QUIT:
-				active = false;
-				break;
-
 			// File drop
 			case SDL_DROPFILE:
 				ProcessDropEvent(event);
@@ -290,20 +311,6 @@ namespace lime {
 			case SDL_FINGERDOWN:
 			case SDL_FINGERUP:
 				ProcessTouchEvent(event);
-				break;
-
-			#ifndef EMSCRIPTEN
-			case SDL_RENDER_DEVICE_RESET:
-				renderEvent.type = RENDER_CONTEXT_LOST;
-				RenderEvent::Dispatch(&renderEvent);
-
-				renderEvent.type = RENDER_CONTEXT_RESTORED;
-				RenderEvent::Dispatch(&renderEvent);
-				break;
-			#endif
-
-			// Controller joystick accelerometer fallback
-			default:
 				break;
 		}
 	}
@@ -903,11 +910,29 @@ namespace lime {
 		if (sleepForUs <= 0) return;
 
 		#if HX_WINDOWS
-		//sleepForUs -= 50;
-		LARGE_INTEGER due;
-		due.QuadPart = -sleepForUs * 10; // relative, 100ns units
-		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-		WaitForSingleObject(timer, INFINITE);
+		// At 240fps, wake early and spin
+		const int64_t SPIN_THRESHOLD_US = (UPDATE_PERIOD < 5000) ? 600 : 0; // 0.6ms for 240fps
+
+		if (sleepForUs > SPIN_THRESHOLD_US) {
+			FILETIME ft;
+			GetSystemTimePreciseAsFileTime(&ft);
+			ULARGE_INTEGER now;
+			now.LowPart = ft.dwLowDateTime;
+			now.HighPart = ft.dwHighDateTime;
+
+			LARGE_INTEGER due;
+			due.QuadPart = now.QuadPart + ((sleepForUs - SPIN_THRESHOLD_US) * 10);
+
+			SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+			WaitForSingleObject(timer, INFINITE);
+		}
+
+		// Spin for final precision (only if needed)
+		if (SPIN_THRESHOLD_US > 0) {
+			while (getTime() < wakeTimeUs) {
+				_mm_pause();
+			}
+		}
 
 		#elif defined(HX_LINUX)
 		struct timespec wake;
@@ -926,33 +951,76 @@ namespace lime {
 
 	// Most of this rewritten function were generated with claude.ai with a side of chatgpt
 	// also look at power throttling in this class it's disabled for a very good reason
+	// Remove the input polling thread - SDL event polling MUST be on main thread
+	// Keep only these for timestamping:
+	struct TimestampedInputEvent {
+		SDL_Event event;
+		int64_t timestamp;
+	};
+	static std::vector<TimestampedInputEvent> inputEventQueue;
+
+	// Modified Update - poll everything on main thread but timestamp inputs
 	bool SDLApplication::Update() {
 		int64_t currentTime = getTime();
 
-		static double leftover = 0.0;
-
-		// Poll events first (non-blocking)
-		int64_t startPollTime = getTime();
+		// Poll ALL events on main thread (SDL requirement)
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
-			HandleEvent(&event);
-			if (!active) return active;
+			// Timestamp input events immediately when polled
+			bool isInputEvent = false;
+			switch (event.type) {
+				case SDL_CLIPBOARDUPDATE:
+				case SDL_CONTROLLERAXISMOTION:
+				case SDL_CONTROLLERBUTTONDOWN:
+				case SDL_CONTROLLERBUTTONUP:
+				case SDL_CONTROLLERDEVICEADDED:
+				case SDL_CONTROLLERDEVICEREMOVED:
+				case SDL_JOYAXISMOTION:
+				case SDL_JOYBALLMOTION:
+				case SDL_JOYBUTTONDOWN:
+				case SDL_JOYBUTTONUP:
+				case SDL_JOYHATMOTION:
+				case SDL_JOYDEVICEADDED:
+				case SDL_JOYDEVICEREMOVED:
+				case SDL_KEYDOWN:
+				case SDL_KEYUP:
+				case SDL_MOUSEMOTION:
+				case SDL_MOUSEBUTTONDOWN:
+				case SDL_MOUSEBUTTONUP:
+				case SDL_MOUSEWHEEL:
+				case SDL_TEXTINPUT:
+				case SDL_TEXTEDITING:
+				case SDL_WINDOWEVENT:
+				case SDL_DROPFILE:
+				case SDL_FINGERMOTION:
+				case SDL_FINGERDOWN:
+				case SDL_FINGERUP:
+					isInputEvent = true;
+					break;
+			}
+			
+			if (isInputEvent) {
+				// Timestamp and queue for processing during update
+				TimestampedInputEvent tie;
+				tie.event = event;
+				tie.timestamp = getTime(); // Exact capture time
+				inputEventQueue.push_back(tie);
+			} else {
+				// Handle lifecycle events immediately
+				HandleEvent(&event);
+				if (!active) return active;
+			}
 		}
-		int64_t endPollTime = getTime();
-		int64_t eventPollingOverhead = endPollTime - startPollTime;
-		//printf("%lld\n", eventPollingOverhead);
 
-		static int64_t baseTime = 0; // persistent base
+		static int64_t baseTime = 0;
 		static int64_t updateCounter = 0;
 		static int64_t renderCounter = 0;
 
-		// Initialize on first run
 		if (baseTime == 0) {
 			baseTime = currentTime;
 			prevFrameTime = currentTime;
 		}
 
-		// Detect long pauses or drift and adjust baseTime
 		int64_t deltaTime = currentTime - prevFrameTime;
 		if (deltaTime > 100000) {
 			baseTime = currentTime - updateCounter * UPDATE_PERIOD;
@@ -960,12 +1028,21 @@ namespace lime {
 
 		prevFrameTime = currentTime;
 
-		// Calculate next times from base
 		double nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
 		double nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 
-		// Process all due updates (with catch-up limit)
+		// Process update tick - handle all queued inputs here
 		if (currentTime >= nextUpdateTime) {
+			// Process all timestamped inputs
+			for (auto& tie : inputEventQueue) {
+				HandleInputEvent(&tie.event);
+				
+				// Optional: Calculate input lag for debugging
+				// int64_t inputLag = currentTime - tie.timestamp;
+				// printf("Input lag: %lld µs\n", inputLag);
+			}
+			inputEventQueue.clear();
+
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
@@ -983,15 +1060,10 @@ namespace lime {
 		}
 
 		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
-		int64_t sleepUntil = nextEventTime;
 
-		leftover = std::fmod((double)currentTime - (double)baseTime, UPDATE_PERIOD);
-
-		if (sleepUntil > currentTime) {
-			coolSleepUntil(sleepUntil);
+		if (nextEventTime > currentTime) {
+			coolSleepUntil(nextEventTime);
 		}
-
-		//printf("%lld\n", (currentTime - baseTime) % UPDATE_PERIOD);
 
 		return active;
 	}

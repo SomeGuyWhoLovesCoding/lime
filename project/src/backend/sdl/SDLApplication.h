@@ -41,6 +41,7 @@ namespace lime {
 		private:
 
 			void HandleEvent (SDL_Event* event);
+			void HandleInputEvent (SDL_Event* event);
 			void ProcessClipboardEvent (SDL_Event* event);
 			void ProcessDropEvent (SDL_Event* event);
 			void ProcessGamepadEvent (SDL_Event* event);
