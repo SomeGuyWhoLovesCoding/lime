@@ -36,8 +36,8 @@ namespace lime {
 	bool inBackground = false;
 
 	// --- timing constants for decoupled loop ---
-	static int UPDATE_PERIOD = (int)(1000000.0 / 120); // fixed update @ 240Hz
-	static int RENDER_PERIOD = (int)(1000000.0 / 60);  // render @ 60Hz
+	static double UPDATE_PERIOD = 1000000.0 / 120; // fixed update @ 240Hz
+	static double RENDER_PERIOD = 1000000.0 / 60;  // render @ 60Hz
 
     #if HX_WINDOWS
     static HANDLE timer;
@@ -91,7 +91,7 @@ namespace lime {
 		#ifdef HX_WINDOWS
 		HANDLE hThread = GetCurrentThread();
 		// Set current thread priority
-		SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST);
+		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
 
 		// Disable power throttling for this process
 		PROCESS_POWER_THROTTLING_STATE PowerThrottling;
@@ -831,7 +831,7 @@ namespace lime {
 		if (frameRate > 0) {
 
 			UPDATE_PERIOD = 1000000.0 / frameRate;
-			RENDER_PERIOD = 1000000.0 / 60;
+			RENDER_PERIOD = 1000000.0 / 60.0;
 
 		} else {
 
@@ -855,12 +855,11 @@ namespace lime {
 
 		} else {
 
-			RENDER_PERIOD = 1000000.0 / 60;
+			RENDER_PERIOD = 1000000.0 / 60.0;
 
 		}
 
 	}
-
 
 	int64_t prevFrameTime = 0;
 
@@ -964,6 +963,10 @@ namespace lime {
 	// Most of this rewritten function were generated with claude.ai with a side of chatgpt
 	// also look at power throttling in this class it's disabled for a very good reason
 	bool SDLApplication::Update() {
+		int64_t currentTime = getTime();
+
+		static double leftover = 0.0;
+
 		// Poll events first (non-blocking)
 		int64_t startPollTime = getTime();
 		SDL_Event event;
@@ -978,8 +981,6 @@ namespace lime {
 		static int64_t baseTime = 0; // persistent base
 		static int64_t updateCounter = 0;
 		static int64_t renderCounter = 0;
-
-		int64_t currentTime = getTime();
 
 		// Initialize on first run
 		if (baseTime == 0) {
@@ -996,8 +997,8 @@ namespace lime {
 		prevFrameTime = currentTime;
 
 		// Calculate next times from base
-		int64_t nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
-		int64_t nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
+		double nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
+		double nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 
 		// Process all due updates (with catch-up limit)
 		int64_t startTime_process = getTime();
@@ -1022,7 +1023,7 @@ namespace lime {
 		int64_t endTime_process = getTime();
 
 		#if HX_WINDOWS
-		int64_t timerResolution = UPDATE_PERIOD - eventPollingOverhead;
+		int64_t timerResolution = UPDATE_PERIOD;
 		if (timerResolution < 500) timerResolution = UPDATE_PERIOD;
 
 		adjustTimerResolutionDynamic(timerResolution);
@@ -1032,20 +1033,17 @@ namespace lime {
 		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
 		int64_t frameRateNow = (1000000 / UPDATE_PERIOD);
 
-		// Adjust buffer dynamically depending on update framerate
+		nextEventTime -= 50; // subtract by 50us to compensate for NtSetTimerResolution overhead
+
 		int64_t sleepUntil = nextEventTime;
 
-		#if HX_WINDOWS
-		int64_t subtract = (frameRateNow > 480 ? 250 : (frameRateNow > 240 ? 500 : 1000)) + eventPollingOverhead;
-		if (UPDATE - subtract > 0) sleepUntil -= subtract;
-		sleepUntil -= 50; // subtract by 50us to compensate for NtSetTimerResolution overhead
-		#else
-		sleepUntil -= 120 + eventPollingOverhead;
-		#endif
+		leftover = std::fmod((double)currentTime - (double)baseTime, UPDATE_PERIOD);
 
 		if (sleepUntil > currentTime) {
-			coolSleepUntil(sleepUntil);
+			coolSleepUntil(sleepUntil - (leftover / 4));
 		}
+
+		//printf("%lld\n", (currentTime - baseTime) % UPDATE_PERIOD);
 
 		return active;
 	}
