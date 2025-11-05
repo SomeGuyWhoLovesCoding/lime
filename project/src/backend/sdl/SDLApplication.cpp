@@ -872,11 +872,11 @@ namespace lime {
 		QueryPerformanceCounter(&counter);
 
 		double elapsedSeconds = double(counter.QuadPart - start.QuadPart) / freq.QuadPart;
-		return int64_t(elapsedSeconds * 1'000'000.0);
+		return int64_t(elapsedSeconds * 1000000.0);
 		#elif defined(HX_LINUX)
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC_RAW, &ts); 
-		return ts.tv_sec * 1'000'000 + ts.tv_nsec / 1000;
+		return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 		#else
 		return std::chrono::duration_cast<std::chrono::microseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()
