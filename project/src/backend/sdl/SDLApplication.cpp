@@ -885,7 +885,7 @@ namespace lime {
 
 		double elapsedSeconds = double(counter.QuadPart - start.QuadPart) / freq.QuadPart;
 		return int64_t(elapsedSeconds * 1'000'000.0);
-		#elif defined(__GNUC__) || defined(__clang__)
+		#elif defined(HX_LINUX)
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC_RAW, &ts); 
 		return ts.tv_sec * 1'000'000 + ts.tv_nsec / 1000;
@@ -908,7 +908,7 @@ namespace lime {
 		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
 		WaitForSingleObject(timer, INFINITE);
 
-		#elif defined(__GNUC__) || defined(__clang__)
+		#elif defined(HX_LINUX)
 		struct timespec wake;
 		wake.tv_sec = wakeTimeUs / 1000000;
 		wake.tv_nsec = (wakeTimeUs % 1000000) * 1000;
