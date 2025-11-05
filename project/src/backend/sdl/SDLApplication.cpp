@@ -16,6 +16,10 @@ using namespace std;
 #include <cstdint>
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#include <immintrin.h>
+#endif
+
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
 #endif
@@ -103,7 +107,15 @@ namespace lime {
 							&PowerThrottling, 
 							sizeof(PowerThrottling));
 
-		if (!timer) timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+							
+		if (!timer) {
+			timer = CreateWaitableTimerEx(nullptr, nullptr,
+												CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+			if (!timer) {
+				std::cout << "Failed to create high-res timer\ncreating regular timer instead\n";
+				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+			}
+		}
 		#endif
 
 	}
@@ -892,9 +904,10 @@ namespace lime {
 
 		#if HX_WINDOWS
 		LARGE_INTEGER due;
-		due.QuadPart = -sleepForUs * 10; // 100ns units, negative = relative
+		due.QuadPart = -sleepForUs * 10; // relative, 100ns units
 		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
 		WaitForSingleObject(timer, INFINITE);
+
 		#elif defined(__GNUC__) || defined(__clang__)
 		struct timespec wake;
 		wake.tv_sec = wakeTimeUs / 1000000;
@@ -951,15 +964,12 @@ namespace lime {
 		double nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 
 		// Process all due updates (with catch-up limit)
-		int64_t startTime_process = getTime();
-		int updateCount = 0;
-		while (currentTime >= nextUpdateTime && updateCount < 4) {
+		if (currentTime >= nextUpdateTime) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			updateCounter++;
-			updateCount++;
 			nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
 		}
 
@@ -970,18 +980,15 @@ namespace lime {
 			renderCounter++;
 			nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 		}
-		int64_t endTime_process = getTime();
 
 		#if HX_WINDOWS
-		int64_t timerResolution = UPDATE_PERIOD - eventPollingOverhead;
+		int64_t timerResolution = UPDATE_PERIOD;
 		if (timerResolution < 500) timerResolution = UPDATE_PERIOD;
 
 		adjustTimerResolutionDynamic(timerResolution);
 		#endif
 
-		// Sleep until next event, waking slightly early
 		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
-
 		int64_t sleepUntil = nextEventTime;
 
 		leftover = std::fmod((double)currentTime - (double)baseTime, UPDATE_PERIOD);
