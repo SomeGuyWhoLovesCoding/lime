@@ -1,3 +1,12 @@
+/**
+ * This class is where the main loop goes. For one, windows 10;
+ * The said main loop uses:
+   - A combination of high res waitable timer and an undocumented ntdll function
+   - abused to be set to your literal frame time, to create a surreal rhythm game experience!
+ * On the other hand, linux just already has an accurate sleep function. I wanted to create a fun crispy smooth experience for literally everyone who are on windows,
+ so that meant doing this bullshit to compensate. How about I make a literal main loop library out of this shit?
+**/
+
 #include "SDLApplication.h"
 #include "SDLGamepad.h"
 #include "SDLJoystick.h"
@@ -787,6 +796,36 @@ namespace lime {
 
 	}
 
+	#if HX_WINDOWS
+	void adjustTimerResolutionDynamic(int updatePeriodUs) {
+		typedef NTSTATUS (NTAPI *NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
+
+		if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
+		if (!ntdll) return;
+
+		static NtSetTimerResolution_t NtSetTimerResolution =
+			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
+
+		if (!NtSetTimerResolution) return;
+
+		// Convert period to approximate FPS
+		int fps = (updatePeriodUs > 0) ? static_cast<int>(1000000 / updatePeriodUs) : 120;
+		//printf("FPS SET TO %d\n", fps);
+
+		// Map FPS to ideal timer resolution (microseconds)
+		ULONG resolutionUs = (fps > 0) ? (ULONG)(10000000 / fps) : 10000;
+
+		//printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
+
+		// Apply new resolution
+		ULONG current;
+		NTSTATUS status = NtSetTimerResolution(resolutionUs, TRUE, &current);
+
+		printf("NtSetTimerResolution -> Status: 0x%08X, Requested: %.3fus, Actual current: %.3fms\n",
+			(unsigned int)status, resolutionUs / 10000.0, current / 10000.0);
+	}
+	#endif
+
 
 	void SDLApplication::SetFrameRate (double frameRate) {
 
@@ -794,6 +833,13 @@ namespace lime {
 
 			UPDATE_PERIOD = 1000000.0 / frameRate;
 			RENDER_PERIOD = 1000000.0 / 60.0;
+
+			#if HX_WINDOWS
+			int64_t timerResolution = UPDATE_PERIOD;
+			if (timerResolution < 500) timerResolution = UPDATE_PERIOD;
+
+			adjustTimerResolutionDynamic(timerResolution);
+			#endif
 
 		} else {
 
@@ -825,41 +871,10 @@ namespace lime {
 
 	int64_t prevFrameTime = 0;
 
-	#if HX_WINDOWS
-	void adjustTimerResolutionDynamic(int updatePeriodUs) {
-		typedef NTSTATUS (NTAPI *NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
-
-		if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
-		if (!ntdll) return;
-
-		static NtSetTimerResolution_t NtSetTimerResolution =
-			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
-
-		if (!NtSetTimerResolution) return;
-
-		// Convert period to approximate FPS
-		int fps = (updatePeriodUs > 0) ? static_cast<int>(1000000 / updatePeriodUs) : 120;
-		//printf("FPS SET TO %d\n", fps);
-
-		// Map FPS to ideal timer resolution (microseconds)
-		ULONG resolutionUs = (fps > 0) ? (ULONG)(10000000 / fps) : 10000;
-
-		//printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
-
-		// Apply new resolution
-		ULONG current;
-		NTSTATUS status = NtSetTimerResolution(resolutionUs, TRUE, &current);
-
-		/*printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
-			(unsigned int)status, current / 10000.0);*/
-	}
-	#endif
-
 	int64_t getTime() {
 		#ifdef HX_WINDOWS
-		static LARGE_INTEGER freq = {0};
-		static LARGE_INTEGER start = {0};
-
+		static LARGE_INTEGER freq = {};
+		static LARGE_INTEGER start = {};
 		if (freq.QuadPart == 0) {
 			QueryPerformanceFrequency(&freq);
 			QueryPerformanceCounter(&start);
@@ -868,33 +883,18 @@ namespace lime {
 		LARGE_INTEGER counter;
 		QueryPerformanceCounter(&counter);
 
-		// Calculate elapsed ticks since start
-		int64_t elapsed = counter.QuadPart - start.QuadPart;
-
-		// Convert to microseconds without overflow
-		return (elapsed * 1000000) / freq.QuadPart;
+		double elapsedSeconds = double(counter.QuadPart - start.QuadPart) / freq.QuadPart;
+		return int64_t(elapsedSeconds * 1'000'000.0);
 		#elif defined(__GNUC__) || defined(__clang__)
 		struct timespec ts;
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+		clock_gettime(CLOCK_MONOTONIC_RAW, &ts); 
+		return ts.tv_sec * 1'000'000 + ts.tv_nsec / 1000;
 		#else
 		return std::chrono::duration_cast<std::chrono::microseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()
 		).count();
 		#endif
 	}
-
-	#if defined(__GNUC__) || defined(__clang__)
-	// add microseconds to a timespec
-	inline void timespecAddUs(struct timespec &ts, int64_t us) {
-		ts.tv_nsec += (us % 1000000) * 1000;
-		ts.tv_sec  += us / 1000000;
-		if (ts.tv_nsec >= 1000000000) {
-			ts.tv_nsec -= 1000000000;
-			ts.tv_sec++;
-		}
-	}
-	#endif
 
 	void coolSleepUntil(int64_t wakeTimeUs) {
 		int64_t currentTime = getTime();
@@ -980,13 +980,6 @@ namespace lime {
 			renderCounter++;
 			nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 		}
-
-		#if HX_WINDOWS
-		int64_t timerResolution = UPDATE_PERIOD;
-		if (timerResolution < 500) timerResolution = UPDATE_PERIOD;
-
-		adjustTimerResolutionDynamic(timerResolution);
-		#endif
 
 		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
 		int64_t sleepUntil = nextEventTime;
