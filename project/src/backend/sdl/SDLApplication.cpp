@@ -668,39 +668,28 @@ namespace lime {
 
 
 	void SDLApplication::ProcessTextEvent (SDL_Event* event) {
-
 		if (TextEvent::callback) {
-
 			switch (event->type) {
-
 				case SDL_TEXTINPUT:
-
 					textEvent.type = TEXT_INPUT;
 					break;
 
 				case SDL_TEXTEDITING:
-
 					textEvent.type = TEXT_EDIT;
 					textEvent.start = event->edit.start;
 					textEvent.length = event->edit.length;
 					break;
-
 			}
 
-			if (textEvent.text) {
-
-				free (textEvent.text);
-
-			}
-
-			textEvent.text = (vbyte*)malloc (strlen (event->text.text) + 1);
-			strcpy ((char*)textEvent.text, event->text.text);
+			// Use static buffer instead of malloc/free
+			static char textBuffer[SDL_TEXTINPUTEVENT_TEXT_SIZE];
+			strncpy(textBuffer, event->text.text, SDL_TEXTINPUTEVENT_TEXT_SIZE - 1);
+			textBuffer[SDL_TEXTINPUTEVENT_TEXT_SIZE - 1] = '\0';
+			textEvent.text = (vbyte*)textBuffer;
 
 			textEvent.windowID = event->text.windowID;
-			TextEvent::Dispatch (&textEvent);
-
+			TextEvent::Dispatch(&textEvent);
 		}
-
 	}
 
 
@@ -961,12 +950,11 @@ namespace lime {
 
 	// Modified Update - poll everything on main thread but timestamp inputs
 	bool SDLApplication::Update() {
-		int64_t currentTime = getTime();
+    int64_t currentTime = getTime();
+    int64_t pollTimestamp = currentTime; // Single timestamp for this poll batch
 
-		// Poll ALL events on main thread (SDL requirement)
-		SDL_Event event;
+    SDL_Event event;
 		while (SDL_PollEvent(&event)) {
-			// Timestamp input events immediately when polled
 			bool isInputEvent = false;
 			switch (event.type) {
 				case SDL_CLIPBOARDUPDATE:
@@ -1000,13 +988,11 @@ namespace lime {
 			}
 			
 			if (isInputEvent) {
-				// Timestamp and queue for processing during update
 				TimestampedInputEvent tie;
 				tie.event = event;
-				tie.timestamp = getTime(); // Exact capture time
+				tie.timestamp = pollTimestamp;
 				inputEventQueue.push_back(tie);
 			} else {
-				// Handle lifecycle events immediately
 				HandleEvent(&event);
 				if (!active) return active;
 			}
@@ -1019,6 +1005,7 @@ namespace lime {
 		if (baseTime == 0) {
 			baseTime = currentTime;
 			prevFrameTime = currentTime;
+			inputEventQueue.reserve(26); // Pre-allocate
 		}
 
 		int64_t deltaTime = currentTime - prevFrameTime;
@@ -1031,17 +1018,12 @@ namespace lime {
 		double nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
 		double nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 
-		// Process update tick - handle all queued inputs here
 		if (currentTime >= nextUpdateTime) {
-			// Process all timestamped inputs
-			for (auto& tie : inputEventQueue) {
-				HandleInputEvent(&tie.event);
-				
-				// Optional: Calculate input lag for debugging
-				// int64_t inputLag = currentTime - tie.timestamp;
-				// printf("Input lag: %lld µs\n", inputLag);
+			// Process inputs
+			for (size_t i = 0; i < inputEventQueue.size(); i++) {
+				HandleInputEvent(&inputEventQueue[i].event);
 			}
-			inputEventQueue.clear();
+			inputEventQueue.clear(); // Keeps capacity
 
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
@@ -1051,7 +1033,6 @@ namespace lime {
 			nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
 		}
 
-		// Process render if due
 		if (currentTime >= nextRenderTime) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
