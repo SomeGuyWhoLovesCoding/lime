@@ -903,6 +903,7 @@ namespace lime {
 		if (sleepForUs <= 0) return;
 
 		#if HX_WINDOWS
+		//sleepForUs -= 50;
 		LARGE_INTEGER due;
 		due.QuadPart = -sleepForUs * 10; // relative, 100ns units
 		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
