@@ -18,7 +18,6 @@
 #include <ui/WindowEvent.h>
 #include "SDLWindow.h"
 
-struct NativeEvent; // forward declaration, or include where it's defined
 
 namespace lime {
 
@@ -39,13 +38,20 @@ namespace lime {
 
 			void RegisterWindow (SDLWindow *window);
 
-			void HandleEvent (SDL_Event* event);
-			NativeEvent ConvertSDLEventToNative (const SDL_Event &e, int64_t nowUs);
-			void HandleNativeEvent (const NativeEvent &ne);
-			void PollAndEnqueueSDLEvents (void);
-			void ProcessNativeEventsForUpdate (int maxEventsPerUpdate);
-
 		private:
+
+			void HandleEvent (SDL_Event* event);
+			void HandleInputEvent (SDL_Event* event);
+			void ProcessClipboardEvent (SDL_Event* event);
+			void ProcessDropEvent (SDL_Event* event);
+			void ProcessGamepadEvent (SDL_Event* event);
+			void ProcessJoystickEvent (SDL_Event* event);
+			void ProcessKeyEvent (SDL_Event* event);
+			void ProcessMouseEvent (SDL_Event* event);
+			void ProcessSensorEvent (SDL_Event* event);
+			void ProcessTextEvent (SDL_Event* event);
+			void ProcessTouchEvent (SDL_Event* event);
+			void ProcessWindowEvent (SDL_Event* event);
 
 			static void UpdateFrame ();
 			static void UpdateFrame (void*);

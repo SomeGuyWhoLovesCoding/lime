@@ -34,75 +34,6 @@ using namespace std;
 #include "emscripten.h"
 #endif
 
-// ---------------------------
-// Lightweight POD event types
-// ---------------------------
-enum class NativeEventType : uint8_t {
-    None = 0,
-    KeyDown,
-    KeyUp,
-    MouseMove,
-    MouseButtonDown,
-    MouseButtonUp,
-    MouseWheel,
-    TextInput,
-    ControllerButtonDown,
-    ControllerButtonUp,
-    ControllerAxisMotion,
-    JoystickAxisMotion,
-    WindowResized,
-    WindowClose,
-    DropFile,
-    Quit
-};
-
-struct NativeEvent {
-    NativeEventType type;
-    int64_t timestampUs; // microseconds from getTime()
-    int32_t data1;       // generic (keycode, button, axis index, etc)
-    int32_t data2;       // generic
-    int32_t x, y;        // position
-    float   fdata;       // analog value
-    char    text[16];    // small UTF-8 buffer (for TEXTINPUT or DROPFILE truncated)
-};
-
-// ---------------------------
-// SPSC Ring buffer (POD only)
-// ---------------------------
-class InputRing {
-public:
-    InputRing(size_t capacity = 4096) : cap(capacity), head(0), tail(0) {
-        buf = (NativeEvent*)malloc(sizeof(NativeEvent) * cap);
-        // initialize to zero to be safe
-        memset(buf, 0, sizeof(NativeEvent) * cap);
-    }
-    ~InputRing() { free(buf); }
-
-    // push by value (called from SDL poll on main thread)
-    bool push(const NativeEvent& e) {
-        size_t next = (head + 1) % cap;
-        if (next == tail) return false; // full
-        buf[head] = e;
-        head = next;
-        return true;
-    }
-
-    // pop into out (called from Update() in the same thread too)
-    bool pop(NativeEvent &out) {
-        if (tail == head) return false; // empty
-        out = buf[tail];
-        tail = (tail + 1) % cap;
-        return true;
-    }
-
-    void clear() { head = tail = 0; }
-    bool empty() const { return head == tail; }
-
-private:
-    NativeEvent *buf;
-    size_t cap;
-    size_t head, tail;
-};
 
 namespace lime {
 
@@ -230,31 +161,6 @@ namespace lime {
 
 	}
 
-	int64_t getTime() {
-		#ifdef HX_WINDOWS
-		static LARGE_INTEGER freq = {};
-		static LARGE_INTEGER start = {};
-		if (freq.QuadPart == 0) {
-			QueryPerformanceFrequency(&freq);
-			QueryPerformanceCounter(&start);
-		}
-
-		LARGE_INTEGER counter;
-		QueryPerformanceCounter(&counter);
-
-		double elapsedSeconds = double(counter.QuadPart - start.QuadPart) / freq.QuadPart;
-		return int64_t(elapsedSeconds * 1000000.0);
-		#elif defined(HX_LINUX)
-		struct timespec ts;
-		clock_gettime(CLOCK_MONOTONIC_RAW, &ts); 
-		return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-		#else
-		return std::chrono::duration_cast<std::chrono::microseconds>(
-			std::chrono::steady_clock::now().time_since_epoch()
-		).count();
-		#endif
-	}
-
 	void SDLApplication::HandleEvent(SDL_Event* event) {
 
 		#if defined(IPHONE) || defined(EMSCRIPTEN)
@@ -298,413 +204,565 @@ namespace lime {
 		}
 	}
 
-	// ---------------------------
-	// Global static ring instance
-	// (allocated once at startup)
-	// ---------------------------
-	InputRing inputRing(4096); // tune capacity to expected burst sizes
+	void SDLApplication::HandleInputEvent(SDL_Event* event) {
 
-	// ---------------------------
-	// Convert SDL_Event -> NativeEvent
-	// ---------------------------
-	NativeEvent SDLApplication::ConvertSDLEventToNative(const SDL_Event &e, int64_t nowUs) {
-		NativeEvent ne;
-		ne.type = NativeEventType::None;
-		ne.timestampUs = nowUs;
-		ne.data1 = ne.data2 = 0;
-		ne.x = ne.y = 0;
-		ne.fdata = 0.0f;
-		ne.text[0] = '\0';
+		#if defined(IPHONE) || defined(EMSCRIPTEN)
+		int top = 0;
+		gc_set_top_of_stack(&top, false);
+		#endif
 
-		switch (e.type) {
-			case SDL_KEYDOWN:
-				ne.type = NativeEventType::KeyDown;
-				ne.data1 = e.key.keysym.sym;
-				ne.data2 = e.key.keysym.scancode;
+		switch (event->type) {
+			// Clipboard
+			case SDL_CLIPBOARDUPDATE:
+				ProcessClipboardEvent(event);
 				break;
 
-			case SDL_KEYUP:
-				ne.type = NativeEventType::KeyUp;
-				ne.data1 = e.key.keysym.sym;
-				ne.data2 = e.key.keysym.scancode;
-				break;
-
-			case SDL_MOUSEMOTION:
-				ne.type = NativeEventType::MouseMove;
-				ne.x = e.motion.x;
-				ne.y = e.motion.y;
-				ne.fdata = static_cast<float>(e.motion.xrel); // store last rel in fdata for convenience
-				// we'll also use data2 to hold yrel as int if needed
-				ne.data2 = e.motion.yrel;
-				break;
-
-			case SDL_MOUSEBUTTONDOWN:
-				ne.type = NativeEventType::MouseButtonDown;
-				ne.data1 = e.button.button;
-				ne.x = e.button.x;
-				ne.y = e.button.y;
-				ne.data2 = e.button.clicks;
-				ne.fdata = (float)e.button.state;
-				break;
-
-			case SDL_MOUSEBUTTONUP:
-				ne.type = NativeEventType::MouseButtonUp;
-				ne.data1 = e.button.button;
-				ne.x = e.button.x;
-				ne.y = e.button.y;
-				ne.data2 = e.button.clicks;
-				ne.fdata = (float)e.button.state;
-				break;
-
-			case SDL_MOUSEWHEEL:
-				ne.type = NativeEventType::MouseWheel;
-				ne.fdata = static_cast<float>(e.wheel.x);
-				ne.data2 = e.wheel.y;
-				break;
-
-			case SDL_TEXTINPUT:
-				ne.type = NativeEventType::TextInput;
-				strncpy(ne.text, e.text.text, sizeof(ne.text)-1);
-				ne.text[sizeof(ne.text)-1] = '\0';
-				break;
-
-			case SDL_CONTROLLERBUTTONDOWN:
-				ne.type = NativeEventType::ControllerButtonDown;
-				ne.data1 = e.cbutton.button;
-				ne.data2 = e.cbutton.which;
-				break;
-
-			case SDL_CONTROLLERBUTTONUP:
-				ne.type = NativeEventType::ControllerButtonUp;
-				ne.data1 = e.cbutton.button;
-				ne.data2 = e.cbutton.which;
-				break;
-
+			// Gamepad
 			case SDL_CONTROLLERAXISMOTION:
-				ne.type = NativeEventType::ControllerAxisMotion;
-				ne.data1 = e.caxis.axis;
-				ne.fdata = e.caxis.value / 32767.0f;
-				ne.data2 = e.caxis.which;
+			case SDL_CONTROLLERBUTTONDOWN:
+			case SDL_CONTROLLERBUTTONUP:
+			case SDL_CONTROLLERDEVICEADDED:
+			case SDL_CONTROLLERDEVICEREMOVED:
+				ProcessGamepadEvent(event);
 				break;
 
+			// Joystick / Sensors
 			case SDL_JOYAXISMOTION:
-				ne.type = NativeEventType::JoystickAxisMotion;
-				ne.data1 = e.jaxis.axis;
-				ne.fdata = e.jaxis.value / 32767.0f;
-				ne.data2 = e.jaxis.which;
-				break;
-
-			case SDL_WINDOWEVENT:
-				if (e.window.event == SDL_WINDOWEVENT_RESIZED || e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-					ne.type = NativeEventType::WindowResized;
-					ne.data1 = e.window.data1;
-					ne.data2 = e.window.data2;
-					ne.x = e.window.windowID;
-				} else if (e.window.event == SDL_WINDOWEVENT_CLOSE) {
-					ne.type = NativeEventType::WindowClose;
+				if (SDLJoystick::IsAccelerometer(event->jaxis.which)) {
+					ProcessSensorEvent(event);
 				} else {
-					// map other window events into WindowResized/WindowClose or ignore
-					ne.type = NativeEventType::None;
+					ProcessJoystickEvent(event);
 				}
 				break;
 
+			case SDL_JOYBALLMOTION:
+			case SDL_JOYBUTTONDOWN:
+			case SDL_JOYBUTTONUP:
+			case SDL_JOYHATMOTION:
+			case SDL_JOYDEVICEADDED:
+			case SDL_JOYDEVICEREMOVED:
+				ProcessJoystickEvent(event);
+				break;
+
+			// Keyboard
+			case SDL_KEYDOWN:
+			case SDL_KEYUP:
+				ProcessKeyEvent(event);
+				break;
+
+			// Mouse
+			case SDL_MOUSEMOTION:
+			case SDL_MOUSEBUTTONDOWN:
+			case SDL_MOUSEBUTTONUP:
+			case SDL_MOUSEWHEEL:
+				ProcessMouseEvent(event);
+				break;
+
+			// Text input
+			case SDL_TEXTINPUT:
+			case SDL_TEXTEDITING:
+				ProcessTextEvent(event);
+				break;
+
+			// Window events
+			case SDL_WINDOWEVENT:
+				switch (event->window.event) {
+
+					case SDL_WINDOWEVENT_ENTER:
+					case SDL_WINDOWEVENT_LEAVE:
+					case SDL_WINDOWEVENT_SHOWN:
+					case SDL_WINDOWEVENT_HIDDEN:
+					case SDL_WINDOWEVENT_FOCUS_GAINED:
+					case SDL_WINDOWEVENT_FOCUS_LOST:
+					case SDL_WINDOWEVENT_MAXIMIZED:
+					case SDL_WINDOWEVENT_MINIMIZED:
+					case SDL_WINDOWEVENT_MOVED:
+					case SDL_WINDOWEVENT_RESTORED:
+						ProcessWindowEvent(event);
+						break;
+
+					case SDL_WINDOWEVENT_EXPOSED:
+					case SDL_WINDOWEVENT_SIZE_CHANGED:
+						ProcessWindowEvent(event);
+						break;
+
+					case SDL_WINDOWEVENT_CLOSE:
+						ProcessWindowEvent(event);
+						active = false; // quit main loop
+						break;
+				}
+				break;
+
+			// File drop
 			case SDL_DROPFILE:
-				ne.type = NativeEventType::DropFile;
-				if (e.drop.file) {
-					// copy limited path into text (truncated) - no allocation
-					strncpy(ne.text, e.drop.file, sizeof(ne.text)-1);
-					ne.text[sizeof(ne.text)-1] = '\0';
-					// SDL_malloc/SDL_free not needed here; SDL docs say event->drop.file must be freed by user via SDL_free
-				}
+				ProcessDropEvent(event);
 				break;
 
-			case SDL_QUIT:
-				ne.type = NativeEventType::Quit;
-				break;
-
-			default:
-				ne.type = NativeEventType::None;
-				break;
-		}
-
-		return ne;
-	}
-
-	// ---------------------------
-	// New lightweight handler
-	// Converts NativeEvent -> your existing dispatch objects (allocation-free)
-	// ---------------------------
-	void SDLApplication::HandleNativeEvent(const NativeEvent &ne) {
-		// NOTE: relies on existing global event structs (keyEvent, mouseEvent, gamepadEvent, etc.)
-		// The original code in your file dispatches those same objects; we replicate that here
-		switch (ne.type) {
-			case NativeEventType::KeyDown:
-			case NativeEventType::KeyUp:
-				if (KeyEvent::callback) {
-					keyEvent.type = (ne.type == NativeEventType::KeyDown) ? KEY_DOWN : KEY_UP;
-					keyEvent.keyCode = ne.data1;
-					keyEvent.modifier = 0; // we don't have modifiers from this POD; keep previous logic if needed
-					// windowID not preserved in Key POD (could be added if required)
-					KeyEvent::Dispatch(&keyEvent);
-				}
-				break;
-
-			case NativeEventType::MouseMove:
-				if (MouseEvent::callback) {
-					mouseEvent.type = MOUSE_MOVE;
-					mouseEvent.x = ne.x;
-					mouseEvent.y = ne.y;
-					mouseEvent.movementX = static_cast<int>(ne.fdata);
-					mouseEvent.movementY = ne.data2;
-					MouseEvent::Dispatch(&mouseEvent);
-				}
-				break;
-
-			case NativeEventType::MouseButtonDown:
-				if (MouseEvent::callback) {
-					SDL_CaptureMouse(SDL_TRUE);
-					mouseEvent.type = MOUSE_DOWN;
-					mouseEvent.button = ne.data1 - 1;
-					mouseEvent.x = ne.x;
-					mouseEvent.y = ne.y;
-					mouseEvent.clickCount = ne.data2;
-					MouseEvent::Dispatch(&mouseEvent);
-				}
-				break;
-
-			case NativeEventType::MouseButtonUp:
-				if (MouseEvent::callback) {
-					SDL_CaptureMouse(SDL_FALSE);
-					mouseEvent.type = MOUSE_UP;
-					mouseEvent.button = ne.data1 - 1;
-					mouseEvent.x = ne.x;
-					mouseEvent.y = ne.y;
-					mouseEvent.clickCount = ne.data2;
-					MouseEvent::Dispatch(&mouseEvent);
-				}
-				break;
-
-			case NativeEventType::MouseWheel:
-				if (MouseEvent::callback) {
-					mouseEvent.type = MOUSE_WHEEL;
-					// SDL wheel direction handled earlier; here we just set x/y deltas
-					mouseEvent.x = static_cast<int>(ne.fdata);
-					mouseEvent.y = ne.data2;
-					MouseEvent::Dispatch(&mouseEvent);
-				}
-				break;
-
-			case NativeEventType::TextInput:
-				if (TextEvent::callback) {
-					textEvent.type = TEXT_INPUT;
-					// we store pointer to static small buffer — textEvent expects vbyte*; ensure static lifetime
-					static char smallTextBuf[64];
-					strncpy(smallTextBuf, ne.text, sizeof(smallTextBuf)-1);
-					smallTextBuf[sizeof(smallTextBuf)-1] = '\0';
-					textEvent.text = (vbyte*)smallTextBuf;
-					TextEvent::Dispatch(&textEvent);
-				}
-				break;
-
-			case NativeEventType::ControllerAxisMotion:
-			case NativeEventType::JoystickAxisMotion:
-				if (GamepadEvent::callback) {
-					gamepadEvent.type = GAMEPAD_AXIS_MOVE;
-					gamepadEvent.axis = ne.data1;
-					gamepadEvent.id = ne.data2;
-					// apply deadzone logic as in original
-					if (ne.fdata > -analogAxisDeadZone/32767.0f && ne.fdata < analogAxisDeadZone/32767.0f) {
-						// small movement — send zero if previously non-zero
-						if (gamepadsAxisMap[gamepadEvent.id].count(gamepadEvent.axis) && gamepadsAxisMap[gamepadEvent.id][gamepadEvent.axis] != 0) {
-							gamepadsAxisMap[gamepadEvent.id][gamepadEvent.axis] = 0;
-							gamepadEvent.axisValue = 0;
-							GamepadEvent::Dispatch(&gamepadEvent);
-						}
-					} else {
-						// store scaled integer for change detection
-						int scaled = static_cast<int>(ne.fdata * 32767.0f);
-						if (gamepadsAxisMap[gamepadEvent.id][gamepadEvent.axis] == scaled) break;
-						gamepadsAxisMap[gamepadEvent.id][gamepadEvent.axis] = scaled;
-						gamepadEvent.axisValue = ne.fdata;
-						GamepadEvent::Dispatch(&gamepadEvent);
-					}
-				}
-				break;
-
-			case NativeEventType::ControllerButtonDown:
-			case NativeEventType::ControllerButtonUp:
-				if (GamepadEvent::callback) {
-					gamepadEvent.type = (ne.type == NativeEventType::ControllerButtonDown) ? GAMEPAD_BUTTON_DOWN : GAMEPAD_BUTTON_UP;
-					gamepadEvent.button = ne.data1;
-					gamepadEvent.id = ne.data2;
-					GamepadEvent::Dispatch(&gamepadEvent);
-				}
-				break;
-
-			case NativeEventType::WindowResized:
-				if (WindowEvent::callback) {
-					windowEvent.type = WINDOW_RESIZE;
-					windowEvent.width = ne.data1;
-					windowEvent.height = ne.data2;
-					WindowEvent::Dispatch(&windowEvent);
-				}
-				break;
-
-			case NativeEventType::WindowClose:
-				if (WindowEvent::callback) {
-					windowEvent.type = WINDOW_CLOSE;
-					WindowEvent::Dispatch(&windowEvent);
-					// If window close should exit main loop:
-					// active = false; // careful: this modifies outer symbol; uncomment only if desired
-				}
-				break;
-
-			case NativeEventType::DropFile:
-				if (DropEvent::callback) {
-					dropEvent.type = DROP_FILE;
-					static char dropBuf[256];
-					strncpy(dropBuf, ne.text, sizeof(dropBuf)-1);
-					dropBuf[sizeof(dropBuf)-1] = '\0';
-					dropEvent.file = (vbyte*)dropBuf;
-					DropEvent::Dispatch(&dropEvent);
-					// Do NOT call SDL_free here — we didn't allocate; owner is static buffer
-				}
-				break;
-
-			case NativeEventType::Quit:
-				// keep same behavior as SDL_QUIT
-				active = false;
-				break;
-
-			default:
+			// Touch
+			case SDL_FINGERMOTION:
+			case SDL_FINGERDOWN:
+			case SDL_FINGERUP:
+				ProcessTouchEvent(event);
 				break;
 		}
 	}
 
-	// ---------------------------
-	// Poll SDL -> convert -> push POD to ring
-	// (call this on the main thread frequently, before Update/Render decision)
-	// ---------------------------
-	void SDLApplication::PollAndEnqueueSDLEvents() {
-		SDL_Event e;
-		// timestamp at start of poll batch (microseconds)
-		int64_t nowUs = getTime();
 
-		while (SDL_PollEvent(&e)) {
-			bool isInputEvent = false;
-			switch (e.type) {
-				case SDL_CLIPBOARDUPDATE:
+
+	void SDLApplication::ProcessClipboardEvent (SDL_Event* event) {
+
+		if (ClipboardEvent::callback) {
+
+			clipboardEvent.type = CLIPBOARD_UPDATE;
+
+			ClipboardEvent::Dispatch (&clipboardEvent);
+
+		}
+
+	}
+
+
+	void SDLApplication::ProcessDropEvent (SDL_Event* event) {
+
+		if (DropEvent::callback) {
+
+			dropEvent.type = DROP_FILE;
+			dropEvent.file = (vbyte*)event->drop.file;
+
+			DropEvent::Dispatch (&dropEvent);
+			SDL_free (dropEvent.file);
+
+		}
+
+	}
+
+
+	void SDLApplication::ProcessGamepadEvent (SDL_Event* event) {
+
+		if (GamepadEvent::callback) {
+
+			switch (event->type) {
+
 				case SDL_CONTROLLERAXISMOTION:
+
+					if (gamepadsAxisMap[event->caxis.which].empty ()) {
+
+						gamepadsAxisMap[event->caxis.which][event->caxis.axis] = event->caxis.value;
+
+					} else if (gamepadsAxisMap[event->caxis.which][event->caxis.axis] == event->caxis.value) {
+
+						break;
+
+					}
+
+					gamepadEvent.type = GAMEPAD_AXIS_MOVE;
+					gamepadEvent.axis = event->caxis.axis;
+					gamepadEvent.id = event->caxis.which;
+
+					if (event->caxis.value > -analogAxisDeadZone && event->caxis.value < analogAxisDeadZone) {
+
+						if (gamepadsAxisMap[event->caxis.which][event->caxis.axis] != 0) {
+
+							gamepadsAxisMap[event->caxis.which][event->caxis.axis] = 0;
+							gamepadEvent.axisValue = 0;
+							GamepadEvent::Dispatch (&gamepadEvent);
+
+						}
+
+						break;
+
+					}
+
+					gamepadsAxisMap[event->caxis.which][event->caxis.axis] = event->caxis.value;
+					gamepadEvent.axisValue = event->caxis.value / (event->caxis.value > 0 ? 32767.0 : 32768.0);
+
+					GamepadEvent::Dispatch (&gamepadEvent);
+					break;
+
 				case SDL_CONTROLLERBUTTONDOWN:
+
+					gamepadEvent.type = GAMEPAD_BUTTON_DOWN;
+					gamepadEvent.button = event->cbutton.button;
+					gamepadEvent.id = event->cbutton.which;
+
+					GamepadEvent::Dispatch (&gamepadEvent);
+					break;
+
 				case SDL_CONTROLLERBUTTONUP:
+
+					gamepadEvent.type = GAMEPAD_BUTTON_UP;
+					gamepadEvent.button = event->cbutton.button;
+					gamepadEvent.id = event->cbutton.which;
+
+					GamepadEvent::Dispatch (&gamepadEvent);
+					break;
+
 				case SDL_CONTROLLERDEVICEADDED:
-				case SDL_CONTROLLERDEVICEREMOVED:
+
+					if (SDLGamepad::Connect (event->cdevice.which)) {
+
+						gamepadEvent.type = GAMEPAD_CONNECT;
+						gamepadEvent.id = SDLGamepad::GetInstanceID (event->cdevice.which);
+
+						GamepadEvent::Dispatch (&gamepadEvent);
+
+					}
+
+					break;
+
+				case SDL_CONTROLLERDEVICEREMOVED: {
+
+					gamepadEvent.type = GAMEPAD_DISCONNECT;
+					gamepadEvent.id = event->cdevice.which;
+
+					GamepadEvent::Dispatch (&gamepadEvent);
+					SDLGamepad::Disconnect (event->cdevice.which);
+					break;
+
+				}
+
+			}
+
+		}
+
+	}
+
+
+	void SDLApplication::ProcessJoystickEvent (SDL_Event* event) {
+
+		if (JoystickEvent::callback) {
+
+			switch (event->type) {
+
 				case SDL_JOYAXISMOTION:
+
+					if (!SDLJoystick::IsAccelerometer (event->jaxis.which)) {
+
+						joystickEvent.type = JOYSTICK_AXIS_MOVE;
+						joystickEvent.index = event->jaxis.axis;
+						joystickEvent.x = event->jaxis.value / (event->jaxis.value > 0 ? 32767.0 : 32768.0);
+						joystickEvent.id = event->jaxis.which;
+
+						JoystickEvent::Dispatch (&joystickEvent);
+
+					}
+					break;
+
 				case SDL_JOYBALLMOTION:
+
+					if (!SDLJoystick::IsAccelerometer (event->jball.which)) {
+
+						joystickEvent.type = JOYSTICK_TRACKBALL_MOVE;
+						joystickEvent.index = event->jball.ball;
+						joystickEvent.x = event->jball.xrel / (event->jball.xrel > 0 ? 32767.0 : 32768.0);
+						joystickEvent.y = event->jball.yrel / (event->jball.yrel > 0 ? 32767.0 : 32768.0);
+						joystickEvent.id = event->jball.which;
+
+						JoystickEvent::Dispatch (&joystickEvent);
+
+					}
+					break;
+
 				case SDL_JOYBUTTONDOWN:
+
+					if (!SDLJoystick::IsAccelerometer (event->jbutton.which)) {
+
+						joystickEvent.type = JOYSTICK_BUTTON_DOWN;
+						joystickEvent.index = event->jbutton.button;
+						joystickEvent.id = event->jbutton.which;
+
+						JoystickEvent::Dispatch (&joystickEvent);
+
+					}
+					break;
+
 				case SDL_JOYBUTTONUP:
+
+					if (!SDLJoystick::IsAccelerometer (event->jbutton.which)) {
+
+						joystickEvent.type = JOYSTICK_BUTTON_UP;
+						joystickEvent.index = event->jbutton.button;
+						joystickEvent.id = event->jbutton.which;
+
+						JoystickEvent::Dispatch (&joystickEvent);
+
+					}
+					break;
+
 				case SDL_JOYHATMOTION:
+
+					if (!SDLJoystick::IsAccelerometer (event->jhat.which)) {
+
+						joystickEvent.type = JOYSTICK_HAT_MOVE;
+						joystickEvent.index = event->jhat.hat;
+						joystickEvent.eventValue = event->jhat.value;
+						joystickEvent.id = event->jhat.which;
+
+						JoystickEvent::Dispatch (&joystickEvent);
+
+					}
+					break;
+
 				case SDL_JOYDEVICEADDED:
+
+					if (SDLJoystick::Connect (event->jdevice.which)) {
+
+						joystickEvent.type = JOYSTICK_CONNECT;
+						joystickEvent.id = SDLJoystick::GetInstanceID (event->jdevice.which);
+
+						JoystickEvent::Dispatch (&joystickEvent);
+
+					}
+					break;
+
 				case SDL_JOYDEVICEREMOVED:
-				case SDL_KEYDOWN:
-				case SDL_KEYUP:
+
+					if (!SDLJoystick::IsAccelerometer (event->jdevice.which)) {
+
+						joystickEvent.type = JOYSTICK_DISCONNECT;
+						joystickEvent.id = event->jdevice.which;
+
+						JoystickEvent::Dispatch (&joystickEvent);
+						SDLJoystick::Disconnect (event->jdevice.which);
+
+					}
+					break;
+
+			}
+
+		}
+
+	}
+
+
+	void SDLApplication::ProcessKeyEvent (SDL_Event* event) {
+
+		if (KeyEvent::callback) {
+
+			switch (event->type) {
+
+				case SDL_KEYDOWN: keyEvent.type = KEY_DOWN; break;
+				case SDL_KEYUP: keyEvent.type = KEY_UP; break;
+
+			}
+
+			keyEvent.keyCode = event->key.keysym.sym;
+			keyEvent.modifier = event->key.keysym.mod;
+			keyEvent.windowID = event->key.windowID;
+
+			if (keyEvent.type == KEY_DOWN) {
+
+				if (keyEvent.keyCode == SDLK_CAPSLOCK) keyEvent.modifier |= KMOD_CAPS;
+				if (keyEvent.keyCode == SDLK_LALT) keyEvent.modifier |= KMOD_LALT;
+				if (keyEvent.keyCode == SDLK_LCTRL) keyEvent.modifier |= KMOD_LCTRL;
+				if (keyEvent.keyCode == SDLK_LGUI) keyEvent.modifier |= KMOD_LGUI;
+				if (keyEvent.keyCode == SDLK_LSHIFT) keyEvent.modifier |= KMOD_LSHIFT;
+				if (keyEvent.keyCode == SDLK_MODE) keyEvent.modifier |= KMOD_MODE;
+				if (keyEvent.keyCode == SDLK_NUMLOCKCLEAR) keyEvent.modifier |= KMOD_NUM;
+				if (keyEvent.keyCode == SDLK_RALT) keyEvent.modifier |= KMOD_RALT;
+				if (keyEvent.keyCode == SDLK_RCTRL) keyEvent.modifier |= KMOD_RCTRL;
+				if (keyEvent.keyCode == SDLK_RGUI) keyEvent.modifier |= KMOD_RGUI;
+				if (keyEvent.keyCode == SDLK_RSHIFT) keyEvent.modifier |= KMOD_RSHIFT;
+
+			}
+
+			KeyEvent::Dispatch (&keyEvent);
+
+		}
+
+	}
+
+
+	void SDLApplication::ProcessMouseEvent (SDL_Event* event) {
+
+		if (MouseEvent::callback) {
+
+			switch (event->type) {
+
 				case SDL_MOUSEMOTION:
+
+					mouseEvent.type = MOUSE_MOVE;
+					mouseEvent.x = event->motion.x;
+					mouseEvent.y = event->motion.y;
+					mouseEvent.movementX = event->motion.xrel;
+					mouseEvent.movementY = event->motion.yrel;
+					break;
+
 				case SDL_MOUSEBUTTONDOWN:
+
+					SDL_CaptureMouse (SDL_TRUE);
+
+					mouseEvent.type = MOUSE_DOWN;
+					mouseEvent.button = event->button.button - 1;
+					mouseEvent.x = event->button.x;
+					mouseEvent.y = event->button.y;
+					mouseEvent.clickCount = event->button.clicks;
+					break;
+
 				case SDL_MOUSEBUTTONUP:
+
+					SDL_CaptureMouse (SDL_FALSE);
+
+					mouseEvent.type = MOUSE_UP;
+					mouseEvent.button = event->button.button - 1;
+					mouseEvent.x = event->button.x;
+					mouseEvent.y = event->button.y;
+					mouseEvent.clickCount = event->button.clicks;
+					break;
+
 				case SDL_MOUSEWHEEL:
+
+					mouseEvent.type = MOUSE_WHEEL;
+
+					if (event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+
+						mouseEvent.x = -event->wheel.x;
+						mouseEvent.y = -event->wheel.y;
+
+					} else {
+
+						mouseEvent.x = event->wheel.x;
+						mouseEvent.y = event->wheel.y;
+
+					}
+					break;
+
+			}
+
+			mouseEvent.windowID = event->button.windowID;
+			MouseEvent::Dispatch (&mouseEvent);
+
+		}
+
+	}
+
+
+	void SDLApplication::ProcessSensorEvent (SDL_Event* event) {
+
+		if (SensorEvent::callback) {
+
+			double value = event->jaxis.value / 32767.0f;
+
+			switch (event->jaxis.axis) {
+
+				case 0: sensorEvent.x = value; break;
+				case 1: sensorEvent.y = value; break;
+				case 2: sensorEvent.z = value; break;
+				default: break;
+
+			}
+
+			SensorEvent::Dispatch (&sensorEvent);
+
+		}
+
+	}
+
+
+	void SDLApplication::ProcessTextEvent (SDL_Event* event) {
+		if (TextEvent::callback) {
+			switch (event->type) {
 				case SDL_TEXTINPUT:
+					textEvent.type = TEXT_INPUT;
+					break;
+
 				case SDL_TEXTEDITING:
-				case SDL_WINDOWEVENT:
-				case SDL_DROPFILE:
-				case SDL_FINGERMOTION:
-				case SDL_FINGERDOWN:
-				case SDL_FINGERUP:
-				case SDL_QUIT:
-					isInputEvent = true;
-					break;
-				default:
-					isInputEvent = false;
+					textEvent.type = TEXT_EDIT;
+					textEvent.start = event->edit.start;
+					textEvent.length = event->edit.length;
 					break;
 			}
 
-			if (isInputEvent) {
-				NativeEvent ne = ConvertSDLEventToNative(e, nowUs);
-				if (ne.type == NativeEventType::None) {
-					// skip, not interesting
-					continue;
-				}
-				if (!inputRing.push(ne)) {
-					// ring full — drop oldest or warn
-	#ifdef _DEBUG
-					printf("[WARN] Input ring full, dropping event type %u\n", (unsigned)ne.type);
-	#endif
-				}
+			// Use static buffer instead of malloc/free
+			static char textBuffer[SDL_TEXTINPUTEVENT_TEXT_SIZE];
+			strncpy(textBuffer, event->text.text, SDL_TEXTINPUTEVENT_TEXT_SIZE - 1);
+			textBuffer[SDL_TEXTINPUTEVENT_TEXT_SIZE - 1] = '\0';
+			textEvent.text = (vbyte*)textBuffer;
 
-				// For dropfile, SDL gives ownership of string to us via e.drop.file.
-				// Since we copied path into ne.text (truncated), we must free SDL's allocated string.
-				if (e.type == SDL_DROPFILE) {
-					SDL_free(e.drop.file);
-				}
-			} else {
-				// Non-input events handled immediately (app lifecycle, render reset, etc)
-				HandleEvent(&e);
-				if (!active) return;
-			}
+			textEvent.windowID = event->text.windowID;
+			TextEvent::Dispatch(&textEvent);
 		}
 	}
 
-	// ---------------------------
-	// Process (consume) NativeEvents during UPDATE.
-	// Includes optional batching / averaging for mouse motion.
-	// ---------------------------
-	void SDLApplication::ProcessNativeEventsForUpdate(int maxEventsPerUpdate = 256) {
-		NativeEvent ne;
-		int processed = 0;
 
-		// Mouse batching accumulator
-		bool haveMouse = false;
-		int accumX = 0, accumY = 0, accumMoves = 0;
-		int lastMouseX = 0, lastMouseY = 0;
+	void SDLApplication::ProcessTouchEvent (SDL_Event* event) {
 
-		while (inputRing.pop(ne)) {
-			// Mouse motion batching: accumulate multiple motions and dispatch a single averaged move
-			if (ne.type == NativeEventType::MouseMove) {
-				haveMouse = true;
-				accumX += ne.x;
-				accumY += ne.y;
-				accumMoves++;
-				lastMouseX = ne.x;
-				lastMouseY = ne.y;
-			} else {
-				// If we have pending mouse moves, dispatch them first (averaged)
-				if (haveMouse) {
-					NativeEvent avg;
-					avg.type = NativeEventType::MouseMove;
-					avg.timestampUs = ne.timestampUs;
-					avg.x = accumX / accumMoves;
-					avg.y = accumY / accumMoves;
-					avg.fdata = 0.0f;
-					HandleNativeEvent(avg);
-					haveMouse = false;
-					accumMoves = 0;
-					accumX = accumY = 0;
-				}
+		if (TouchEvent::callback) {
 
-				HandleNativeEvent(ne);
+			switch (event->type) {
+
+				case SDL_FINGERMOTION:
+
+					touchEvent.type = TOUCH_MOVE;
+					break;
+
+				case SDL_FINGERDOWN:
+
+					touchEvent.type = TOUCH_START;
+					break;
+
+				case SDL_FINGERUP:
+
+					touchEvent.type = TOUCH_END;
+					break;
+
 			}
 
-			processed++;
+			touchEvent.x = event->tfinger.x;
+			touchEvent.y = event->tfinger.y;
+			touchEvent.id = event->tfinger.fingerId;
+			touchEvent.dx = event->tfinger.dx;
+			touchEvent.dy = event->tfinger.dy;
+			touchEvent.pressure = event->tfinger.pressure;
+			touchEvent.device = event->tfinger.touchId;
+
+			TouchEvent::Dispatch (&touchEvent);
+
 		}
 
-		// if we exited loop with pending mouse moves, flush them
-		if (haveMouse) {
-			NativeEvent avg;
-			avg.type = NativeEventType::MouseMove;
-			avg.timestampUs = getTime();
-			avg.x = (accumMoves > 0) ? (accumX / accumMoves) : lastMouseX;
-			avg.y = (accumMoves > 0) ? (accumY / accumMoves) : lastMouseY;
-			HandleNativeEvent(avg);
+	}
+
+
+	void SDLApplication::ProcessWindowEvent (SDL_Event* event) {
+
+		if (WindowEvent::callback) {
+
+			switch (event->window.event) {
+
+				case SDL_WINDOWEVENT_SHOWN: windowEvent.type = WINDOW_SHOW; break;
+				case SDL_WINDOWEVENT_CLOSE: windowEvent.type = WINDOW_CLOSE; break;
+				case SDL_WINDOWEVENT_HIDDEN: windowEvent.type = WINDOW_HIDE; break;
+				case SDL_WINDOWEVENT_ENTER: windowEvent.type = WINDOW_ENTER; break;
+				case SDL_WINDOWEVENT_FOCUS_GAINED: windowEvent.type = WINDOW_FOCUS_IN; break;
+				case SDL_WINDOWEVENT_FOCUS_LOST: windowEvent.type = WINDOW_FOCUS_OUT; break;
+				case SDL_WINDOWEVENT_LEAVE: windowEvent.type = WINDOW_LEAVE; break;
+				case SDL_WINDOWEVENT_MAXIMIZED: windowEvent.type = WINDOW_MAXIMIZE; break;
+				case SDL_WINDOWEVENT_MINIMIZED: windowEvent.type = WINDOW_MINIMIZE; break;
+				case SDL_WINDOWEVENT_EXPOSED: windowEvent.type = WINDOW_EXPOSE; break;
+
+				case SDL_WINDOWEVENT_MOVED:
+
+					windowEvent.type = WINDOW_MOVE;
+					windowEvent.x = event->window.data1;
+					windowEvent.y = event->window.data2;
+					break;
+
+				case SDL_WINDOWEVENT_SIZE_CHANGED:
+
+					windowEvent.type = WINDOW_RESIZE;
+					windowEvent.width = event->window.data1;
+					windowEvent.height = event->window.data2;
+					break;
+
+				case SDL_WINDOWEVENT_RESTORED: windowEvent.type = WINDOW_RESTORE; break;
+
+			}
+
+			windowEvent.windowID = event->window.windowID;
+			WindowEvent::Dispatch (&windowEvent);
+
 		}
+
 	}
 
 
@@ -801,6 +859,31 @@ namespace lime {
 
 	int64_t prevFrameTime = 0;
 
+	int64_t getTime() {
+		#ifdef HX_WINDOWS
+		static LARGE_INTEGER freq = {};
+		static LARGE_INTEGER start = {};
+		if (freq.QuadPart == 0) {
+			QueryPerformanceFrequency(&freq);
+			QueryPerformanceCounter(&start);
+		}
+
+		LARGE_INTEGER counter;
+		QueryPerformanceCounter(&counter);
+
+		double elapsedSeconds = double(counter.QuadPart - start.QuadPart) / freq.QuadPart;
+		return int64_t(elapsedSeconds * 1000000.0);
+		#elif defined(HX_LINUX)
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC_RAW, &ts); 
+		return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+		#else
+		return std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()
+		).count();
+		#endif
+	}
+
 	void coolSleepUntil(int64_t wakeTimeUs) {
 		int64_t currentTime = getTime();
 		int64_t sleepForUs = wakeTimeUs - currentTime;
@@ -859,10 +942,53 @@ namespace lime {
 
 	// Modified Update - poll everything on main thread but timestamp inputs
 	bool SDLApplication::Update() {
-    	int64_t currentTime = getTime();
+    int64_t currentTime = getTime();
+    int64_t pollTimestamp = currentTime; // Single timestamp for this poll batch
 
-		// Poll SDL and enqueue input PODs first
-		PollAndEnqueueSDLEvents();
+    SDL_Event event;
+		while (SDL_PollEvent(&event)) {
+			bool isInputEvent = false;
+			switch (event.type) {
+				case SDL_CLIPBOARDUPDATE:
+				case SDL_CONTROLLERAXISMOTION:
+				case SDL_CONTROLLERBUTTONDOWN:
+				case SDL_CONTROLLERBUTTONUP:
+				case SDL_CONTROLLERDEVICEADDED:
+				case SDL_CONTROLLERDEVICEREMOVED:
+				case SDL_JOYAXISMOTION:
+				case SDL_JOYBALLMOTION:
+				case SDL_JOYBUTTONDOWN:
+				case SDL_JOYBUTTONUP:
+				case SDL_JOYHATMOTION:
+				case SDL_JOYDEVICEADDED:
+				case SDL_JOYDEVICEREMOVED:
+				case SDL_KEYDOWN:
+				case SDL_KEYUP:
+				case SDL_MOUSEMOTION:
+				case SDL_MOUSEBUTTONDOWN:
+				case SDL_MOUSEBUTTONUP:
+				case SDL_MOUSEWHEEL:
+				case SDL_TEXTINPUT:
+				case SDL_TEXTEDITING:
+				case SDL_WINDOWEVENT:
+				case SDL_DROPFILE:
+				case SDL_FINGERMOTION:
+				case SDL_FINGERDOWN:
+				case SDL_FINGERUP:
+					isInputEvent = true;
+					break;
+			}
+			
+			if (isInputEvent) {
+				TimestampedInputEvent tie;
+				tie.event = event;
+				tie.timestamp = pollTimestamp;
+				inputEventQueue.push_back(tie);
+			} else {
+				HandleEvent(&event);
+				if (!active) return active;
+			}
+		}
 
 		static int64_t baseTime = 0;
 		static int64_t updateCounter = 0;
@@ -871,7 +997,7 @@ namespace lime {
 		if (baseTime == 0) {
 			baseTime = currentTime;
 			prevFrameTime = currentTime;
-			inputRing.clear();
+			inputEventQueue.reserve(26); // Pre-allocate
 		}
 
 		int64_t deltaTime = currentTime - prevFrameTime;
@@ -885,7 +1011,11 @@ namespace lime {
 		double nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
 
 		if (currentTime >= nextUpdateTime) {
-			ProcessNativeEventsForUpdate(512); // tune per frame budget
+			// Process inputs
+			for (size_t i = 0; i < inputEventQueue.size(); i++) {
+				HandleInputEvent(&inputEventQueue[i].event);
+			}
+			inputEventQueue.clear(); // Keeps capacity
 
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
