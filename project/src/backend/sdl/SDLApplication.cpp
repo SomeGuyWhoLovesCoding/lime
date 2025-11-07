@@ -1070,7 +1070,7 @@ namespace lime {
 	bool SDLApplication::Update() {
 		int64_t currentTime = getTime();
 
-		// Poll events
+		// Poll SDL events
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
@@ -1113,58 +1113,47 @@ namespace lime {
 			}
 		}
 
-		static int64_t baseTime = 0;
+		static int64_t prevFrameTime = currentTime;
 		static int64_t tickCounter = 0;
+		static int64_t baseTime = currentTime;
+		static double emaDriftUs = 0.0;
+		const double driftSmoothing = 0.01; // gentle EMA
 
-		if (baseTime == 0) {
-			baseTime = currentTime;
-			prevFrameTime = currentTime;
-			inputEventQueue.reserve(32);
-			tickCounter = 0;
-		}
-
-		prevFrameTime = currentTime;
-
+		// Calculate scheduled time for next update tick
 		int64_t nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 
-		// LAG DETECTION: If we're more than half the render frames behind, we lagged
-		int64_t lagAmount = currentTime - nextTickTime;
-		if (lagAmount > 1000) {
-			// Don't catch up - just reset the timeline
-			//printf("Lag detected: %lld us behind, resetting timeline\n", lagAmount);
-			baseTime = currentTime;
-			tickCounter = 0;
-			nextTickTime = baseTime + UPDATE_PERIOD;
-		}
+		// Compute drift since last update
+		int64_t actualDelta = currentTime - prevFrameTime;
+		int64_t drift = actualDelta - UPDATE_PERIOD;
+		emaDriftUs = (1.0 - driftSmoothing) * emaDriftUs + driftSmoothing * drift;
 
-		// Only tick if we're at or past the scheduled time
+		// Only process update if we're at or past scheduled tick
 		if (currentTime >= nextTickTime) {
-			// Process inputs
+			// Process all queued input events
 			for (size_t i = 0; i < inputEventQueue.size(); i++) {
 				HandleInputEvent(&inputEventQueue[i].event);
 			}
 			inputEventQueue.clear();
 
-			// Update at 240 Hz
+			// Fixed update at 240Hz
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			// Render at 60 Hz (every 4th tick)
-			int64_t domain = (int64_t)(RENDER_PERIOD / UPDATE_PERIOD);
-			//printf("%lld\n", domain);
-			if (tickCounter % domain == 0) {
+			// Render at 60Hz (every 4 ticks)
+			int64_t renderInterval = int64_t(RENDER_PERIOD / UPDATE_PERIOD);
+			if (tickCounter % renderInterval == 0) {
 				renderEvent.type = RENDER;
 				RenderEvent::Dispatch(&renderEvent);
 			}
 
 			tickCounter++;
-			nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
+			prevFrameTime = currentTime;
 		}
 
-		// CRITICAL: Always sleep until next tick, even if we just ticked
-		// This keeps CPU at 0% because we're never spinning in the main loop
-		coolSleepUntil(nextTickTime);
+		// Smoothly sleep until next tick, compensating for drift
+		int64_t sleepUntil = nextTickTime - int64_t(emaDriftUs);
+		coolSleepUntil(sleepUntil);
 
 		return active;
 	}
