@@ -1127,9 +1127,9 @@ namespace lime {
 
 		int64_t nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 
-		// LAG DETECTION: If we're more than 2 frames behind, we lagged
+		// LAG DETECTION: If we're more than 2 render frames behind, we lagged
 		int64_t lagAmount = currentTime - nextTickTime;
-		if (lagAmount > UPDATE_PERIOD * 2) {
+		if (lagAmount > RENDER_PERIOD * 2) {
 			// Don't catch up - just reset the timeline
 			//printf("Lag detected: %lld us behind, resetting timeline\n", lagAmount);
 			baseTime = currentTime;
