@@ -24,6 +24,9 @@ using namespace std;
 #ifdef HX_WINDOWS
 #include <windows.h>
 #include <cstdint>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
+#include <SDL_syswm.h>
 #endif
 
 #ifdef HX_MACOS
@@ -53,8 +56,10 @@ namespace lime {
     static HANDLE timer;
     #endif
 
+	static Uint32 initFlags;
+
 	SDLApplication::SDLApplication () {
-		Uint32 initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER | SDL_INIT_JOYSTICK;
+		initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
 		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
 		initFlags |= SDL_INIT_AUDIO;
 		#endif
@@ -98,24 +103,6 @@ namespace lime {
 		CFRelease (resourcesURL);
 		#endif
 
-		#ifdef HX_WINDOWS
-		HANDLE hThread = GetCurrentThread();
-		// Set current thread priority
-		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
-
-		// Set process priority to real-time
-		SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
-
-		if (!timer) {
-			timer = CreateWaitableTimerEx(nullptr, nullptr,
-												CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-			if (!timer) {
-				std::cout << "Failed to create high-res timer\ncreating regular timer instead\n";
-				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
-			}
-		}
-		#endif
-
 	}
 
 	#if HX_WINDOWS
@@ -155,53 +142,200 @@ namespace lime {
 
 		}
 
-		return Quit ();
+		return 0;
 
 		#endif
 
 	}
 
-	void SDLApplication::HandleEvent(SDL_Event* event) {
+	void SDLApplication::HandleEvent (SDL_Event* event) {
 
 		#if defined(IPHONE) || defined(EMSCRIPTEN)
+
 		int top = 0;
-		gc_set_top_of_stack(&top, false);
+		gc_set_top_of_stack(&top,false);
+
 		#endif
 
 		switch (event->type) {
 
-			// App lifecycle
 			case SDL_APP_WILLENTERBACKGROUND:
+
 				inBackground = true;
+
 				windowEvent.type = WINDOW_DEACTIVATE;
-				WindowEvent::Dispatch(&windowEvent);
+				WindowEvent::Dispatch (&windowEvent);
+				break;
+
+			case SDL_APP_WILLENTERFOREGROUND:
+
 				break;
 
 			case SDL_APP_DIDENTERFOREGROUND:
-				inBackground = false;
+
 				windowEvent.type = WINDOW_ACTIVATE;
-				WindowEvent::Dispatch(&windowEvent);
+				WindowEvent::Dispatch (&windowEvent);
+
+				inBackground = false;
 				break;
 
-			// Quit event
-			case SDL_QUIT:
-				active = false;
+			case SDL_CLIPBOARDUPDATE:
+
+				ProcessClipboardEvent (event);
+				break;
+
+			case SDL_CONTROLLERAXISMOTION:
+			case SDL_CONTROLLERBUTTONDOWN:
+			case SDL_CONTROLLERBUTTONUP:
+			case SDL_CONTROLLERDEVICEADDED:
+			case SDL_CONTROLLERDEVICEREMOVED:
+
+				ProcessGamepadEvent (event);
+				break;
+
+			case SDL_DROPFILE:
+
+				ProcessDropEvent (event);
+				break;
+
+			case SDL_FINGERMOTION:
+			case SDL_FINGERDOWN:
+			case SDL_FINGERUP:
+
+				ProcessTouchEvent (event);
+				break;
+
+			case SDL_JOYAXISMOTION:
+
+				if (SDLJoystick::IsAccelerometer (event->jaxis.which)) {
+
+					ProcessSensorEvent (event);
+
+				} else {
+
+					ProcessJoystickEvent (event);
+
+				}
+
+				break;
+
+			case SDL_JOYBALLMOTION:
+			case SDL_JOYBUTTONDOWN:
+			case SDL_JOYBUTTONUP:
+			case SDL_JOYHATMOTION:
+			case SDL_JOYDEVICEADDED:
+			case SDL_JOYDEVICEREMOVED:
+
+				ProcessJoystickEvent (event);
+				break;
+
+			case SDL_KEYDOWN:
+			case SDL_KEYUP:
+
+				ProcessKeyEvent (event);
+				break;
+
+			case SDL_MOUSEMOTION:
+			case SDL_MOUSEBUTTONDOWN:
+			case SDL_MOUSEBUTTONUP:
+			case SDL_MOUSEWHEEL:
+
+				ProcessMouseEvent (event);
 				break;
 
 			#ifndef EMSCRIPTEN
 			case SDL_RENDER_DEVICE_RESET:
+
 				renderEvent.type = RENDER_CONTEXT_LOST;
-				RenderEvent::Dispatch(&renderEvent);
+				RenderEvent::Dispatch (&renderEvent);
 
 				renderEvent.type = RENDER_CONTEXT_RESTORED;
-				RenderEvent::Dispatch(&renderEvent);
+				RenderEvent::Dispatch (&renderEvent);
+
+				renderEvent.type = RENDER;
 				break;
 			#endif
 
-			// Controller joystick accelerometer fallback
-			default:
+			case SDL_TEXTINPUT:
+			case SDL_TEXTEDITING:
+
+				ProcessTextEvent (event);
 				break;
+
+			case SDL_WINDOWEVENT:
+
+				switch (event->window.event) {
+
+					case SDL_WINDOWEVENT_ENTER:
+					case SDL_WINDOWEVENT_LEAVE:
+					case SDL_WINDOWEVENT_SHOWN:
+					case SDL_WINDOWEVENT_HIDDEN:
+					case SDL_WINDOWEVENT_FOCUS_GAINED:
+					case SDL_WINDOWEVENT_FOCUS_LOST:
+					case SDL_WINDOWEVENT_MAXIMIZED:
+					case SDL_WINDOWEVENT_MINIMIZED:
+					case SDL_WINDOWEVENT_MOVED:
+					case SDL_WINDOWEVENT_RESTORED:
+
+						ProcessWindowEvent (event);
+						break;
+
+					case SDL_WINDOWEVENT_EXPOSED:
+
+						ProcessWindowEvent (event);
+
+						if (!inBackground) {
+
+							RenderEvent::Dispatch (&renderEvent);
+
+						}
+
+						break;
+
+					case SDL_WINDOWEVENT_SIZE_CHANGED:
+
+						ProcessWindowEvent (event);
+
+						if (!inBackground) {
+
+							RenderEvent::Dispatch (&renderEvent);
+
+						}
+
+						break;
+
+					case SDL_WINDOWEVENT_CLOSE:
+
+						ProcessWindowEvent (event);
+
+						// Avoid handling SDL_QUIT if in response to window.close
+						SDL_Event event;
+
+						if (SDL_PollEvent (&event)) {
+
+							if (event.type != SDL_QUIT) {
+
+								HandleEvent (&event);
+
+							}
+
+						}
+
+						break;
+
+				}
+
+				break;
+
+			case SDL_QUIT:
+
+				active = false;
+				Quit ();
+
+				break;
+
 		}
+
 	}
 
 	void SDLApplication::HandleInputEvent(SDL_Event* event) {
@@ -262,40 +396,6 @@ namespace lime {
 			case SDL_TEXTINPUT:
 			case SDL_TEXTEDITING:
 				ProcessTextEvent(event);
-				break;
-
-			// Window events
-			case SDL_WINDOWEVENT:
-				switch (event->window.event) {
-
-					case SDL_WINDOWEVENT_ENTER:
-					case SDL_WINDOWEVENT_LEAVE:
-					case SDL_WINDOWEVENT_SHOWN:
-					case SDL_WINDOWEVENT_HIDDEN:
-					case SDL_WINDOWEVENT_FOCUS_GAINED:
-					case SDL_WINDOWEVENT_FOCUS_LOST:
-					case SDL_WINDOWEVENT_MAXIMIZED:
-					case SDL_WINDOWEVENT_MINIMIZED:
-					case SDL_WINDOWEVENT_MOVED:
-					case SDL_WINDOWEVENT_RESTORED:
-						ProcessWindowEvent(event);
-						break;
-
-					case SDL_WINDOWEVENT_EXPOSED:
-					case SDL_WINDOWEVENT_SIZE_CHANGED:
-						ProcessWindowEvent(event);
-						break;
-
-					case SDL_WINDOWEVENT_CLOSE:
-						ProcessWindowEvent(event);
-						active = false; // quit main loop
-						break;
-				}
-				break;
-
-			// File drop
-			case SDL_DROPFILE:
-				ProcessDropEvent(event);
 				break;
 
 			// Touch
@@ -765,12 +865,30 @@ namespace lime {
 
 	}
 
-
+	static bool alreadyQuit = false;
 	int SDLApplication::Quit () {
+		if (alreadyQuit) return 0;
+
+		// You can call this quit function twice here, so that's why I implemented this static boolean variable here to check. And yes, I've tested the print here.
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch (&applicationEvent);
 
+		//windowEvent.type = WINDOW_CLOSE;
+		//WindowEvent::Dispatch (&windowEvent);
+
+		SDL_Event event;
+		while (SDL_PollEvent(&event)) {
+			HandleEvent(&event);
+		}
+
+		//printf("CLOSED RAAAAAAAAAAAAAAGH\n");
+
+		SDL_QuitSubSystem (initFlags);
+
 		SDL_Quit ();
+
+		alreadyQuit = true;
+
 		return 0;
 
 	}
@@ -784,36 +902,6 @@ namespace lime {
 
 	}
 
-	#if HX_WINDOWS
-	void adjustTimerResolutionDynamic(int updatePeriodUs) {
-		typedef NTSTATUS (NTAPI *NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
-
-		if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
-		if (!ntdll) return;
-
-		static NtSetTimerResolution_t NtSetTimerResolution =
-			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
-
-		if (!NtSetTimerResolution) return;
-
-		// Convert period to approximate FPS
-		int fps = (updatePeriodUs > 0) ? static_cast<int>(1000000 / updatePeriodUs) : 120;
-		//printf("FPS SET TO %d\n", fps);
-
-		// Map FPS to ideal timer resolution (microseconds)
-		ULONG resolutionUs = (fps > 0) ? (ULONG)(10000000 / fps) : 10000;
-
-		//printf("Requested Resolution: %.3f ms\n", resolutionUs / 10000.0);
-
-		// Apply new resolution
-		ULONG current;
-		NTSTATUS status = NtSetTimerResolution(resolutionUs, TRUE, &current);
-
-		printf("NtSetTimerResolution -> Status: 0x%08X, Requested: %.3fus, Actual current: %.3fms\n",
-			(unsigned int)status, resolutionUs / 10000.0, current / 10000.0);
-	}
-	#endif
-
 
 	void SDLApplication::SetFrameRate (double frameRate) {
 
@@ -821,13 +909,6 @@ namespace lime {
 
 			UPDATE_PERIOD = 1000000.0 / frameRate;
 			RENDER_PERIOD = 1000000.0 / 60.0;
-
-			#if HX_WINDOWS
-			int64_t timerResolution = UPDATE_PERIOD;
-			if (timerResolution < 500) timerResolution = UPDATE_PERIOD;
-
-			adjustTimerResolutionDynamic(timerResolution);
-			#endif
 
 		} else {
 
@@ -891,28 +972,28 @@ namespace lime {
 		if (sleepForUs <= 0) return;
 
 		#if HX_WINDOWS
-		// At 240fps, wake early and spin
-		const int64_t SPIN_THRESHOLD_US = (UPDATE_PERIOD < 5000) ? 600 : 0; // 0.6ms for 240fps
+		const int64_t SPIN_THRESHOLD_US = 500;
 
 		if (sleepForUs > SPIN_THRESHOLD_US) {
+			// Convert wakeTimeUs to FILETIME (100-nanosecond intervals since Jan 1, 1601)
 			FILETIME ft;
 			GetSystemTimePreciseAsFileTime(&ft);
 			ULARGE_INTEGER now;
 			now.LowPart = ft.dwLowDateTime;
 			now.HighPart = ft.dwHighDateTime;
-
+			
+			// Calculate absolute wake time in 100-nanosecond units
+			// We want to wake at (wakeTimeUs - SPIN_THRESHOLD_US) from now
 			LARGE_INTEGER due;
-			due.QuadPart = now.QuadPart + ((sleepForUs - SPIN_THRESHOLD_US) * 10);
-
+			due.QuadPart = now.QuadPart + ((wakeTimeUs - SPIN_THRESHOLD_US - currentTime) * 10);
+			
 			SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
 			WaitForSingleObject(timer, INFINITE);
 		}
 
-		// Spin for final precision (only if needed)
-		if (SPIN_THRESHOLD_US > 0) {
-			while (getTime() < wakeTimeUs) {
-				_mm_pause();
-			}
+		// Spin for final precision
+		while (getTime() < wakeTimeUs) {
+			_mm_pause();
 		}
 
 		#elif defined(HX_LINUX)
@@ -928,6 +1009,51 @@ namespace lime {
 		active = true;
 		int now = getTime();
 		startTimestamp = lastUpdate = now;
+
+		#ifdef HX_WINDOWS
+		TIMECAPS tc;
+		timeGetDevCaps(&tc, sizeof(TIMECAPS));
+		printf("Timer caps: min=%u, max=%u\n", tc.wPeriodMin, tc.wPeriodMax);
+
+		// Get the HWND from SDL
+		SDL_Window* sdlWindow = SDL_GL_GetCurrentWindow(); // or however you store your window
+		if (!sdlWindow) {
+			sdlWindow = SDL_GetWindowFromID(1); // Try first window
+		}
+
+		if (sdlWindow) {
+			SDL_SysWMinfo wmInfo;
+			SDL_VERSION(&wmInfo.version);
+			if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
+				HWND hwnd = wmInfo.info.win.window;
+				
+				// Disable DWM composition for this window
+				BOOL disableMMCSS = TRUE;
+				DwmSetWindowAttribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &disableMMCSS, sizeof(disableMMCSS));
+				
+				// Or try disabling DWM entirely (more aggressive)
+				// DwmEnableComposition(DWM_EC_DISABLECOMPOSITION); // Disables for ALL windows
+			}
+		}
+
+		HANDLE hThread = GetCurrentThread();
+		// Set current thread priority
+		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
+
+		// Set process priority to real-time
+		SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
+
+		if (!timer) {
+			timer = CreateWaitableTimerEx(nullptr, nullptr,
+												CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+			if (!timer) {
+				std::cout << "Failed to create high-res timer\ncreating regular timer instead\n";
+				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+			} else {
+				std::cout << "Successfully created high-res timer!\n";
+			}
+		}
+		#endif
 	}
 
 	// Most of this rewritten function were generated with claude.ai with a side of chatgpt
@@ -942,10 +1068,10 @@ namespace lime {
 
 	// Modified Update - poll everything on main thread but timestamp inputs
 	bool SDLApplication::Update() {
-    int64_t currentTime = getTime();
-    int64_t pollTimestamp = currentTime; // Single timestamp for this poll batch
+		int64_t currentTime = getTime();
 
-    SDL_Event event;
+		// Poll events
+		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
 			switch (event.type) {
@@ -970,71 +1096,75 @@ namespace lime {
 				case SDL_MOUSEWHEEL:
 				case SDL_TEXTINPUT:
 				case SDL_TEXTEDITING:
-				case SDL_WINDOWEVENT:
-				case SDL_DROPFILE:
 				case SDL_FINGERMOTION:
 				case SDL_FINGERDOWN:
 				case SDL_FINGERUP:
 					isInputEvent = true;
 					break;
 			}
-			
+
 			if (isInputEvent) {
 				TimestampedInputEvent tie;
 				tie.event = event;
-				tie.timestamp = pollTimestamp;
+				tie.timestamp = currentTime;
 				inputEventQueue.push_back(tie);
 			} else {
 				HandleEvent(&event);
-				if (!active) return active;
 			}
 		}
 
 		static int64_t baseTime = 0;
-		static int64_t updateCounter = 0;
-		static int64_t renderCounter = 0;
+		static int64_t tickCounter = 0;
 
 		if (baseTime == 0) {
 			baseTime = currentTime;
 			prevFrameTime = currentTime;
-			inputEventQueue.reserve(26); // Pre-allocate
-		}
-
-		int64_t deltaTime = currentTime - prevFrameTime;
-		if (deltaTime > 100000) {
-			baseTime = currentTime - updateCounter * UPDATE_PERIOD;
+			inputEventQueue.reserve(32);
+			tickCounter = 0;
 		}
 
 		prevFrameTime = currentTime;
 
-		double nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
-		double nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
+		int64_t nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 
-		if (currentTime >= nextUpdateTime) {
+		// LAG DETECTION: If we're more than 2 frames behind, we lagged
+		int64_t lagAmount = currentTime - nextTickTime;
+		if (lagAmount > UPDATE_PERIOD * 2) {
+			// Don't catch up - just reset the timeline
+			//printf("Lag detected: %lld us behind, resetting timeline\n", lagAmount);
+			baseTime = currentTime;
+			tickCounter = 0;
+			nextTickTime = baseTime + UPDATE_PERIOD;
+		}
+
+		// Only tick if we're at or past the scheduled time
+		if (currentTime >= nextTickTime) {
 			// Process inputs
 			for (size_t i = 0; i < inputEventQueue.size(); i++) {
 				HandleInputEvent(&inputEventQueue[i].event);
 			}
-			inputEventQueue.clear(); // Keeps capacity
+			inputEventQueue.clear();
 
+			// Update at 240 Hz
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			updateCounter++;
-			nextUpdateTime = baseTime + (updateCounter + 1) * UPDATE_PERIOD;
+			// Render at 60 Hz (every 4th tick)
+			int64_t domain = (int64_t)(RENDER_PERIOD / UPDATE_PERIOD);
+			//printf("%lld\n", domain);
+			if (tickCounter % domain == 0) {
+				renderEvent.type = RENDER;
+				RenderEvent::Dispatch(&renderEvent);
+			}
+
+			tickCounter++;
+			nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 		}
 
-		if (currentTime >= nextRenderTime) {
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
-			renderCounter++;
-			nextRenderTime = baseTime + (renderCounter + 1) * RENDER_PERIOD;
-		}
-
-		int64_t nextEventTime = std::min<int64_t>(nextUpdateTime, nextRenderTime);
-
-		coolSleepUntil(nextEventTime);
+		// CRITICAL: Always sleep until next tick, even if we just ticked
+		// This keeps CPU at 0% because we're never spinning in the main loop
+		coolSleepUntil(nextTickTime);
 
 		return active;
 	}

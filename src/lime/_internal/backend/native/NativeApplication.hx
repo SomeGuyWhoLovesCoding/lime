@@ -106,6 +106,7 @@ class NativeApplication
 	{
 		#if !macro
 		#if lime_cffi
+		//Sys.println('What the hell');
 		NativeCFFI.lime_application_event_manager_register(handleApplicationEvent, applicationEventInfo);
 		NativeCFFI.lime_clipboard_event_manager_register(handleClipboardEvent, clipboardEventInfo);
 		NativeCFFI.lime_drop_event_manager_register(handleDropEvent, dropEventInfo);
@@ -117,6 +118,7 @@ class NativeApplication
 		NativeCFFI.lime_text_event_manager_register(handleTextEvent, textEventInfo);
 		NativeCFFI.lime_touch_event_manager_register(handleTouchEvent, touchEventInfo);
 		NativeCFFI.lime_window_event_manager_register(handleWindowEvent, windowEventInfo);
+		//Sys.println(windowEventInfo != null);
 		#if (ios || android || tvos)
 		NativeCFFI.lime_sensor_event_manager_register(handleSensorEvent, sensorEventInfo);
 		#end
@@ -127,11 +129,13 @@ class NativeApplication
 
 		var eventLoop = function()
 		{
+			Sys.println("A!");
 			var active = NativeCFFI.lime_application_update(handle);
 
 			if (!active)
 			{
 				untyped process.exitCode = NativeCFFI.lime_application_quit(handle);
+				Sys.println("AHAHA!");
 				parent.onExit.dispatch(untyped process.exitCode);
 			}
 			else
@@ -146,6 +150,7 @@ class NativeApplication
 		var result = NativeCFFI.lime_application_exec(handle);
 
 		#if (!webassembly && !ios && !nodejs)
+		//Sys.println("A!"); // it works!!! I found the shit now!!!
 		parent.onExit.dispatch(result);
 		#end
 
@@ -269,7 +274,7 @@ class NativeApplication
 			}
 
 			#if (windows || linux)
-			if (keyCode == RETURN)
+			if (keyCode == F11) // Come on. Be normal.
 			{
 				if (type == KEY_DOWN)
 				{
@@ -506,7 +511,9 @@ class NativeApplication
 
 	private function handleWindowEvent():Void
 	{
+		//Sys.println("Hi");
 		var window = parent.__windowByID.get(windowEventInfo.windowID);
+		//Sys.println(window);
 
 		if (window != null)
 		{
@@ -518,6 +525,8 @@ class NativeApplication
 					AudioManager.resume();
 
 				case WINDOW_CLOSE:
+					//Sys.println('Why the fuck is this not being called');
+					//Sys.println('Oh! Because it\'s ${windowEventInfo.type} instead of $WINDOW_CLOSE huh??? Is that fucking it!?');
 					window.close();
 
 				case WINDOW_DEACTIVATE:
