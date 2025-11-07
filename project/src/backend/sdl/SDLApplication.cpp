@@ -975,17 +975,16 @@ namespace lime {
 		const int64_t SPIN_THRESHOLD_US = 500;
 
 		if (sleepForUs > SPIN_THRESHOLD_US) {
-			// Convert wakeTimeUs to FILETIME (100-nanosecond intervals since Jan 1, 1601)
+			// Get current system time in FILETIME
 			FILETIME ft;
 			GetSystemTimePreciseAsFileTime(&ft);
 			ULARGE_INTEGER now;
 			now.LowPart = ft.dwLowDateTime;
 			now.HighPart = ft.dwHighDateTime;
 			
-			// Calculate absolute wake time in 100-nanosecond units
-			// We want to wake at (wakeTimeUs - SPIN_THRESHOLD_US) from now
+			// Add the sleep duration (minus spin threshold) to get absolute wake time
 			LARGE_INTEGER due;
-			due.QuadPart = now.QuadPart + ((wakeTimeUs - SPIN_THRESHOLD_US - currentTime) * 10);
+			due.QuadPart = now.QuadPart + ((sleepForUs - SPIN_THRESHOLD_US) * 10);
 			
 			SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
 			WaitForSingleObject(timer, INFINITE);
@@ -995,7 +994,6 @@ namespace lime {
 		while (getTime() < wakeTimeUs) {
 			_mm_pause();
 		}
-
 		#elif defined(HX_LINUX)
 		struct timespec wake;
 		wake.tv_sec = wakeTimeUs / 1000000;
@@ -1070,7 +1068,7 @@ namespace lime {
 	bool SDLApplication::Update() {
 		int64_t currentTime = getTime();
 
-		// Poll SDL events
+		// Poll events
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
@@ -1113,47 +1111,58 @@ namespace lime {
 			}
 		}
 
-		static int64_t prevFrameTime = currentTime;
+		static int64_t baseTime = 0;
 		static int64_t tickCounter = 0;
-		static int64_t baseTime = currentTime;
-		static double emaDriftUs = 0.0;
-		const double driftSmoothing = 0.01; // gentle EMA
 
-		// Calculate scheduled time for next update tick
+		if (baseTime == 0) {
+			baseTime = currentTime;
+			prevFrameTime = currentTime;
+			inputEventQueue.reserve(32);
+			tickCounter = 0;
+		}
+
+		prevFrameTime = currentTime;
+
 		int64_t nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 
-		// Compute drift since last update
-		int64_t actualDelta = currentTime - prevFrameTime;
-		int64_t drift = actualDelta - UPDATE_PERIOD;
-		emaDriftUs = (1.0 - driftSmoothing) * emaDriftUs + driftSmoothing * drift;
+		// LAG DETECTION: If we're more than 2 frames behind, we lagged
+		int64_t lagAmount = currentTime - nextTickTime;
+		if (lagAmount > UPDATE_PERIOD * 2) {
+			// Don't catch up - just reset the timeline
+			//printf("Lag detected: %lld us behind, resetting timeline\n", lagAmount);
+			baseTime = currentTime;
+			tickCounter = 0;
+			nextTickTime = baseTime + UPDATE_PERIOD;
+		}
 
-		// Only process update if we're at or past scheduled tick
+		// Only tick if we're at or past the scheduled time
 		if (currentTime >= nextTickTime) {
-			// Process all queued input events
+			// Process inputs
 			for (size_t i = 0; i < inputEventQueue.size(); i++) {
 				HandleInputEvent(&inputEventQueue[i].event);
 			}
 			inputEventQueue.clear();
 
-			// Fixed update at 240Hz
+			// Update at 240 Hz
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			// Render at 60Hz (every 4 ticks)
-			int64_t renderInterval = int64_t(RENDER_PERIOD / UPDATE_PERIOD);
-			if (tickCounter % renderInterval == 0) {
+			// Render at 60 Hz (every 4th tick)
+			int64_t domain = (int64_t)(RENDER_PERIOD / UPDATE_PERIOD);
+			//printf("%lld\n", domain);
+			if (tickCounter % domain == 0) {
 				renderEvent.type = RENDER;
 				RenderEvent::Dispatch(&renderEvent);
 			}
 
 			tickCounter++;
-			prevFrameTime = currentTime;
+			nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 		}
 
-		// Smoothly sleep until next tick, compensating for drift
-		int64_t sleepUntil = nextTickTime - int64_t(emaDriftUs);
-		coolSleepUntil(sleepUntil);
+		// CRITICAL: Always sleep until next tick, even if we just ticked
+		// This keeps CPU at 0% because we're never spinning in the main loop
+		coolSleepUntil(nextTickTime);
 
 		return active;
 	}
