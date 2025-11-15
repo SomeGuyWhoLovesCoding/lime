@@ -1,8 +1,7 @@
 /**
  * This class is where the main loop goes. For one, windows 10;
  * The said main loop uses:
-   - A combination of high res waitable timer and an undocumented ntdll function
-   - abused to be set to your literal frame time, to create a surreal rhythm game experience!
+   - A combination of high res waitable timer and bullshit to create a surreal rhythm game experience!
  * On the other hand, linux just already has an accurate sleep function. I wanted to create a fun crispy smooth experience for literally everyone who are on windows,
  so that meant doing this bullshit to compensate. How about I make a literal main loop library out of this shit?
 **/
@@ -27,7 +26,6 @@ using namespace std;
 #include <dwmapi.h>
 #include <avrt.h>
 #pragma comment(lib, "dwmapi.lib")
-#pragma comment(lib, "winmm.lib")  // for timeBeginPeriod
 #pragma comment(lib, "avrt.lib")   // for MMCSS
 #endif
 
@@ -50,12 +48,12 @@ namespace lime {
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
 
-	// ---------- Timing configuration in 100ns ticks ----------
-	// 1 second = 10000000 ticks of 100ns
-	constexpr int64_t TICKS_PER_SECOND_100NS = 10000000LL;
+	// ---------- Timing configuration in 10ns ticks ----------
+	// 1 second = 100000000 ticks of 10ns
+	constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
 	// Default target frame rates
-	static int64_t UPDATE_PERIOD_100NS = (int64_t)llround((double)TICKS_PER_SECOND_100NS / 120.0); // default update period (e.g. 120Hz)
-	static int64_t RENDER_PERIOD_100NS = (int64_t)llround((double)TICKS_PER_SECOND_100NS / 60.0);  // default render period (60Hz)
+	static int64_t UPDATE_PERIOD_10NS = (int64_t)llround((double)TICKS_PER_SECOND_10NS / 120.0); // default update period (e.g. 120Hz)
+	static int64_t RENDER_PERIOD_10NS = (int64_t)llround((double)TICKS_PER_SECOND_10NS / 60.0);  // default render period (60Hz)
 
     #if HX_WINDOWS
     static HANDLE timer;
@@ -110,16 +108,11 @@ namespace lime {
 
 	}
 
-	#if HX_WINDOWS
-	static HMODULE ntdll;
-	#endif
-
 
 	SDLApplication::~SDLApplication () {
 
 		#if HX_WINDOWS
 		if (timer) CloseHandle(timer);
-		if (ntdll) FreeLibrary(ntdll);
 		#endif
 
 	}
@@ -830,13 +823,13 @@ namespace lime {
 
 		if (frameRate > 0) {
 
-			UPDATE_PERIOD_100NS = TICKS_PER_SECOND_100NS / frameRate;
-			RENDER_PERIOD_100NS = TICKS_PER_SECOND_100NS / 60.0;
+			UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / frameRate;
+			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
 
 		} else {
 
-			UPDATE_PERIOD_100NS = 0;
-			RENDER_PERIOD_100NS = 0;
+			UPDATE_PERIOD_10NS = 0;
+			RENDER_PERIOD_10NS = 0;
 
 		}
 
@@ -847,15 +840,15 @@ namespace lime {
 
 		if (renderFrameRate > 60) {
 
-			RENDER_PERIOD_100NS = TICKS_PER_SECOND_100NS / renderFrameRate;
+			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / renderFrameRate;
 
 		} else if (renderFrameRate == 0) {
 
-			RENDER_PERIOD_100NS = 0.0;
+			RENDER_PERIOD_10NS = 0.0;
 
 		} else {
 
-			RENDER_PERIOD_100NS = TICKS_PER_SECOND_100NS / 60.0;
+			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
 
 		}
 
@@ -863,9 +856,9 @@ namespace lime {
 
 	int64_t prevFrameTime = 0;
 
-	// ----------------- 100ns timestamp helpers -----------------
+	// ----------------- 10ns timestamp helpers -----------------
 	// Returns monotonic timestamp in 100-ns ticks
-	int64_t getTime100ns() {
+	int64_t getTime10ns() {
 	#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {};
 		static LARGE_INTEGER start = {};
@@ -879,28 +872,28 @@ namespace lime {
 
 		QueryPerformanceCounter(&now);
 
-		int64_t delta = (int64_t)(now.QuadPart - start.QuadPart) * 10000000;
+		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
 		return (int64_t)(delta / freq.QuadPart);
 
 	#else
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 
-		return ts.tv_sec * 10000000LL + (ts.tv_nsec / 100LL);
+		return ts.tv_sec * TICKS_PER_SECOND_10NS + (ts.tv_nsec / 10LL);
 	#endif
 	}
 
-	// Sleep until wakeTime100ns (100ns ticks) using the platform's monotonic sleep; does not mix clock domains.
-	void coolSleepUntil100ns(int64_t wakeTime100ns) {
-		int64_t currentTime = getTime100ns();
-		int64_t sleepForTicks = wakeTime100ns - currentTime;
+	// Sleep until wakeTime10ns (10ns ticks) using the platform's monotonic sleep; does not mix clock domains.
+	void coolSleepUntil10ns(int64_t wakeTime10ns) {
+		int64_t currentTime = getTime10ns();
+		int64_t sleepForTicks = wakeTime10ns - currentTime;
 		if (sleepForTicks <= 0) return;
 
 	#if HX_WINDOWS
 		// SetWaitableTimer uses 100-ns units for LARGE_INTEGER; relative time is negative.
 		LARGE_INTEGER due = {};
-		// round to nearest 100ns
-		long long relative = - (long long) (sleepForTicks); // already in 100ns ticks; negative => relative
+		// round to nearest 10ns
+		long long relative = - (long long) (sleepForTicks / 10); // already in 10ns ticks; negative => relative
 		due.QuadPart = relative;
 
 		// Ensure timer created
@@ -915,30 +908,30 @@ namespace lime {
 		BOOL ok = SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
 		if (!ok) {
 			// fallback coarse sleep in milliseconds (best-effort)
-			DWORD ms = (DWORD)((sleepForTicks * 100) / 1000000 + 1); // sleepForTicks *100 ns -> nanoseconds -> ms
+			DWORD ms = (DWORD)((sleepForTicks * 10) / (int)TICKS_PER_SECOND_10NS + 1); // sleepForTicks *100 ns -> nanoseconds -> ms
 			if (ms > 0) Sleep(ms);
 		} else {
 			WaitForSingleObject(timer, INFINITE);
 		}
 	#elif defined(HX_LINUX)
 		struct timespec wake;
-		// convert 100ns ticks into seconds/nsec
-		wake.tv_sec = wakeTime100ns / TICKS_PER_SECOND_100NS;
-		long long remainder100ns = wakeTime100ns % TICKS_PER_SECOND_100NS;
-		wake.tv_nsec = (long)(remainder100ns * 100); // 100ns -> ns
+		// convert 10ns ticks into seconds/nsec
+		wake.tv_sec = wakeTime10ns / TICKS_PER_SECOND_10NS;
+		long long remainder10ns = wakeTime10ns % TICKS_PER_SECOND_10NS;
+		wake.tv_nsec = (long)(remainder10ns * 10); // 10ns -> ns
 		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
 	#else
-		auto target = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(wakeTime100ns * 100));
+		auto target = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(wakeTime10ns * 10));
 		std::this_thread::sleep_until(target);
 	#endif
 	}
 
-	int64_t startTimestamp100ns = 0;
+	int64_t startTimestamp10ns = 0;
 
 	void SDLApplication::Init () {
 		active = true;
-		int64_t now = getTime100ns();
-		startTimestamp100ns = lastUpdate = now;
+		int64_t now = getTime10ns();
+		startTimestamp10ns = lastUpdate = now;
 
 		// Windows: MMCSS and high-res timer
 		#ifdef HX_WINDOWS
@@ -966,31 +959,31 @@ namespace lime {
 		#endif
 	}
 
-	// Timestamped input events now carry 100ns timestamps
+	// Timestamped input events now carry 10ns timestamps
 	struct TimestampedInputEvent {
 		SDL_Event event;
-		int64_t timestamp100ns;
+		int64_t timestamp10ns;
 	};
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
 	bool SDLApplication::Update() {
-		static int64_t prevTime100ns = 0;
+		static int64_t prevTime10ns = 0;
 		static int64_t accumulatedUpdateTicks = 0;
 		static int64_t accumulatedRenderTicks = 0;
 
-		int64_t currentTime100ns = getTime100ns();
+		int64_t currentTime10ns = getTime10ns();
 
-		if (prevTime100ns == 0) {
-			prevTime100ns = currentTime100ns;
+		if (prevTime10ns == 0) {
+			prevTime10ns = currentTime10ns;
 			accumulatedUpdateTicks = 0;
 			accumulatedRenderTicks = 0;
 			inputEventQueue.reserve(32);
 		}
 
-		int64_t deltaTicks = currentTime100ns - prevTime100ns;
-		prevTime100ns = currentTime100ns;
+		int64_t deltaTicks = currentTime10ns - prevTime10ns;
+		prevTime10ns = currentTime10ns;
 
-		if (deltaTicks > UPDATE_PERIOD_100NS * 5) deltaTicks = UPDATE_PERIOD_100NS;
+		if (deltaTicks > UPDATE_PERIOD_10NS * 5) deltaTicks = UPDATE_PERIOD_10NS;
 
 		accumulatedUpdateTicks += deltaTicks;
 		accumulatedRenderTicks += deltaTicks;
@@ -1016,7 +1009,7 @@ namespace lime {
 			if (isInputEvent) {
 				TimestampedInputEvent tie;
 				tie.event = event;
-				tie.timestamp100ns = (int64_t)event.common.timestamp * 10000LL;
+				tie.timestamp10ns = (int64_t)event.common.timestamp * 100000LL;
 				inputEventQueue.push_back(tie);
 			} else {
 				HandleEvent(&event);
@@ -1027,7 +1020,7 @@ namespace lime {
 		const int MAX_UPDATES_PER_FRAME = 4;
 		int updatesThisFrame = 0;
 
-		while (accumulatedUpdateTicks >= UPDATE_PERIOD_100NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
+		while (accumulatedUpdateTicks >= UPDATE_PERIOD_10NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
 			if (updatesThisFrame == 0) {
 				for (size_t i = 0; i < inputEventQueue.size(); i++)
 					HandleInputEvent(&inputEventQueue[i].event);
@@ -1035,31 +1028,31 @@ namespace lime {
 			}
 
 			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = UPDATE_PERIOD_100NS;
+			applicationEvent.deltaTime = UPDATE_PERIOD_10NS;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			accumulatedUpdateTicks -= UPDATE_PERIOD_100NS;
+			accumulatedUpdateTicks -= UPDATE_PERIOD_10NS;
 			updatesThisFrame++;
 		}
 
 		// --- Render at 60Hz ---
-		if (accumulatedRenderTicks >= RENDER_PERIOD_100NS) {
+		if (accumulatedRenderTicks >= RENDER_PERIOD_10NS) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
-			accumulatedRenderTicks -= RENDER_PERIOD_100NS;
+			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
 		}
 
 		// --- Sleep until next update or render ---
-		int64_t nextUpdateTime = currentTime100ns + (UPDATE_PERIOD_100NS - accumulatedUpdateTicks);
-		int64_t nextRenderTime = currentTime100ns + (RENDER_PERIOD_100NS - accumulatedRenderTicks);
+		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - accumulatedUpdateTicks);
+		int64_t nextRenderTime = currentTime10ns + (RENDER_PERIOD_10NS - accumulatedRenderTicks);
 		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
-		int64_t sleepTicks = wakeTime - getTime100ns();
+		int64_t sleepTicks = wakeTime - getTime10ns();
 
-		if (sleepTicks > 10000) {
-			coolSleepUntil100ns(wakeTime - 10000);
+		if (sleepTicks > 100000) {
+			coolSleepUntil10ns(wakeTime - 100000);
 		}
-		while (getTime100ns() < wakeTime - 1) {}
+		while (getTime10ns() < wakeTime - 11) {}
 
 		return active;
 	}
