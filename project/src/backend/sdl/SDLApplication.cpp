@@ -855,13 +855,6 @@ namespace lime {
 
 	}
 
-	// Add these to your class definition
-	#ifdef HX_WINDOWS
-	static int64_t vsyncPeriodUs;
-	static int64_t lastVsyncTime;
-	static bool vsyncCalibrated;
-	#endif
-
 	int64_t prevFrameTime = 0;
 
 	int64_t getTime() {
@@ -937,9 +930,10 @@ namespace lime {
 		timeGetDevCaps(&tc, sizeof(TIMECAPS));
 		printf("Timer caps: min=%u, max=%u\n", tc.wPeriodMin, tc.wPeriodMax);
 
-		SDL_Window* sdlWindow = SDL_GL_GetCurrentWindow();
+		// Get the HWND from SDL
+		SDL_Window* sdlWindow = SDL_GL_GetCurrentWindow(); // or however you store your window
 		if (!sdlWindow) {
-			sdlWindow = SDL_GetWindowFromID(1);
+			sdlWindow = SDL_GetWindowFromID(1); // Try first window
 		}
 
 		if (sdlWindow) {
@@ -948,29 +942,14 @@ namespace lime {
 			if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
 				HWND hwnd = wmInfo.info.win.window;
 				
-				// Get actual monitor refresh rate
-				HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-				MONITORINFOEX monitorInfo;
-				monitorInfo.cbSize = sizeof(MONITORINFOEX);
-				GetMonitorInfo(monitor, &monitorInfo);
-				
-				DEVMODE devMode;
-				devMode.dmSize = sizeof(DEVMODE);
-				EnumDisplaySettings(monitorInfo.szDevice, ENUM_CURRENT_SETTINGS, &devMode);
-				
-				double refreshRate = (double)devMode.dmDisplayFrequency;
-				vsyncPeriodUs = (int64_t)(1000000.0 / refreshRate);
-				printf("Detected refresh rate: %.2f Hz (period: %lld us)\n", refreshRate, vsyncPeriodUs);
-				
-				// Disable DWM composition interference
+				// Disable DWM composition for this window
 				BOOL disableMMCSS = TRUE;
 				DwmSetWindowAttribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &disableMMCSS, sizeof(disableMMCSS));
+				
+				// Or try disabling DWM entirely (more aggressive)
+				// DwmEnableComposition(DWM_EC_DISABLECOMPOSITION); // Disables for ALL windows
 			}
 		}
-
-		HANDLE hThread = GetCurrentThread();
-		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
-		SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
 
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
@@ -982,73 +961,8 @@ namespace lime {
 				std::cout << "Successfully created high-res timer!\n";
 			}
 		}
-		
-		vsyncCalibrated = false;
-		lastVsyncTime = 0;
 		#endif
 	}
-
-	#ifdef HX_WINDOWS
-	bool CalibrateVsync() {
-		static std::vector<int64_t> frameTimes;
-		static int calibrationFrames = 0;
-		const int CALIBRATION_FRAME_COUNT = 120; // More frames for better accuracy
-		
-		if (calibrationFrames < CALIBRATION_FRAME_COUNT) {
-			int64_t now = getTime();
-			if (calibrationFrames > 0) {
-				frameTimes.push_back(now);
-			}
-			calibrationFrames++;
-			return false;
-		}
-		
-		// Detect actual vsync intervals from frame timing
-		if (!frameTimes.empty()) {
-			// Calculate median interval (more robust than average)
-			std::vector<int64_t> intervals;
-			for (size_t i = 1; i < frameTimes.size(); i++) {
-				intervals.push_back(frameTimes[i] - frameTimes[i-1]);
-			}
-			std::sort(intervals.begin(), intervals.end());
-			int64_t medianInterval = intervals[intervals.size() / 2];
-			
-			// Check if we're getting 2x refresh (DWM compositing issue)
-			// If median is around 8333us (120Hz) but we detected 60Hz monitor, use monitor rate
-			int64_t detectedHz = 1000000 / medianInterval;
-			int64_t monitorHz = 1000000 / vsyncPeriodUs;
-			
-			printf("Detected frame interval: %lld us (%.2f Hz)\n", medianInterval, 1000000.0 / medianInterval);
-			printf("Monitor refresh rate: %lld Hz\n", monitorHz);
-			
-			// If we're rendering at 2x monitor rate, it means vsync is OFF or DWM is compositing
-			if (detectedHz >= monitorHz * 1.8 && detectedHz <= monitorHz * 2.2) {
-				printf("WARNING: Detected %lld Hz rendering on %lld Hz monitor!\n", detectedHz, monitorHz);
-				printf("This suggests vsync is disabled or DWM is compositing.\n");
-				printf("Using monitor refresh rate for alignment.\n");
-				// Keep the original vsyncPeriodUs from monitor detection
-			} else {
-				// Use measured timing
-				// Round to nearest common refresh interval
-				if (abs(medianInterval - 16667) < 1000) vsyncPeriodUs = 16667; // 60 Hz
-				else if (abs(medianInterval - 13889) < 1000) vsyncPeriodUs = 13889; // 72 Hz
-				else if (abs(medianInterval - 11111) < 1000) vsyncPeriodUs = 11111; // 90 Hz
-				else if (abs(medianInterval - 8333) < 1000) vsyncPeriodUs = 8333; // 120 Hz
-				else if (abs(medianInterval - 6944) < 1000) vsyncPeriodUs = 6944; // 144 Hz
-				else vsyncPeriodUs = medianInterval;
-			}
-			
-			printf("Final vsync period: %lld us (%.2f Hz)\n", 
-				vsyncPeriodUs, 1000000.0 / vsyncPeriodUs);
-			
-			lastVsyncTime = frameTimes.back();
-			frameTimes.clear();
-		}
-		
-		vsyncCalibrated = true;
-		return true;
-	}
-	#endif
 
 	// Most of this rewritten function were generated with claude.ai with a side of chatgpt
 	// Remove the input polling thread - SDL event polling MUST be on main thread
@@ -1059,7 +973,6 @@ namespace lime {
 	};
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
-	// Modified Update - poll everything on main thread but timestamp inputs
 	bool SDLApplication::Update() {
 		int64_t currentTime = getTime();
 
@@ -1099,7 +1012,7 @@ namespace lime {
 			if (isInputEvent) {
 				TimestampedInputEvent tie;
 				tie.event = event;
-				tie.timestamp = currentTime;
+				tie.timestamp = event.common.timestamp * 1000LL;
 				inputEventQueue.push_back(tie);
 			} else {
 				HandleEvent(&event);
@@ -1107,55 +1020,84 @@ namespace lime {
 		}
 
 		static int64_t baseTime = 0;
-		static int64_t tickCounter = 0;
+		static int64_t updateTickCounter = 0;
+		static int64_t renderTickCounter = 0;
+		static double accumulatedUpdateTime = 0.0;
+		static double accumulatedRenderTime = 0.0;
 
 		if (baseTime == 0) {
 			baseTime = currentTime;
 			prevFrameTime = currentTime;
 			inputEventQueue.reserve(32);
-			tickCounter = 0;
+			updateTickCounter = 0;
+			renderTickCounter = 0;
+			accumulatedUpdateTime = 0.0;
+			accumulatedRenderTime = 0.0;
 		}
 
+		double deltaTime = (double)(currentTime - prevFrameTime);
 		prevFrameTime = currentTime;
 
-		int64_t nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
-
-		// LAG DETECTION: If we're more than 2 frames behind, we lagged
-		int64_t lagAmount = currentTime - nextTickTime;
-		if (lagAmount > UPDATE_PERIOD * 2) {
-			// Don't catch up - just reset the timeline
-			baseTime = currentTime;
-			tickCounter = 0;
-			nextTickTime = baseTime + UPDATE_PERIOD;
+		// Clamp delta time to prevent spiral of death
+		if (deltaTime > UPDATE_PERIOD * 5.0) {
+			deltaTime = UPDATE_PERIOD;
+			// Reset accumulators on huge lag spike
+			accumulatedUpdateTime = 0.0;
+			accumulatedRenderTime = 0.0;
 		}
 
-		// Only tick if we're at or past the scheduled time
-		if (currentTime >= nextTickTime) {
-			// Process inputs
-			for (size_t i = 0; i < inputEventQueue.size(); i++) {
-				HandleInputEvent(&inputEventQueue[i].event);
-			}
-			inputEventQueue.clear();
+		accumulatedUpdateTime += deltaTime;
+		accumulatedRenderTime += deltaTime;
 
-			// Update at 120 Hz
+		// Process updates
+		int updatesThisFrame = 0;
+		const int MAX_UPDATES_PER_FRAME = 4; // Prevent spiral of death
+
+		while (accumulatedUpdateTime >= UPDATE_PERIOD && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
+			// Process inputs once per update batch, not per update
+			if (updatesThisFrame == 0) {
+				for (size_t i = 0; i < inputEventQueue.size(); i++) {
+					HandleInputEvent(&inputEventQueue[i].event);
+				}
+				inputEventQueue.clear();
+			}
+
+			// Update at 240 Hz
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			// Render at 60 Hz (every 2nd tick for 120Hz updates)
-			// For 240Hz updates, render every 4th tick
-			int64_t domain = (int64_t)(RENDER_PERIOD / UPDATE_PERIOD);
-			if (tickCounter % domain == 0) {
-				renderEvent.type = RENDER;
-				RenderEvent::Dispatch(&renderEvent);
-			}
-
-			tickCounter++;
-			nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
+			accumulatedUpdateTime -= UPDATE_PERIOD;
+			updateTickCounter++;
+			updatesThisFrame++;
 		}
 
-		// CRITICAL: Always sleep until next tick
-		coolSleepUntil(nextTickTime);
+		// Render when accumulated time passes render period
+		if (accumulatedRenderTime >= RENDER_PERIOD) {
+			// Calculate interpolation alpha for smooth rendering between update ticks
+			double alpha = accumulatedUpdateTime / UPDATE_PERIOD;
+			if (alpha > 1.0) alpha = 1.0;
+			if (alpha < 0.0) alpha = 0.0;
+
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+
+			accumulatedRenderTime -= RENDER_PERIOD;
+			renderTickCounter++;
+		}
+
+		// Calculate next wake time based on whichever comes first
+		double timeUntilNextUpdate = UPDATE_PERIOD - accumulatedUpdateTime;
+		double timeUntilNextRender = RENDER_PERIOD - accumulatedRenderTime;
+		
+		double sleepTime = timeUntilNextUpdate < timeUntilNextRender ? 
+						timeUntilNextUpdate : timeUntilNextRender;
+
+		// Don't sleep if we're behind
+		if (sleepTime > 100.0) { // Only sleep if more than 100 microseconds
+			int64_t wakeTime = currentTime + (int64_t)sleepTime;
+			coolSleepUntil(wakeTime);
+		}
 
 		return active;
 	}
