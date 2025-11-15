@@ -25,7 +25,10 @@ using namespace std;
 #include <windows.h>
 #include <cstdint>
 #include <dwmapi.h>
+#include <avrt.h>
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "winmm.lib")  // for timeBeginPeriod
+#pragma comment(lib, "avrt.lib")   // for MMCSS
 #include <SDL_syswm.h>
 #endif
 
@@ -925,37 +928,24 @@ namespace lime {
 		int64_t now = getTime();
 		startTimestamp = lastUpdate = now;
 
+		// Add to Init() function for Windows:
 		#ifdef HX_WINDOWS
-		TIMECAPS tc;
-		timeGetDevCaps(&tc, sizeof(TIMECAPS));
-		printf("Timer caps: min=%u, max=%u\n", tc.wPeriodMin, tc.wPeriodMax);
-
-		// Get the HWND from SDL
-		SDL_Window* sdlWindow = SDL_GL_GetCurrentWindow(); // or however you store your window
-		if (!sdlWindow) {
-			sdlWindow = SDL_GetWindowFromID(1); // Try first window
+		// Enable MMCSS for the main thread
+		DWORD taskIndex = 0;
+		HANDLE mmcssHandle = AvSetMmThreadCharacteristicsA("Games", &taskIndex);
+		if (mmcssHandle) {
+			AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_CRITICAL);
 		}
 
-		if (sdlWindow) {
-			SDL_SysWMinfo wmInfo;
-			SDL_VERSION(&wmInfo.version);
-			if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
-				HWND hwnd = wmInfo.info.win.window;
-				
-				// Disable DWM composition for this window
-				BOOL disableMMCSS = TRUE;
-				DwmSetWindowAttribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &disableMMCSS, sizeof(disableMMCSS));
-				
-				// Or try disabling DWM entirely (more aggressive)
-				// DwmEnableComposition(DWM_EC_DISABLECOMPOSITION); // Disables for ALL windows
-			}
-		}
+		// Set thread priority
+		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
+		// Create high-resolution timer
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
-												CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
 			if (!timer) {
-				std::cout << "Failed to create high-res timer\ncreating regular timer instead\n";
+				std::cout << "Failed to create high-res timer, using regular timer\n";
 				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 			} else {
 				std::cout << "Successfully created high-res timer!\n";
