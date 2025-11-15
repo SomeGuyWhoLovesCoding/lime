@@ -50,9 +50,12 @@ namespace lime {
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
 
-	// --- timing constants for decoupled loop ---
-	static double UPDATE_PERIOD = 1000000.0 / 120; // fixed update @ 240Hz
-	static double RENDER_PERIOD = 1000000.0 / 60;  // render @ 60Hz
+	// ---------- Timing configuration in 100ns ticks ----------
+	// 1 second = 10000000 ticks of 100ns
+	constexpr int64_t TICKS_PER_SECOND_100NS = 10000000LL;
+	// Default target frame rates
+	static int64_t UPDATE_PERIOD_100NS = (int64_t)llround((double)TICKS_PER_SECOND_100NS / 120.0); // default update period (e.g. 120Hz)
+	static int64_t RENDER_PERIOD_100NS = (int64_t)llround((double)TICKS_PER_SECOND_100NS / 60.0);  // default render period (60Hz)
 
     #if HX_WINDOWS
     static HANDLE timer;
@@ -822,17 +825,18 @@ namespace lime {
 	}
 
 
+	// don't llround this shit you fucking mistake
 	void SDLApplication::SetFrameRate (double frameRate) {
 
 		if (frameRate > 0) {
 
-			UPDATE_PERIOD = 1000000.0 / frameRate;
-			RENDER_PERIOD = 1000000.0 / 60.0;
+			UPDATE_PERIOD_100NS = TICKS_PER_SECOND_100NS / frameRate;
+			RENDER_PERIOD_100NS = TICKS_PER_SECOND_100NS / 60.0;
 
 		} else {
 
-			UPDATE_PERIOD = 0;
-			RENDER_PERIOD = 0;
+			UPDATE_PERIOD_100NS = 0;
+			RENDER_PERIOD_100NS = 0;
 
 		}
 
@@ -843,15 +847,15 @@ namespace lime {
 
 		if (renderFrameRate > 60) {
 
-			RENDER_PERIOD = 1000000.0 / renderFrameRate;
+			RENDER_PERIOD_100NS = TICKS_PER_SECOND_100NS / renderFrameRate;
 
 		} else if (renderFrameRate == 0) {
 
-			RENDER_PERIOD = 0.0;
+			RENDER_PERIOD_100NS = 0.0;
 
 		} else {
 
-			RENDER_PERIOD = 1000000.0 / 60.0;
+			RENDER_PERIOD_100NS = TICKS_PER_SECOND_100NS / 60.0;
 
 		}
 
@@ -859,66 +863,84 @@ namespace lime {
 
 	int64_t prevFrameTime = 0;
 
-	int64_t getTime() {
-		#ifdef HX_WINDOWS
+	// ----------------- 100ns timestamp helpers -----------------
+	// Returns monotonic timestamp in 100-ns ticks
+	int64_t getTime100ns() {
+	#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {};
 		static LARGE_INTEGER start = {};
+
+		LARGE_INTEGER now;
+
 		if (freq.QuadPart == 0) {
 			QueryPerformanceFrequency(&freq);
 			QueryPerformanceCounter(&start);
 		}
 
-		LARGE_INTEGER counter;
-		QueryPerformanceCounter(&counter);
+		QueryPerformanceCounter(&now);
 
-		double elapsedSeconds = double(counter.QuadPart - start.QuadPart) / freq.QuadPart;
-		return int64_t(elapsedSeconds * 1000000.0);
-		#elif defined(HX_LINUX)
+		int64_t delta = (int64_t)(now.QuadPart - start.QuadPart) * 10000000;
+		return (int64_t)(delta / freq.QuadPart);
+
+	#else
 		struct timespec ts;
-		clock_gettime(CLOCK_MONOTONIC_RAW, &ts); 
-		return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-		#else
-		return std::chrono::duration_cast<std::chrono::microseconds>(
-			std::chrono::steady_clock::now().time_since_epoch()
-		).count();
-		#endif
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+
+		return ts.tv_sec * 10000000LL + (ts.tv_nsec / 100LL);
+	#endif
 	}
 
-	void coolSleepUntil(int64_t wakeTimeUs) {
-		int64_t currentTime = getTime();
-		int64_t sleepForUs = wakeTimeUs - currentTime;
+	// Sleep until wakeTime100ns (100ns ticks) using the platform's monotonic sleep; does not mix clock domains.
+	void coolSleepUntil100ns(int64_t wakeTime100ns) {
+		int64_t currentTime = getTime100ns();
+		int64_t sleepForTicks = wakeTime100ns - currentTime;
+		if (sleepForTicks <= 0) return;
 
-		if (sleepForUs <= 0) return;
+	#if HX_WINDOWS
+		// SetWaitableTimer uses 100-ns units for LARGE_INTEGER; relative time is negative.
+		LARGE_INTEGER due = {};
+		// round to nearest 100ns
+		long long relative = - (long long) (sleepForTicks); // already in 100ns ticks; negative => relative
+		due.QuadPart = relative;
 
-		#if HX_WINDOWS
-		// Get current system time in FILETIME
-		FILETIME ft;
-		GetSystemTimePreciseAsFileTime(&ft);
-		ULARGE_INTEGER now;
-		now.LowPart = ft.dwLowDateTime;
-		now.HighPart = ft.dwHighDateTime;
-		
-		// Add the sleep duration (minus spin threshold) to get absolute wake time
-		LARGE_INTEGER due;
-		due.QuadPart = now.QuadPart + (sleepForUs * 10);
-		
-		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-		WaitForSingleObject(timer, INFINITE);
-		#elif defined(HX_LINUX)
+		// Ensure timer created
+		if (!timer) {
+			timer = CreateWaitableTimerEx(nullptr, nullptr,
+				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+			if (!timer) {
+				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+			}
+		}
+
+		BOOL ok = SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+		if (!ok) {
+			// fallback coarse sleep in milliseconds (best-effort)
+			DWORD ms = (DWORD)((sleepForTicks * 100) / 1000000 + 1); // sleepForTicks *100 ns -> nanoseconds -> ms
+			if (ms > 0) Sleep(ms);
+		} else {
+			WaitForSingleObject(timer, INFINITE);
+		}
+	#elif defined(HX_LINUX)
 		struct timespec wake;
-		wake.tv_sec = wakeTimeUs / 1000000;
-		wake.tv_nsec = (wakeTimeUs % 1000000) * 1000;
+		// convert 100ns ticks into seconds/nsec
+		wake.tv_sec = wakeTime100ns / TICKS_PER_SECOND_100NS;
+		long long remainder100ns = wakeTime100ns % TICKS_PER_SECOND_100NS;
+		wake.tv_nsec = (long)(remainder100ns * 100); // 100ns -> ns
 		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
-		#endif
+	#else
+		auto target = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(wakeTime100ns * 100));
+		std::this_thread::sleep_until(target);
+	#endif
 	}
 
-	int64_t startTimestamp;
+	int64_t startTimestamp100ns = 0;
+
 	void SDLApplication::Init () {
 		active = true;
-		int64_t now = getTime();
-		startTimestamp = lastUpdate = now;
+		int64_t now = getTime100ns();
+		startTimestamp100ns = lastUpdate = now;
 
-		// Add to Init() function for Windows:
+		// Windows: MMCSS and high-res timer
 		#ifdef HX_WINDOWS
 		// Enable MMCSS for the main thread
 		DWORD taskIndex = 0;
@@ -930,7 +952,7 @@ namespace lime {
 		// Set thread priority
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
-		// Create high-resolution timer
+		// Create high-resolution timer if not already created
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
 				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
@@ -944,140 +966,100 @@ namespace lime {
 		#endif
 	}
 
-	// Most of this rewritten function were generated with claude.ai with a side of chatgpt
-	// Remove the input polling thread - SDL event polling MUST be on main thread
-	// Keep only these for timestamping:
+	// Timestamped input events now carry 100ns timestamps
 	struct TimestampedInputEvent {
 		SDL_Event event;
-		int64_t timestamp;
+		int64_t timestamp100ns;
 	};
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
 	bool SDLApplication::Update() {
-		int64_t currentTime = getTime();
+		static int64_t prevTime100ns = 0;
+		static int64_t accumulatedUpdateTicks = 0;
+		static int64_t accumulatedRenderTicks = 0;
 
-		// Poll events
+		int64_t currentTime100ns = getTime100ns();
+
+		if (prevTime100ns == 0) {
+			prevTime100ns = currentTime100ns;
+			accumulatedUpdateTicks = 0;
+			accumulatedRenderTicks = 0;
+			inputEventQueue.reserve(32);
+		}
+
+		int64_t deltaTicks = currentTime100ns - prevTime100ns;
+		prevTime100ns = currentTime100ns;
+
+		if (deltaTicks > UPDATE_PERIOD_100NS * 5) deltaTicks = UPDATE_PERIOD_100NS;
+
+		accumulatedUpdateTicks += deltaTicks;
+		accumulatedRenderTicks += deltaTicks;
+
+		// --- Poll and batch input ---
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
 			switch (event.type) {
-				case SDL_CLIPBOARDUPDATE:
-				case SDL_CONTROLLERAXISMOTION:
-				case SDL_CONTROLLERBUTTONDOWN:
-				case SDL_CONTROLLERBUTTONUP:
-				case SDL_CONTROLLERDEVICEADDED:
-				case SDL_CONTROLLERDEVICEREMOVED:
-				case SDL_JOYAXISMOTION:
-				case SDL_JOYBALLMOTION:
-				case SDL_JOYBUTTONDOWN:
-				case SDL_JOYBUTTONUP:
-				case SDL_JOYHATMOTION:
-				case SDL_JOYDEVICEADDED:
-				case SDL_JOYDEVICEREMOVED:
+				// list of input events...
 				case SDL_KEYDOWN:
 				case SDL_KEYUP:
 				case SDL_MOUSEMOTION:
 				case SDL_MOUSEBUTTONDOWN:
 				case SDL_MOUSEBUTTONUP:
 				case SDL_MOUSEWHEEL:
-				case SDL_TEXTINPUT:
-				case SDL_TEXTEDITING:
-				case SDL_FINGERMOTION:
-				case SDL_FINGERDOWN:
-				case SDL_FINGERUP:
+				case SDL_CONTROLLERAXISMOTION:
+				case SDL_CONTROLLERBUTTONDOWN:
+				case SDL_CONTROLLERBUTTONUP:
 					isInputEvent = true;
 					break;
 			}
-
 			if (isInputEvent) {
 				TimestampedInputEvent tie;
 				tie.event = event;
-				tie.timestamp = event.common.timestamp * 1000LL;
+				tie.timestamp100ns = (int64_t)event.common.timestamp * 10000LL;
 				inputEventQueue.push_back(tie);
 			} else {
 				HandleEvent(&event);
 			}
 		}
 
-		static int64_t baseTime = 0;
-		static int64_t updateTickCounter = 0;
-		static int64_t renderTickCounter = 0;
-		static double accumulatedUpdateTime = 0.0;
-		static double accumulatedRenderTime = 0.0;
-
-		if (baseTime == 0) {
-			baseTime = currentTime;
-			prevFrameTime = currentTime;
-			inputEventQueue.reserve(32);
-			updateTickCounter = 0;
-			renderTickCounter = 0;
-			accumulatedUpdateTime = 0.0;
-			accumulatedRenderTime = 0.0;
-		}
-
-		double deltaTime = (double)(currentTime - prevFrameTime);
-		prevFrameTime = currentTime;
-
-		// Clamp delta time to prevent spiral of death
-		if (deltaTime > UPDATE_PERIOD * 5.0) {
-			deltaTime = UPDATE_PERIOD;
-			// Reset accumulators on huge lag spike
-			accumulatedUpdateTime = 0.0;
-			accumulatedRenderTime = 0.0;
-		}
-
-		accumulatedUpdateTime += deltaTime;
-		accumulatedRenderTime += deltaTime;
-
-		// Process updates
+		// --- Fixed-step updates at 120Hz ---
+		const int MAX_UPDATES_PER_FRAME = 4;
 		int updatesThisFrame = 0;
-		const int MAX_UPDATES_PER_FRAME = 4; // Prevent spiral of death
 
-		while (accumulatedUpdateTime >= UPDATE_PERIOD && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
-			// Process inputs once per update batch, not per update
+		while (accumulatedUpdateTicks >= UPDATE_PERIOD_100NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
 			if (updatesThisFrame == 0) {
-				for (size_t i = 0; i < inputEventQueue.size(); i++) {
+				for (size_t i = 0; i < inputEventQueue.size(); i++)
 					HandleInputEvent(&inputEventQueue[i].event);
-				}
 				inputEventQueue.clear();
 			}
 
-			// Update at 240 Hz
 			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = UPDATE_PERIOD;
+			applicationEvent.deltaTime = UPDATE_PERIOD_100NS;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			accumulatedUpdateTime -= UPDATE_PERIOD;
-			updateTickCounter++;
+			accumulatedUpdateTicks -= UPDATE_PERIOD_100NS;
 			updatesThisFrame++;
 		}
 
-		// Render when accumulated time passes render period
-		if (accumulatedRenderTime >= RENDER_PERIOD) {
-			// Calculate interpolation alpha for smooth rendering between update ticks
-			double alpha = accumulatedUpdateTime / UPDATE_PERIOD;
-			if (alpha > 1.0) alpha = 1.0;
-			if (alpha < 0.0) alpha = 0.0;
-
+		// --- Render at 60Hz ---
+		if (accumulatedRenderTicks >= RENDER_PERIOD_100NS) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
-			accumulatedRenderTime -= RENDER_PERIOD;
-			renderTickCounter++;
+			accumulatedRenderTicks -= RENDER_PERIOD_100NS;
 		}
 
-		// Calculate next wake time based on whichever comes first
-		double timeUntilNextUpdate = UPDATE_PERIOD - accumulatedUpdateTime;
-		double timeUntilNextRender = RENDER_PERIOD - accumulatedRenderTime;
-		
-		double sleepTime = timeUntilNextUpdate < timeUntilNextRender ? 
-						timeUntilNextUpdate : timeUntilNextRender;
+		// --- Sleep until next update or render ---
+		int64_t nextUpdateTime = currentTime100ns + (UPDATE_PERIOD_100NS - accumulatedUpdateTicks);
+		int64_t nextRenderTime = currentTime100ns + (RENDER_PERIOD_100NS - accumulatedRenderTicks);
+		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
+		int64_t sleepTicks = wakeTime - getTime100ns();
 
-		// Don't sleep if we're behind
-		if (sleepTime > 100.0) { // Only sleep if more than 100 microseconds
-			int64_t wakeTime = currentTime + (int64_t)sleepTime;
-			coolSleepUntil(wakeTime);
+		if (sleepTicks > 10000) {
+			coolSleepUntil100ns(wakeTime - 10000);
 		}
+		while (getTime100ns() < wakeTime - 1) {}
 
 		return active;
 	}
