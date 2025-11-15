@@ -179,89 +179,6 @@ namespace lime {
 				inBackground = false;
 				break;
 
-			case SDL_CLIPBOARDUPDATE:
-
-				ProcessClipboardEvent (event);
-				break;
-
-			case SDL_CONTROLLERAXISMOTION:
-			case SDL_CONTROLLERBUTTONDOWN:
-			case SDL_CONTROLLERBUTTONUP:
-			case SDL_CONTROLLERDEVICEADDED:
-			case SDL_CONTROLLERDEVICEREMOVED:
-
-				ProcessGamepadEvent (event);
-				break;
-
-			case SDL_DROPFILE:
-
-				ProcessDropEvent (event);
-				break;
-
-			case SDL_FINGERMOTION:
-			case SDL_FINGERDOWN:
-			case SDL_FINGERUP:
-
-				ProcessTouchEvent (event);
-				break;
-
-			case SDL_JOYAXISMOTION:
-
-				if (SDLJoystick::IsAccelerometer (event->jaxis.which)) {
-
-					ProcessSensorEvent (event);
-
-				} else {
-
-					ProcessJoystickEvent (event);
-
-				}
-
-				break;
-
-			case SDL_JOYBALLMOTION:
-			case SDL_JOYBUTTONDOWN:
-			case SDL_JOYBUTTONUP:
-			case SDL_JOYHATMOTION:
-			case SDL_JOYDEVICEADDED:
-			case SDL_JOYDEVICEREMOVED:
-
-				ProcessJoystickEvent (event);
-				break;
-
-			case SDL_KEYDOWN:
-			case SDL_KEYUP:
-
-				ProcessKeyEvent (event);
-				break;
-
-			case SDL_MOUSEMOTION:
-			case SDL_MOUSEBUTTONDOWN:
-			case SDL_MOUSEBUTTONUP:
-			case SDL_MOUSEWHEEL:
-
-				ProcessMouseEvent (event);
-				break;
-
-			#ifndef EMSCRIPTEN
-			case SDL_RENDER_DEVICE_RESET:
-
-				renderEvent.type = RENDER_CONTEXT_LOST;
-				RenderEvent::Dispatch (&renderEvent);
-
-				renderEvent.type = RENDER_CONTEXT_RESTORED;
-				RenderEvent::Dispatch (&renderEvent);
-
-				renderEvent.type = RENDER;
-				break;
-			#endif
-
-			case SDL_TEXTINPUT:
-			case SDL_TEXTEDITING:
-
-				ProcessTextEvent (event);
-				break;
-
 			case SDL_WINDOWEVENT:
 
 				switch (event->window.event) {
@@ -938,6 +855,13 @@ namespace lime {
 
 	}
 
+	// Add these to your class definition
+	#ifdef HX_WINDOWS
+	static int64_t vsyncPeriodUs;
+	static int64_t lastVsyncTime;
+	static bool vsyncCalibrated;
+	#endif
+
 	int64_t prevFrameTime = 0;
 
 	int64_t getTime() {
@@ -1005,7 +929,7 @@ namespace lime {
 	int64_t startTimestamp;
 	void SDLApplication::Init () {
 		active = true;
-		int now = getTime();
+		int64_t now = getTime();
 		startTimestamp = lastUpdate = now;
 
 		#ifdef HX_WINDOWS
@@ -1013,10 +937,9 @@ namespace lime {
 		timeGetDevCaps(&tc, sizeof(TIMECAPS));
 		printf("Timer caps: min=%u, max=%u\n", tc.wPeriodMin, tc.wPeriodMax);
 
-		// Get the HWND from SDL
-		SDL_Window* sdlWindow = SDL_GL_GetCurrentWindow(); // or however you store your window
+		SDL_Window* sdlWindow = SDL_GL_GetCurrentWindow();
 		if (!sdlWindow) {
-			sdlWindow = SDL_GetWindowFromID(1); // Try first window
+			sdlWindow = SDL_GetWindowFromID(1);
 		}
 
 		if (sdlWindow) {
@@ -1025,20 +948,28 @@ namespace lime {
 			if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
 				HWND hwnd = wmInfo.info.win.window;
 				
-				// Disable DWM composition for this window
+				// Get actual monitor refresh rate
+				HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+				MONITORINFOEX monitorInfo;
+				monitorInfo.cbSize = sizeof(MONITORINFOEX);
+				GetMonitorInfo(monitor, &monitorInfo);
+				
+				DEVMODE devMode;
+				devMode.dmSize = sizeof(DEVMODE);
+				EnumDisplaySettings(monitorInfo.szDevice, ENUM_CURRENT_SETTINGS, &devMode);
+				
+				double refreshRate = (double)devMode.dmDisplayFrequency;
+				vsyncPeriodUs = (int64_t)(1000000.0 / refreshRate);
+				printf("Detected refresh rate: %.2f Hz (period: %lld us)\n", refreshRate, vsyncPeriodUs);
+				
+				// Disable DWM composition interference
 				BOOL disableMMCSS = TRUE;
 				DwmSetWindowAttribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &disableMMCSS, sizeof(disableMMCSS));
-				
-				// Or try disabling DWM entirely (more aggressive)
-				// DwmEnableComposition(DWM_EC_DISABLECOMPOSITION); // Disables for ALL windows
 			}
 		}
 
 		HANDLE hThread = GetCurrentThread();
-		// Set current thread priority
 		SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL);
-
-		// Set process priority to real-time
 		SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
 
 		if (!timer) {
@@ -1051,11 +982,75 @@ namespace lime {
 				std::cout << "Successfully created high-res timer!\n";
 			}
 		}
+		
+		vsyncCalibrated = false;
+		lastVsyncTime = 0;
 		#endif
 	}
 
+	#ifdef HX_WINDOWS
+	bool CalibrateVsync() {
+		static std::vector<int64_t> frameTimes;
+		static int calibrationFrames = 0;
+		const int CALIBRATION_FRAME_COUNT = 120; // More frames for better accuracy
+		
+		if (calibrationFrames < CALIBRATION_FRAME_COUNT) {
+			int64_t now = getTime();
+			if (calibrationFrames > 0) {
+				frameTimes.push_back(now);
+			}
+			calibrationFrames++;
+			return false;
+		}
+		
+		// Detect actual vsync intervals from frame timing
+		if (!frameTimes.empty()) {
+			// Calculate median interval (more robust than average)
+			std::vector<int64_t> intervals;
+			for (size_t i = 1; i < frameTimes.size(); i++) {
+				intervals.push_back(frameTimes[i] - frameTimes[i-1]);
+			}
+			std::sort(intervals.begin(), intervals.end());
+			int64_t medianInterval = intervals[intervals.size() / 2];
+			
+			// Check if we're getting 2x refresh (DWM compositing issue)
+			// If median is around 8333us (120Hz) but we detected 60Hz monitor, use monitor rate
+			int64_t detectedHz = 1000000 / medianInterval;
+			int64_t monitorHz = 1000000 / vsyncPeriodUs;
+			
+			printf("Detected frame interval: %lld us (%.2f Hz)\n", medianInterval, 1000000.0 / medianInterval);
+			printf("Monitor refresh rate: %lld Hz\n", monitorHz);
+			
+			// If we're rendering at 2x monitor rate, it means vsync is OFF or DWM is compositing
+			if (detectedHz >= monitorHz * 1.8 && detectedHz <= monitorHz * 2.2) {
+				printf("WARNING: Detected %lld Hz rendering on %lld Hz monitor!\n", detectedHz, monitorHz);
+				printf("This suggests vsync is disabled or DWM is compositing.\n");
+				printf("Using monitor refresh rate for alignment.\n");
+				// Keep the original vsyncPeriodUs from monitor detection
+			} else {
+				// Use measured timing
+				// Round to nearest common refresh interval
+				if (abs(medianInterval - 16667) < 1000) vsyncPeriodUs = 16667; // 60 Hz
+				else if (abs(medianInterval - 13889) < 1000) vsyncPeriodUs = 13889; // 72 Hz
+				else if (abs(medianInterval - 11111) < 1000) vsyncPeriodUs = 11111; // 90 Hz
+				else if (abs(medianInterval - 8333) < 1000) vsyncPeriodUs = 8333; // 120 Hz
+				else if (abs(medianInterval - 6944) < 1000) vsyncPeriodUs = 6944; // 144 Hz
+				else vsyncPeriodUs = medianInterval;
+			}
+			
+			printf("Final vsync period: %lld us (%.2f Hz)\n", 
+				vsyncPeriodUs, 1000000.0 / vsyncPeriodUs);
+			
+			lastVsyncTime = frameTimes.back();
+			frameTimes.clear();
+		}
+		
+		vsyncCalibrated = true;
+		return true;
+	}
+	#endif
+
 	// Most of this rewritten function were generated with claude.ai with a side of chatgpt
-	// also look at power throttling in this class it's disabled for a very good reason
 	// Remove the input polling thread - SDL event polling MUST be on main thread
 	// Keep only these for timestamping:
 	struct TimestampedInputEvent {
@@ -1113,55 +1108,87 @@ namespace lime {
 
 		static int64_t baseTime = 0;
 		static int64_t tickCounter = 0;
+		static int64_t nextVsyncTime = 0;
 
 		if (baseTime == 0) {
 			baseTime = currentTime;
 			prevFrameTime = currentTime;
 			inputEventQueue.reserve(32);
 			tickCounter = 0;
+			
+			#ifdef HX_WINDOWS
+			nextVsyncTime = baseTime + vsyncPeriodUs;
+			#endif
 		}
 
 		prevFrameTime = currentTime;
 
+		// Calculate next update tick
 		int64_t nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 
-		// LAG DETECTION: If we're more than 2 frames behind, we lagged
+		// LAG DETECTION
 		int64_t lagAmount = currentTime - nextTickTime;
 		if (lagAmount > UPDATE_PERIOD * 2) {
-			// Don't catch up - just reset the timeline
-			//printf("Lag detected: %lld us behind, resetting timeline\n", lagAmount);
 			baseTime = currentTime;
 			tickCounter = 0;
 			nextTickTime = baseTime + UPDATE_PERIOD;
+			
+			#ifdef HX_WINDOWS
+			nextVsyncTime = currentTime + vsyncPeriodUs;
+			#endif
 		}
 
-		// Only tick if we're at or past the scheduled time
+		// Process update ticks
 		if (currentTime >= nextTickTime) {
-			// Process inputs
+			// Process inputs with minimal lag
 			for (size_t i = 0; i < inputEventQueue.size(); i++) {
 				HandleInputEvent(&inputEventQueue[i].event);
 			}
 			inputEventQueue.clear();
 
-			// Update at 240 Hz
+			// Update at your target Hz (e.g., 240 Hz)
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			// Render at 60 Hz (every 4th tick)
+			#ifdef HX_WINDOWS
+			// Vsync-aligned rendering
+			if (!vsyncCalibrated) {
+				// Still calibrating - render every frame to measure vsync
+				renderEvent.type = RENDER;
+				RenderEvent::Dispatch(&renderEvent);
+				CalibrateVsync();
+			} else {
+				// Render only when we're close to vsync time
+				// The "early window" allows us to start rendering slightly before vsync
+				// to account for rendering time
+				const int64_t EARLY_WINDOW_US = 1000; // 1ms early to account for render time
+				
+				if (currentTime >= (nextVsyncTime - EARLY_WINDOW_US)) {
+					renderEvent.type = RENDER;
+					RenderEvent::Dispatch(&renderEvent);
+					
+					// Update next vsync time
+					// If we missed this vsync, skip ahead rather than catching up
+					while (nextVsyncTime <= currentTime) {
+						nextVsyncTime += vsyncPeriodUs;
+					}
+				}
+			}
+			#else
+			// Non-Windows: use original domain-based rendering
 			int64_t domain = (int64_t)(RENDER_PERIOD / UPDATE_PERIOD);
-			//printf("%lld\n", domain);
 			if (tickCounter % domain == 0) {
 				renderEvent.type = RENDER;
 				RenderEvent::Dispatch(&renderEvent);
 			}
+			#endif
 
 			tickCounter++;
 			nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 		}
 
-		// CRITICAL: Always sleep until next tick, even if we just ticked
-		// This keeps CPU at 0% because we're never spinning in the main loop
+		// Sleep until next tick
 		coolSleepUntil(nextTickTime);
 
 		return active;
