@@ -29,7 +29,6 @@ using namespace std;
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "winmm.lib")  // for timeBeginPeriod
 #pragma comment(lib, "avrt.lib")   // for MMCSS
-#include <SDL_syswm.h>
 #endif
 
 #ifdef HX_MACOS
@@ -892,28 +891,19 @@ namespace lime {
 		if (sleepForUs <= 0) return;
 
 		#if HX_WINDOWS
-		const int64_t SPIN_THRESHOLD_US = 500;
-
-		if (sleepForUs > SPIN_THRESHOLD_US) {
-			// Get current system time in FILETIME
-			FILETIME ft;
-			GetSystemTimePreciseAsFileTime(&ft);
-			ULARGE_INTEGER now;
-			now.LowPart = ft.dwLowDateTime;
-			now.HighPart = ft.dwHighDateTime;
-			
-			// Add the sleep duration (minus spin threshold) to get absolute wake time
-			LARGE_INTEGER due;
-			due.QuadPart = now.QuadPart + ((sleepForUs - SPIN_THRESHOLD_US) * 10);
-			
-			SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-			WaitForSingleObject(timer, INFINITE);
-		}
-
-		// Spin for final precision
-		while (getTime() < wakeTimeUs) {
-			_mm_pause();
-		}
+		// Get current system time in FILETIME
+		FILETIME ft;
+		GetSystemTimePreciseAsFileTime(&ft);
+		ULARGE_INTEGER now;
+		now.LowPart = ft.dwLowDateTime;
+		now.HighPart = ft.dwHighDateTime;
+		
+		// Add the sleep duration (minus spin threshold) to get absolute wake time
+		LARGE_INTEGER due;
+		due.QuadPart = now.QuadPart + (sleepForUs * 10);
+		
+		SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+		WaitForSingleObject(timer, INFINITE);
 		#elif defined(HX_LINUX)
 		struct timespec wake;
 		wake.tv_sec = wakeTimeUs / 1000000;
