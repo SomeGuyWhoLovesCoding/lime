@@ -1,7 +1,8 @@
 /**
  * This class is where the main loop goes. For one, windows 10;
  * The said main loop uses:
-   - A combination of high res waitable timer and crazy hacks and shit to create a surreal rhythm game experience!
+   - A combination of high res waitable timer and an undocumented ntdll function
+   - abused to be set to your literal frame time, to create a surreal rhythm game experience!
  * On the other hand, linux just already has an accurate sleep function. I wanted to create a fun crispy smooth experience for literally everyone who are on windows,
  so that meant doing this bullshit to compensate. How about I make a literal main loop library out of this shit?
 **/
@@ -104,11 +105,16 @@ namespace lime {
 
 	}
 
+	#if HX_WINDOWS
+	static HMODULE ntdll;
+	#endif
+
 
 	SDLApplication::~SDLApplication () {
 
 		#if HX_WINDOWS
 		if (timer) CloseHandle(timer);
+		if (ntdll) FreeLibrary(ntdll);
 		#endif
 
 	}
@@ -849,16 +855,11 @@ namespace lime {
 
 	}
 
-	// Add these static variables after your existing statics
+	// Add these to your class definition
 	#ifdef HX_WINDOWS
-	static int64_t monitorRefreshPeriodUs = 16667; // Default 60Hz
-	static int64_t predictedNextVsync = 0;
-	static std::vector<int64_t> recentPresentTimes;
-	static std::vector<int64_t> recentRenderDurations;
-	static int64_t vsyncPhaseOffset = 0;
-	static int64_t avgRenderDuration = 2000; // Start with 2ms estimate
-	static bool vsyncCalibrated = false;
-	static int calibrationFrames = 0;
+	static int64_t vsyncPeriodUs;
+	static int64_t lastVsyncTime;
+	static bool vsyncCalibrated;
 	#endif
 
 	int64_t prevFrameTime = 0;
@@ -926,7 +927,7 @@ namespace lime {
 	}
 
 	int64_t startTimestamp;
-	void SDLApplication::Init() {
+	void SDLApplication::Init () {
 		active = true;
 		int64_t now = getTime();
 		startTimestamp = lastUpdate = now;
@@ -958,8 +959,12 @@ namespace lime {
 				EnumDisplaySettings(monitorInfo.szDevice, ENUM_CURRENT_SETTINGS, &devMode);
 				
 				double refreshRate = (double)devMode.dmDisplayFrequency;
-				monitorRefreshPeriodUs = (int64_t)(1000000.0 / refreshRate);
-				printf("Monitor refresh rate: %.2f Hz (period: %lld us)\n", refreshRate, monitorRefreshPeriodUs);
+				vsyncPeriodUs = (int64_t)(1000000.0 / refreshRate);
+				printf("Detected refresh rate: %.2f Hz (period: %lld us)\n", refreshRate, vsyncPeriodUs);
+				
+				// Disable DWM composition interference
+				BOOL disableMMCSS = TRUE;
+				DwmSetWindowAttribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &disableMMCSS, sizeof(disableMMCSS));
 			}
 		}
 
@@ -978,86 +983,70 @@ namespace lime {
 			}
 		}
 		
-		recentPresentTimes.reserve(120);
-		recentRenderDurations.reserve(120);
-		predictedNextVsync = now + monitorRefreshPeriodUs;
 		vsyncCalibrated = false;
-		calibrationFrames = 0;
-		avgRenderDuration = 2000; // 2ms initial estimate
+		lastVsyncTime = 0;
 		#endif
 	}
 
-	// Vsync phase calibration - learns when vsync actually happens AND how long rendering takes
 	#ifdef HX_WINDOWS
-	void CalibrateVsyncPhase(int64_t presentTime, int64_t renderDuration) {
-		recentPresentTimes.push_back(presentTime);
-		recentRenderDurations.push_back(renderDuration);
+	bool CalibrateVsync() {
+		static std::vector<int64_t> frameTimes;
+		static int calibrationFrames = 0;
+		const int CALIBRATION_FRAME_COUNT = 120; // More frames for better accuracy
 		
-		// Keep last 60 samples
-		if (recentPresentTimes.size() > 60) {
-			recentPresentTimes.erase(recentPresentTimes.begin());
-		}
-		if (recentRenderDurations.size() > 60) {
-			recentRenderDurations.erase(recentRenderDurations.begin());
-		}
-		
-		calibrationFrames++;
-		
-		// Calculate rolling average of render duration
-		if (recentRenderDurations.size() >= 10) {
-			int64_t sum = 0;
-			// Use recent 10 frames for average
-			int startIdx = std::max<int>(0, (int)recentRenderDurations.size() - 10);
-			for (size_t i = startIdx; i < recentRenderDurations.size(); i++) {
-				sum += recentRenderDurations[i];
+		if (calibrationFrames < CALIBRATION_FRAME_COUNT) {
+			int64_t now = getTime();
+			if (calibrationFrames > 0) {
+				frameTimes.push_back(now);
 			}
-			avgRenderDuration = sum / (recentRenderDurations.size() - startIdx);
+			calibrationFrames++;
+			return false;
 		}
 		
-		// Need at least 30 frames to calibrate vsync phase
-		if (calibrationFrames < 30) return;
-		
-		if (!vsyncCalibrated && recentPresentTimes.size() >= 30) {
-			// Find the phase offset - where in the vsync cycle do presents actually happen?
-			int64_t lastPresent = recentPresentTimes.back();
-			int64_t firstPresent = recentPresentTimes.front();
-			
-			// Calculate average present interval
-			int64_t totalInterval = lastPresent - firstPresent;
-			int64_t avgInterval = totalInterval / (recentPresentTimes.size() - 1);
-			
-			// Round to nearest refresh period
-			int64_t measuredPeriod = ((avgInterval + monitorRefreshPeriodUs / 2) / monitorRefreshPeriodUs) * monitorRefreshPeriodUs;
-			
-			if (measuredPeriod > 0) {
-				// Find phase within the refresh cycle
-				vsyncPhaseOffset = lastPresent % monitorRefreshPeriodUs;
-				vsyncCalibrated = true;
-				
-				printf("Vsync calibrated! Phase offset: %lld us, Measured period: %lld us, Avg render: %lld us\n", 
-					vsyncPhaseOffset, measuredPeriod, avgRenderDuration);
+		// Detect actual vsync intervals from frame timing
+		if (!frameTimes.empty()) {
+			// Calculate median interval (more robust than average)
+			std::vector<int64_t> intervals;
+			for (size_t i = 1; i < frameTimes.size(); i++) {
+				intervals.push_back(frameTimes[i] - frameTimes[i-1]);
 			}
-		}
-		
-		// Update prediction based on recent presents
-		if (vsyncCalibrated && recentPresentTimes.size() >= 3) {
-			// Use last present time to predict next vsync
-			int64_t lastPresent = recentPresentTimes.back();
+			std::sort(intervals.begin(), intervals.end());
+			int64_t medianInterval = intervals[intervals.size() / 2];
 			
-			// Next vsync is last present + refresh period, aligned to phase
-			int64_t nextVsync = lastPresent + monitorRefreshPeriodUs;
+			// Check if we're getting 2x refresh (DWM compositing issue)
+			// If median is around 8333us (120Hz) but we detected 60Hz monitor, use monitor rate
+			int64_t detectedHz = 1000000 / medianInterval;
+			int64_t monitorHz = 1000000 / vsyncPeriodUs;
 			
-			// Snap to phase
-			int64_t currentPhase = nextVsync % monitorRefreshPeriodUs;
-			int64_t phaseDrift = vsyncPhaseOffset - currentPhase;
+			printf("Detected frame interval: %lld us (%.2f Hz)\n", medianInterval, 1000000.0 / medianInterval);
+			printf("Monitor refresh rate: %lld Hz\n", monitorHz);
 			
-			// Adjust by small amounts to stay in sync
-			if (abs(phaseDrift) < monitorRefreshPeriodUs / 4) {
-				nextVsync += phaseDrift;
+			// If we're rendering at 2x monitor rate, it means vsync is OFF or DWM is compositing
+			if (detectedHz >= monitorHz * 1.8 && detectedHz <= monitorHz * 2.2) {
+				printf("WARNING: Detected %lld Hz rendering on %lld Hz monitor!\n", detectedHz, monitorHz);
+				printf("This suggests vsync is disabled or DWM is compositing.\n");
+				printf("Using monitor refresh rate for alignment.\n");
+				// Keep the original vsyncPeriodUs from monitor detection
+			} else {
+				// Use measured timing
+				// Round to nearest common refresh interval
+				if (abs(medianInterval - 16667) < 1000) vsyncPeriodUs = 16667; // 60 Hz
+				else if (abs(medianInterval - 13889) < 1000) vsyncPeriodUs = 13889; // 72 Hz
+				else if (abs(medianInterval - 11111) < 1000) vsyncPeriodUs = 11111; // 90 Hz
+				else if (abs(medianInterval - 8333) < 1000) vsyncPeriodUs = 8333; // 120 Hz
+				else if (abs(medianInterval - 6944) < 1000) vsyncPeriodUs = 6944; // 144 Hz
+				else vsyncPeriodUs = medianInterval;
 			}
 			
-			predictedNextVsync = nextVsync;
+			printf("Final vsync period: %lld us (%.2f Hz)\n", 
+				vsyncPeriodUs, 1000000.0 / vsyncPeriodUs);
+			
+			lastVsyncTime = frameTimes.back();
+			frameTimes.clear();
 		}
+		
+		vsyncCalibrated = true;
+		return true;
 	}
 	#endif
 
@@ -1119,15 +1108,17 @@ namespace lime {
 
 		static int64_t baseTime = 0;
 		static int64_t tickCounter = 0;
-		static int64_t lastRenderTime = 0;
-		static bool shouldRender = false;
+		static int64_t nextVsyncTime = 0;
 
 		if (baseTime == 0) {
 			baseTime = currentTime;
 			prevFrameTime = currentTime;
 			inputEventQueue.reserve(32);
 			tickCounter = 0;
-			lastRenderTime = currentTime;
+			
+			#ifdef HX_WINDOWS
+			nextVsyncTime = baseTime + vsyncPeriodUs;
+			#endif
 		}
 
 		prevFrameTime = currentTime;
@@ -1141,6 +1132,10 @@ namespace lime {
 			baseTime = currentTime;
 			tickCounter = 0;
 			nextTickTime = baseTime + UPDATE_PERIOD;
+			
+			#ifdef HX_WINDOWS
+			nextVsyncTime = currentTime + vsyncPeriodUs;
+			#endif
 		}
 
 		// Process update ticks
@@ -1151,67 +1146,33 @@ namespace lime {
 			}
 			inputEventQueue.clear();
 
-			// Update at your target Hz (120 Hz in your case)
+			// Update at your target Hz (e.g., 240 Hz)
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			#ifdef HX_WINDOWS
-			// Predictive rendering with render duration compensation
-			// The key: Start rendering early enough that it FINISHES right at vsync
-			
-			const int64_t SAFETY_MARGIN_US = 500; // Extra 500us safety buffer
-			const int64_t MIN_FRAME_INTERVAL_US = 15000; // Don't render more often than every 15ms
-			
-			// Calculate when we need to START rendering to finish by vsync
-			// We need to finish avgRenderDuration + SAFETY_MARGIN before vsync
-			int64_t desiredRenderStartTime = predictedNextVsync - avgRenderDuration - SAFETY_MARGIN_US;
-			int64_t timeUntilRenderStart = desiredRenderStartTime - currentTime;
-			int64_t timeUntilVsync = predictedNextVsync - currentTime;
-			int64_t timeSinceRender = currentTime - lastRenderTime;
-			
-			// Decide if we should render on this tick
-			shouldRender = false;
-			
-			if (timeSinceRender >= MIN_FRAME_INTERVAL_US) {
-				// Check if we're at or past the time we should start rendering
-				if (timeUntilRenderStart <= 0 && timeUntilVsync > 0) {
-					shouldRender = true;
-				}
-				// If we missed this vsync entirely, skip to next one
-				else if (timeUntilVsync < -monitorRefreshPeriodUs / 2) {
-					predictedNextVsync += monitorRefreshPeriodUs;
-				}
-			}
-			
-			if (shouldRender) {
-				// Render NOW - don't wait for anything
-				int64_t renderStartTime = getTime();
-				
+			// Vsync-aligned rendering
+			if (!vsyncCalibrated) {
+				// Still calibrating - render every frame to measure vsync
 				renderEvent.type = RENDER;
 				RenderEvent::Dispatch(&renderEvent);
+				CalibrateVsync();
+			} else {
+				// Render only when we're close to vsync time
+				// The "early window" allows us to start rendering slightly before vsync
+				// to account for rendering time
+				const int64_t EARLY_WINDOW_US = 1000; // 1ms early to account for render time
 				
-				int64_t renderEndTime = getTime();
-				int64_t renderDuration = renderEndTime - renderStartTime;
-				lastRenderTime = renderStartTime;
-				
-				// After present, calibrate our vsync prediction with actual render duration
-				CalibrateVsyncPhase(renderEndTime, renderDuration);
-				
-				// Predict next vsync
-				if (!vsyncCalibrated) {
-					// During calibration, just assume regular intervals
-					predictedNextVsync = renderEndTime + monitorRefreshPeriodUs;
-				}
-				// else: CalibrateVsyncPhase already updated predictedNextVsync
-				
-				// Debug output every second
-				static int64_t lastDebugTime = 0;
-				if (renderStartTime - lastDebugTime > 1000000) {
-					int64_t actualTimeBeforeVsync = predictedNextVsync - renderEndTime;
-					printf("Render: %lld us (avg: %lld us), Finished %lld us before vsync, Calibrated: %d\n", 
-						renderDuration, avgRenderDuration, actualTimeBeforeVsync, vsyncCalibrated ? 1 : 0);
-					lastDebugTime = renderStartTime;
+				if (currentTime >= (nextVsyncTime - EARLY_WINDOW_US)) {
+					renderEvent.type = RENDER;
+					RenderEvent::Dispatch(&renderEvent);
+					
+					// Update next vsync time
+					// If we missed this vsync, skip ahead rather than catching up
+					while (nextVsyncTime <= currentTime) {
+						nextVsyncTime += vsyncPeriodUs;
+					}
 				}
 			}
 			#else
