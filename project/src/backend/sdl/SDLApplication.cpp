@@ -942,9 +942,6 @@ namespace lime {
 			AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_CRITICAL);
 		}
 
-		// Set thread priority
-		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-
 		// Create high-resolution timer if not already created
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
@@ -1009,7 +1006,7 @@ namespace lime {
 			if (isInputEvent) {
 				TimestampedInputEvent tie;
 				tie.event = event;
-				tie.timestamp10ns = (int64_t)event.common.timestamp * 100000LL;
+				tie.timestamp10ns = currentTime10ns;
 				inputEventQueue.push_back(tie);
 			} else {
 				HandleEvent(&event);
@@ -1040,6 +1037,9 @@ namespace lime {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
+			/*SDL_Window* eventWindow = SDL_GetWindowFromID(windowEvent.windowID);
+			SDL_GL_SwapWindow(eventWindow);  // <-- SwapBuffers equivalent in SDL*/
+
 			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
 		}
 
@@ -1049,10 +1049,8 @@ namespace lime {
 		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
 		int64_t sleepTicks = wakeTime - getTime10ns();
 
-		if (sleepTicks > 100000) {
-			coolSleepUntil10ns(wakeTime - 100000);
-		}
-		while (getTime10ns() < wakeTime - 11) {}
+		coolSleepUntil10ns(wakeTime - 10000);
+		while (getTime10ns() < wakeTime) {}
 
 		return active;
 	}

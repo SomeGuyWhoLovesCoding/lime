@@ -106,6 +106,8 @@ namespace lime {
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 			#endif
 
+			//SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
 			if (flags & WINDOW_FLAG_DEPTH_BUFFER) {
 
 				SDL_GL_SetAttribute (SDL_GL_DEPTH_SIZE, 32 - (flags & WINDOW_FLAG_STENCIL_BUFFER) ? 8 : 0);
