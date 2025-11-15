@@ -1108,87 +1108,53 @@ namespace lime {
 
 		static int64_t baseTime = 0;
 		static int64_t tickCounter = 0;
-		static int64_t nextVsyncTime = 0;
 
 		if (baseTime == 0) {
 			baseTime = currentTime;
 			prevFrameTime = currentTime;
 			inputEventQueue.reserve(32);
 			tickCounter = 0;
-			
-			#ifdef HX_WINDOWS
-			nextVsyncTime = baseTime + vsyncPeriodUs;
-			#endif
 		}
 
 		prevFrameTime = currentTime;
 
-		// Calculate next update tick
 		int64_t nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 
-		// LAG DETECTION
+		// LAG DETECTION: If we're more than 2 frames behind, we lagged
 		int64_t lagAmount = currentTime - nextTickTime;
 		if (lagAmount > UPDATE_PERIOD * 2) {
+			// Don't catch up - just reset the timeline
 			baseTime = currentTime;
 			tickCounter = 0;
 			nextTickTime = baseTime + UPDATE_PERIOD;
-			
-			#ifdef HX_WINDOWS
-			nextVsyncTime = currentTime + vsyncPeriodUs;
-			#endif
 		}
 
-		// Process update ticks
+		// Only tick if we're at or past the scheduled time
 		if (currentTime >= nextTickTime) {
-			// Process inputs with minimal lag
+			// Process inputs
 			for (size_t i = 0; i < inputEventQueue.size(); i++) {
 				HandleInputEvent(&inputEventQueue[i].event);
 			}
 			inputEventQueue.clear();
 
-			// Update at your target Hz (e.g., 240 Hz)
+			// Update at 120 Hz
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			#ifdef HX_WINDOWS
-			// Vsync-aligned rendering
-			if (!vsyncCalibrated) {
-				// Still calibrating - render every frame to measure vsync
-				renderEvent.type = RENDER;
-				RenderEvent::Dispatch(&renderEvent);
-				CalibrateVsync();
-			} else {
-				// Render only when we're close to vsync time
-				// The "early window" allows us to start rendering slightly before vsync
-				// to account for rendering time
-				const int64_t EARLY_WINDOW_US = 1000; // 1ms early to account for render time
-				
-				if (currentTime >= (nextVsyncTime - EARLY_WINDOW_US)) {
-					renderEvent.type = RENDER;
-					RenderEvent::Dispatch(&renderEvent);
-					
-					// Update next vsync time
-					// If we missed this vsync, skip ahead rather than catching up
-					while (nextVsyncTime <= currentTime) {
-						nextVsyncTime += vsyncPeriodUs;
-					}
-				}
-			}
-			#else
-			// Non-Windows: use original domain-based rendering
+			// Render at 60 Hz (every 2nd tick for 120Hz updates)
+			// For 240Hz updates, render every 4th tick
 			int64_t domain = (int64_t)(RENDER_PERIOD / UPDATE_PERIOD);
 			if (tickCounter % domain == 0) {
 				renderEvent.type = RENDER;
 				RenderEvent::Dispatch(&renderEvent);
 			}
-			#endif
 
 			tickCounter++;
 			nextTickTime = baseTime + (tickCounter + 1) * UPDATE_PERIOD;
 		}
 
-		// Sleep until next tick
+		// CRITICAL: Always sleep until next tick
 		coolSleepUntil(nextTickTime);
 
 		return active;
