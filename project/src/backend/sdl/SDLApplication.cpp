@@ -863,11 +863,6 @@ namespace lime {
 
 		LARGE_INTEGER now;
 
-		if (freq.QuadPart == 0) {
-			QueryPerformanceFrequency(&freq);
-			QueryPerformanceCounter(&start);
-		}
-
 		QueryPerformanceFrequency(&freq);
 		QueryPerformanceCounter(&now);
 
@@ -959,7 +954,6 @@ namespace lime {
 	bool SDLApplication::Update() {
 		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
 		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
-		const int64_t BUSY_WAIT_MARGIN = 5000;   // 50 µs in 10ns units
 
 		int64_t now10ns = getTime10ns();
 
@@ -1003,11 +997,10 @@ namespace lime {
 		// --- Sleep until scheduled update boundary if we are ahead ---
 		now10ns = getTime10ns();
 		if (now10ns < nextUpdateTime10ns) {
-			int64_t sleepUntil10ns = nextUpdateTime10ns - BUSY_WAIT_MARGIN;
+			int64_t sleepUntil10ns = nextUpdateTime10ns;
 			if (sleepUntil10ns > now10ns) {
 				coolSleepUntil10ns(sleepUntil10ns);
 			}
-			while (getTime10ns() < nextUpdateTime10ns) {}
 			now10ns = getTime10ns();
 		}
 
