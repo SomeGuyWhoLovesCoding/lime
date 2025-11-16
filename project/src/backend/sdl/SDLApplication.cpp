@@ -862,18 +862,23 @@ namespace lime {
 	#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {};
 		static LARGE_INTEGER start = {};
+		static double multiplier = 0.0;
 
 		LARGE_INTEGER now;
 
 		if (freq.QuadPart == 0) {
 			QueryPerformanceFrequency(&freq);
 			QueryPerformanceCounter(&start);
+			// Pre-calculate the conversion factor
+			multiplier = (double)TICKS_PER_SECOND_10NS / (double)freq.QuadPart;
 		}
 
 		QueryPerformanceCounter(&now);
 
-		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
-		return (int64_t)(delta / freq.QuadPart);
+		int64_t delta = now.QuadPart - start.QuadPart;
+		
+		// Use double multiplication for precision, then cast back
+		return (int64_t)((double)delta * multiplier);
 
 	#else
 		struct timespec ts;
@@ -935,13 +940,6 @@ namespace lime {
 
 		// Windows: MMCSS and high-res timer
 		#ifdef HX_WINDOWS
-		// Enable MMCSS for the main thread
-		DWORD taskIndex = 0;
-		HANDLE mmcssHandle = AvSetMmThreadCharacteristicsA("Games", &taskIndex);
-		if (mmcssHandle) {
-			AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_CRITICAL);
-		}
-
 		// Create high-resolution timer if not already created
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
@@ -967,8 +965,11 @@ namespace lime {
 		static int64_t prevTime10ns = 0;
 		static int64_t accumulatedUpdateTicks = 0;
 		static int64_t accumulatedRenderTicks = 0;
+		static int64_t hit = 0;
+		static int64_t hit2 = 0;
 
 		int64_t currentTime10ns = getTime10ns();
+		hit = currentTime10ns;
 
 		if (prevTime10ns == 0) {
 			prevTime10ns = currentTime10ns;
@@ -1047,16 +1048,23 @@ namespace lime {
 		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - accumulatedUpdateTicks);
 		int64_t nextRenderTime = currentTime10ns + (RENDER_PERIOD_10NS - accumulatedRenderTicks);
 		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
-		int64_t sleepTicks = wakeTime - getTime10ns();
+		int64_t delta = wakeTime - currentTime10ns;
 
-		coolSleepUntil10ns(wakeTime - 10000);
-		while (getTime10ns() < wakeTime) {}
+		/*int64_t correction = (delta - UPDATE_PERIOD_10NS > 80000) ? delta * 1.1 : delta;
+		int64_t wakeTime2 = wakeTime + 80000;*/
+		hit2 = getTime10ns();
 
-		static int64_t lastLogTime = 0;
+		int64_t yay = currentTime10ns;
+		coolSleepUntil10ns(wakeTime);
+		//while (getTime10ns() < wakeTime) {}
+
+		printf("%lld, %lld\n", hit2 - hit, getTime10ns() - currentTime10ns);
+
+		/*static int64_t lastLogTime = 0;
 		if (currentTime10ns - lastLogTime > 100000000) { // Every 10ms
-			printf("Frame: %.3fms\n", deltaTicks / 100000.0);
+			printf("Frame: %.15fms\n", deltaTicks / 100000.0);
 			lastLogTime = currentTime10ns;
-		}
+		}*/
 
 		return active;
 	}
