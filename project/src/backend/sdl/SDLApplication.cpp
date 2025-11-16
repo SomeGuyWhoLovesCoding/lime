@@ -859,7 +859,7 @@ namespace lime {
 	int64_t prevFrameTime = 0;
 
 	// ----------------- 10ns timestamp helpers -----------------
-	// Returns monotonic timestamp in 10-ns ticks
+	// Returns monotonic timestamp in 100-ns ticks
 	int64_t getTime10ns() {
 	#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {};
@@ -930,6 +930,31 @@ namespace lime {
 
 	int64_t startTimestamp10ns = 0;
 
+	static void SwapWindowLimitedTear(SDL_Window* window, int screenHeight, int refreshRate, int maxTearPixels = 10) {
+		// --- Compute timing ---
+		double timePerFrame = 1.0 / refreshRate;          // seconds per frame
+		double timePerPixel = timePerFrame / screenHeight; // seconds per pixel
+		double targetTimeSec = maxTearPixels * timePerPixel;
+
+		// Convert to 10ns ticks (same unit as getTime10ns)
+		int64_t targetTicks = static_cast<int64_t>(targetTimeSec * 100000000); // 1s = 100_000_000 * 10ns
+
+		// --- Frame start ---
+		int64_t frameStart = getTime10ns();
+
+		// Flush GPU commands to make sure all rendering is queued
+		glFlush();
+
+		// Spin-wait until the display scanout reaches the desired vertical position
+		while (getTime10ns() - frameStart < targetTicks) {
+			// optional: tiny sleep for coarse granularity
+			std::this_thread::sleep_for(std::chrono::microseconds(1));
+		}
+
+		// Swap front/back buffers
+		SDL_GL_SwapWindow(window);
+	}
+
 	void SDLApplication::Init () {
 		active = true;
 		int64_t now = getTime10ns();
@@ -967,33 +992,32 @@ namespace lime {
 
 	bool SDLApplication::Update() {
 		static int64_t prevTime10ns = 0;
-		static int64_t masterAccumulator = 0;
-		static int64_t totalUpdateCount = 0;
+		static int64_t accumulatedUpdateTicks = 0;
+		static int64_t accumulatedRenderTicks = 0;
 
 		int64_t currentTime10ns = getTime10ns();
 
 		if (prevTime10ns == 0) {
 			prevTime10ns = currentTime10ns;
-			masterAccumulator = 0;
-			totalUpdateCount = 0;
+			accumulatedUpdateTicks = 0;
+			accumulatedRenderTicks = 0;
 			inputEventQueue.reserve(32);
 		}
 
 		int64_t deltaTicks = currentTime10ns - prevTime10ns;
 		prevTime10ns = currentTime10ns;
 
-		// Clamp massive delta spikes
-		if (deltaTicks > UPDATE_PERIOD_10NS * 5) {
-			deltaTicks = UPDATE_PERIOD_10NS;
-		}
+		if (deltaTicks > UPDATE_PERIOD_10NS * 5) deltaTicks = UPDATE_PERIOD_10NS;
 
-		masterAccumulator += deltaTicks;
+		accumulatedUpdateTicks += deltaTicks;
+		accumulatedRenderTicks += deltaTicks;
 
 		// --- Poll and batch input ---
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
 			switch (event.type) {
+				// list of input events...
 				case SDL_KEYDOWN:
 				case SDL_KEYUP:
 				case SDL_MOUSEMOTION:
@@ -1031,12 +1055,12 @@ namespace lime {
 			}
 		}
 
-		// --- Fixed-step updates at 240Hz ---
+		// --- Fixed-step updates at 120Hz ---
 		const int MAX_UPDATES_PER_FRAME = 4;
 		int updatesThisFrame = 0;
+		//int hadRendered = 1;
 
-		while (masterAccumulator >= UPDATE_PERIOD_10NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
-			// Process input on first update only
+		while (accumulatedUpdateTicks >= UPDATE_PERIOD_10NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
 			if (updatesThisFrame == 0) {
 				for (size_t i = 0; i < inputEventQueue.size(); i++)
 					HandleInputEvent(&inputEventQueue[i].event);
@@ -1047,23 +1071,25 @@ namespace lime {
 			applicationEvent.deltaTime = UPDATE_PERIOD_10NS;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
-			masterAccumulator -= UPDATE_PERIOD_10NS;
+			accumulatedUpdateTicks -= UPDATE_PERIOD_10NS;
 			updatesThisFrame++;
-			totalUpdateCount++;
 		}
 
-		// --- Render every 4th update (60Hz) ---
-		int64_t domain = (int64_t)(RENDER_PERIOD_10NS / UPDATE_PERIOD_10NS);// update; just wanted to clarity on this, I am not naming this anything else cuz I don't know wtf to name this so just leave it at that 
-		if (updatesThisFrame > 0 && (totalUpdateCount % domain) == 0) {
+		// --- Render at 60Hz ---
+		if (accumulatedRenderTicks >= RENDER_PERIOD_10NS) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
+
+			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
 		}
 
-		// --- Sleep until next update ---
-		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - masterAccumulator);
-		
-		coolSleepUntil10ns(nextUpdateTime - 10000);
-		while (getTime10ns() < nextUpdateTime) {}
+		// --- Sleep until next update or render ---
+		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - accumulatedUpdateTicks);
+		int64_t nextRenderTime = currentTime10ns + (RENDER_PERIOD_10NS - accumulatedRenderTicks);
+		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
+
+		coolSleepUntil10ns(wakeTime - 10000);
+		while (getTime10ns() < wakeTime) {}
 
 		return active;
 	}
