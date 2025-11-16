@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <vector>
 
+#include <gl/GL.h>
+
 using namespace std;
 
 #ifdef HX_WINDOWS
@@ -928,6 +930,31 @@ namespace lime {
 
 	int64_t startTimestamp10ns = 0;
 
+	static void SwapWindowLimitedTear(SDL_Window* window, int screenHeight, int refreshRate, int maxTearPixels = 10) {
+		// --- Compute timing ---
+		double timePerFrame = 1.0 / refreshRate;          // seconds per frame
+		double timePerPixel = timePerFrame / screenHeight; // seconds per pixel
+		double targetTimeSec = maxTearPixels * timePerPixel;
+
+		// Convert to 10ns ticks (same unit as getTime10ns)
+		int64_t targetTicks = static_cast<int64_t>(targetTimeSec * 100000000); // 1s = 100_000_000 * 10ns
+
+		// --- Frame start ---
+		int64_t frameStart = getTime10ns();
+
+		// Flush GPU commands to make sure all rendering is queued
+		glFlush();
+
+		// Spin-wait until the display scanout reaches the desired vertical position
+		while (getTime10ns() - frameStart < targetTicks) {
+			// optional: tiny sleep for coarse granularity
+			std::this_thread::sleep_for(std::chrono::microseconds(1));
+		}
+
+		// Swap front/back buffers
+		SDL_GL_SwapWindow(window);
+	}
+
 	void SDLApplication::Init () {
 		active = true;
 		int64_t now = getTime10ns();
@@ -1034,11 +1061,21 @@ namespace lime {
 
 		// --- Render at 60Hz ---
 		if (accumulatedRenderTicks >= RENDER_PERIOD_10NS) {
+			//glFinish();
+
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
+			//glFlush();
+
 			/*SDL_Window* eventWindow = SDL_GetWindowFromID(windowEvent.windowID);
-			SDL_GL_SwapWindow(eventWindow);  // <-- SwapBuffers equivalent in SDL*/
+			SDL_DisplayMode mode;
+			SDL_GetCurrentDisplayMode( SDL_GetWindowDisplayIndex(mainWindow), &mode );
+			int refreshRate = mode.refresh_rate;  // actual monitor Hz
+			int w = 0;
+			int h = 0;
+			SDL_GL_GetDrawableSize(eventWindow, &w, &h);
+			SwapWindowLimitedTear(eventWindow, h, (int)TICKS_PER_SECOND_10NS / RENDER_PERIOD_10NS, 10);  // <-- SwapBuffers equivalent in SDL*/
 
 			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
 		}
@@ -1049,8 +1086,44 @@ namespace lime {
 		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
 		int64_t sleepTicks = wakeTime - getTime10ns();
 
-		coolSleepUntil10ns(wakeTime - 10000);
-		while (getTime10ns() < wakeTime) {}
+		//var integer6 = 20;
+		// Parameters you must know once:
+		int64_t refreshPeriod = TICKS_PER_SECOND_10NS / RENDER_PERIOD_10NS;
+		int64_t ticksPerPixel = refreshPeriod / 720;
+
+		// Step 1: Where is the scanout RIGHT NOW?
+		int64_t now = getTime10ns();
+		int64_t timeInCycle = (now % refreshPeriod);
+		int64_t currentScanline = timeInCycle / ticksPerPixel;
+
+		// Step 2: We want tearing to occur at <= maxPixels
+		int64_t maxPixels = 10;
+		int64_t targetScanlineTime = maxPixels * ticksPerPixel;
+
+		static int64_t lastSwapEnd = 0;
+
+		int64_t now2 = getTime10ns();
+		if (lastSwapEnd == 0)
+			lastSwapEnd = now2; // initialize
+
+		int64_t frameStart = lastSwapEnd;
+
+		// absolute swap time:
+		int64_t swapTime = frameStart + targetScanlineTime;
+
+		// if we passed it, go to next frame:
+		while (swapTime <= now2)
+			swapTime += refreshPeriod;
+
+		// sleep gently:
+		if (now2 < swapTime - 10000)
+			coolSleepUntil10ns(swapTime - 10000);
+
+		// spin until swap time:
+		while (getTime10ns() < swapTime) {}
+
+		// THIS is the new reference for next frame:
+		lastSwapEnd = getTime10ns();
 
 		return active;
 	}
