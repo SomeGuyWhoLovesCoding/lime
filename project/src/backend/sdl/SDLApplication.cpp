@@ -970,6 +970,9 @@ namespace lime {
 			std::cout << "DWM timing enabled for tear-free rendering\n";
 		}
 		#endif
+
+		// cooldown in order to fix shit like timing alignment
+		coolSleepUntil10ns(startTimestamp10ns + 2000000); // 20 ms in 10ns ticks
 	}
 
 	// Timestamped input events now carry 10ns timestamps
