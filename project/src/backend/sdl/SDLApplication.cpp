@@ -996,6 +996,7 @@ namespace lime {
 		int64_t deltaTicks = currentTime10ns - prevTime10ns;
 		prevTime10ns = currentTime10ns;
 
+		// Avoid huge delta on pauses or hitches
 		if (deltaTicks > UPDATE_PERIOD_10NS * 5) deltaTicks = UPDATE_PERIOD_10NS;
 
 		accumulatedUpdateTicks += deltaTicks;
@@ -1006,30 +1007,15 @@ namespace lime {
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
 			switch (event.type) {
-				// list of input events...
-				case SDL_KEYDOWN:
-				case SDL_KEYUP:
-				case SDL_MOUSEMOTION:
-				case SDL_MOUSEBUTTONDOWN:
-				case SDL_MOUSEBUTTONUP:
-				case SDL_MOUSEWHEEL:
-				case SDL_FINGERMOTION:
-				case SDL_FINGERDOWN:
-				case SDL_FINGERUP:
-				case SDL_TEXTINPUT:
-				case SDL_TEXTEDITING:
-				case SDL_JOYBALLMOTION:
-				case SDL_JOYBUTTONDOWN:
-				case SDL_JOYBUTTONUP:
-				case SDL_JOYHATMOTION:
-				case SDL_JOYDEVICEADDED:
-				case SDL_JOYDEVICEREMOVED:
+				case SDL_KEYDOWN: case SDL_KEYUP:
+				case SDL_MOUSEMOTION: case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: case SDL_MOUSEWHEEL:
+				case SDL_FINGERMOTION: case SDL_FINGERDOWN: case SDL_FINGERUP:
+				case SDL_TEXTINPUT: case SDL_TEXTEDITING:
+				case SDL_JOYBALLMOTION: case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP: case SDL_JOYHATMOTION:
+				case SDL_JOYDEVICEADDED: case SDL_JOYDEVICEREMOVED:
 				case SDL_JOYAXISMOTION:
-				case SDL_CONTROLLERAXISMOTION:
-				case SDL_CONTROLLERBUTTONDOWN:
-				case SDL_CONTROLLERBUTTONUP:
-				case SDL_CONTROLLERDEVICEADDED:
-				case SDL_CONTROLLERDEVICEREMOVED:
+				case SDL_CONTROLLERAXISMOTION: case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP:
+				case SDL_CONTROLLERDEVICEADDED: case SDL_CONTROLLERDEVICEREMOVED:
 				case SDL_CLIPBOARDUPDATE:
 					isInputEvent = true;
 					break;
@@ -1068,38 +1054,28 @@ namespace lime {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
-			#ifdef HX_WINDOWS
-			if (useDwmTiming) {
-				// Wait for the next vblank
-				DwmFlush();
-			}
-			#endif
-
 			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
 		}
 
-		// --- Sleep until next update or render ---
+		// --- Sleep until next scheduled update ---
 		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - accumulatedUpdateTicks);
-		int64_t nextRenderTime = currentTime10ns + (RENDER_PERIOD_10NS - accumulatedRenderTicks);
-		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
-		int64_t sleepTicks = wakeTime - getTime10ns();
 
-		int64_t refreshFrames = wakeTime / RENDER_PERIOD_10NS;
+		if (DwmGetCompositionTimingInfo(NULL, &dwmTimingInfo) == S_OK) {
+			LARGE_INTEGER freq;
+			QueryPerformanceFrequency(&freq);
 
-		#ifdef HX_WINDOWS
-		if (useDwmTiming) {
-			// Optional: Get precise timing info
-			DWM_TIMING_INFO timing = {};
-			timing.cbSize = sizeof(DWM_TIMING_INFO);
-			if (DwmGetCompositionTimingInfo(NULL, &timing) == S_OK) {
-				// You now have precise vsync timing!
-			}
-		} else {
-			// Fallback to your existing method
-			coolSleepUntil10ns(wakeTime - 10000);
-			while (getTime10ns() < wakeTime) {}
+			int64_t lastVBlank10ns = dwmTimingInfo.qpcVBlank * TICKS_PER_SECOND_10NS / freq.QuadPart;
+			int64_t refreshPeriod10ns = dwmTimingInfo.qpcRefreshPeriod * TICKS_PER_SECOND_10NS / freq.QuadPart;
+			int64_t nextVBlank10ns = lastVBlank10ns + (refreshPeriod10ns / (int64_t)(RENDER_PERIOD_10NS / UPDATE_PERIOD_10NS));
+
+			if (nextVBlank10ns < nextUpdateTime)
+				nextUpdateTime = nextVBlank10ns; // sleep until the earlier of vblank or update/render
 		}
-		#endif
+
+		coolSleepUntil10ns(nextUpdateTime - 10000);
+		while (getTime10ns() < nextUpdateTime) {}
+
+		//printf("Hi %lld\n", nextUpdateTime);
 
 		return active;
 	}
