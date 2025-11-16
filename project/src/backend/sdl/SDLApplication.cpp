@@ -25,9 +25,7 @@ using namespace std;
 #ifdef HX_WINDOWS
 #include <windows.h>
 #include <cstdint>
-#include <dwmapi.h>
 #include <avrt.h>
-#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "avrt.lib")   // for MMCSS
 #endif
 
@@ -930,12 +928,6 @@ namespace lime {
 
 	int64_t startTimestamp10ns = 0;
 
-	#ifdef HX_WINDOWS
-	// Add to your Init() function
-	static bool useDwmTiming = false;
-	static DWM_TIMING_INFO dwmTimingInfo = {};
-	#endif
-
 	void SDLApplication::Init () {
 		active = true;
 		int64_t now = getTime10ns();
@@ -962,17 +954,10 @@ namespace lime {
 			}
 		}
 
-		dwmTimingInfo.cbSize = sizeof(DWM_TIMING_INFO);
-
-		// Check if DWM timing is available
-		if (DwmGetCompositionTimingInfo(NULL, &dwmTimingInfo) == S_OK) {
-			useDwmTiming = true;
-			std::cout << "DWM timing enabled for tear-free rendering\n";
-		}
 		#endif
 
 		// cooldown in order to fix shit like timing alignment
-		coolSleepUntil10ns(startTimestamp10ns + 2000000); // 20 ms in 10ns ticks
+		coolSleepUntil10ns(startTimestamp10ns + 200000); // 2 ms in 10ns ticks
 	}
 
 	// Timestamped input events now carry 10ns timestamps
@@ -1063,19 +1048,8 @@ namespace lime {
 		// --- Sleep until next scheduled update ---
 		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - accumulatedUpdateTicks);
 
-		if (DwmGetCompositionTimingInfo(NULL, &dwmTimingInfo) == S_OK) {
-			LARGE_INTEGER freq;
-			QueryPerformanceFrequency(&freq);
-
-			int64_t lastVBlank10ns = dwmTimingInfo.qpcVBlank * TICKS_PER_SECOND_10NS / freq.QuadPart;
-			int64_t refreshPeriod10ns = dwmTimingInfo.qpcRefreshPeriod * TICKS_PER_SECOND_10NS / freq.QuadPart;
-			int64_t nextVBlank10ns = lastVBlank10ns + (refreshPeriod10ns / (int64_t)(RENDER_PERIOD_10NS / UPDATE_PERIOD_10NS));
-
-			if (nextVBlank10ns < nextUpdateTime)
-				nextUpdateTime = nextVBlank10ns; // sleep until the earlier of vblank or update/render
-		}
-
 		coolSleepUntil10ns(nextUpdateTime - 10000);
+		// Busy-wait for remaining time
 		while (getTime10ns() < nextUpdateTime) {}
 
 		//printf("Hi %lld\n", nextUpdateTime);
