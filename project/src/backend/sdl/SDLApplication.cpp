@@ -930,6 +930,12 @@ namespace lime {
 
 	int64_t startTimestamp10ns = 0;
 
+	#ifdef HX_WINDOWS
+	// Add to your Init() function
+	static bool useDwmTiming = false;
+	static DWM_TIMING_INFO dwmTimingInfo = {};
+	#endif
+
 	void SDLApplication::Init () {
 		active = true;
 		int64_t now = getTime10ns();
@@ -954,6 +960,14 @@ namespace lime {
 			} else {
 				std::cout << "Successfully created high-res timer!\n";
 			}
+		}
+
+		dwmTimingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+
+		// Check if DWM timing is available
+		if (DwmGetCompositionTimingInfo(NULL, &dwmTimingInfo) == S_OK) {
+			useDwmTiming = true;
+			std::cout << "DWM timing enabled for tear-free rendering\n";
 		}
 		#endif
 	}
@@ -1054,6 +1068,13 @@ namespace lime {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
+			#ifdef HX_WINDOWS
+			if (useDwmTiming) {
+				// Wait for the next vblank
+				DwmFlush();
+			}
+			#endif
+
 			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
 		}
 
@@ -1065,8 +1086,20 @@ namespace lime {
 
 		int64_t refreshFrames = wakeTime / RENDER_PERIOD_10NS;
 
-		coolSleepUntil10ns(wakeTime - 10000);
-		while (getTime10ns() < wakeTime) {}
+		#ifdef HX_WINDOWS
+		if (useDwmTiming) {
+			// Optional: Get precise timing info
+			DWM_TIMING_INFO timing = {};
+			timing.cbSize = sizeof(DWM_TIMING_INFO);
+			if (DwmGetCompositionTimingInfo(NULL, &timing) == S_OK) {
+				// You now have precise vsync timing!
+			}
+		} else {
+			// Fallback to your existing method
+			coolSleepUntil10ns(wakeTime - 10000);
+			while (getTime10ns() < wakeTime) {}
+		}
+		#endif
 
 		return active;
 	}
