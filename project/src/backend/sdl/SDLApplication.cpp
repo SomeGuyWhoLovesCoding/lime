@@ -18,8 +18,6 @@
 #include <stdio.h>
 #include <vector>
 
-#include <gl/GL.h>
-
 using namespace std;
 
 #ifdef HX_WINDOWS
@@ -930,31 +928,6 @@ namespace lime {
 
 	int64_t startTimestamp10ns = 0;
 
-	static void SwapWindowLimitedTear(SDL_Window* window, int screenHeight, int refreshRate, int maxTearPixels = 10) {
-		// --- Compute timing ---
-		double timePerFrame = 1.0 / refreshRate;          // seconds per frame
-		double timePerPixel = timePerFrame / screenHeight; // seconds per pixel
-		double targetTimeSec = maxTearPixels * timePerPixel;
-
-		// Convert to 10ns ticks (same unit as getTime10ns)
-		int64_t targetTicks = static_cast<int64_t>(targetTimeSec * 100000000); // 1s = 100_000_000 * 10ns
-
-		// --- Frame start ---
-		int64_t frameStart = getTime10ns();
-
-		// Flush GPU commands to make sure all rendering is queued
-		glFlush();
-
-		// Spin-wait until the display scanout reaches the desired vertical position
-		while (getTime10ns() - frameStart < targetTicks) {
-			// optional: tiny sleep for coarse granularity
-			std::this_thread::sleep_for(std::chrono::microseconds(1));
-		}
-
-		// Swap front/back buffers
-		SDL_GL_SwapWindow(window);
-	}
-
 	void SDLApplication::Init () {
 		active = true;
 		int64_t now = getTime10ns();
@@ -1024,24 +997,9 @@ namespace lime {
 				case SDL_MOUSEBUTTONDOWN:
 				case SDL_MOUSEBUTTONUP:
 				case SDL_MOUSEWHEEL:
-				case SDL_FINGERMOTION:
-				case SDL_FINGERDOWN:
-				case SDL_FINGERUP:
-				case SDL_TEXTINPUT:
-				case SDL_TEXTEDITING:
-				case SDL_JOYBALLMOTION:
-				case SDL_JOYBUTTONDOWN:
-				case SDL_JOYBUTTONUP:
-				case SDL_JOYHATMOTION:
-				case SDL_JOYDEVICEADDED:
-				case SDL_JOYDEVICEREMOVED:
-				case SDL_JOYAXISMOTION:
 				case SDL_CONTROLLERAXISMOTION:
 				case SDL_CONTROLLERBUTTONDOWN:
 				case SDL_CONTROLLERBUTTONUP:
-				case SDL_CONTROLLERDEVICEADDED:
-				case SDL_CONTROLLERDEVICEREMOVED:
-				case SDL_CLIPBOARDUPDATE:
 					isInputEvent = true;
 					break;
 			}
@@ -1058,7 +1016,6 @@ namespace lime {
 		// --- Fixed-step updates at 120Hz ---
 		const int MAX_UPDATES_PER_FRAME = 4;
 		int updatesThisFrame = 0;
-		//int hadRendered = 1;
 
 		while (accumulatedUpdateTicks >= UPDATE_PERIOD_10NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
 			if (updatesThisFrame == 0) {
@@ -1080,6 +1037,9 @@ namespace lime {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
+			/*SDL_Window* eventWindow = SDL_GetWindowFromID(windowEvent.windowID);
+			SDL_GL_SwapWindow(eventWindow);  // <-- SwapBuffers equivalent in SDL*/
+
 			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
 		}
 
@@ -1087,9 +1047,16 @@ namespace lime {
 		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - accumulatedUpdateTicks);
 		int64_t nextRenderTime = currentTime10ns + (RENDER_PERIOD_10NS - accumulatedRenderTicks);
 		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
+		int64_t sleepTicks = wakeTime - getTime10ns();
 
 		coolSleepUntil10ns(wakeTime - 10000);
 		while (getTime10ns() < wakeTime) {}
+
+		static int64_t lastLogTime = 0;
+		if (currentTime10ns - lastLogTime > 100000000) { // Every 10ms
+			printf("Frame: %.3fms\n", deltaTicks / 100000.0);
+			lastLogTime = currentTime10ns;
+		}
 
 		return active;
 	}
