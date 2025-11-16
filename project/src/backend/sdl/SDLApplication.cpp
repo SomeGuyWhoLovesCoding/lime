@@ -25,8 +25,8 @@ using namespace std;
 #ifdef HX_WINDOWS
 #include <windows.h>
 #include <cstdint>
-#include <avrt.h>
-#pragma comment(lib, "avrt.lib")   // for MMCSS
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 #endif
 
 #ifdef HX_MACOS
@@ -944,6 +944,41 @@ namespace lime {
 		#endif
 	}
 
+	#ifdef HX_WINDOWS
+	// Global DWM timing that doesn't require a window
+	struct GlobalDWMTiming {
+		int64_t lastVBlankTime10ns = 0;
+		int64_t vblankPeriod10ns = 0;
+		bool dwmAvailable = false;
+		LARGE_INTEGER qpcFrequency = {0};
+		
+		GlobalDWMTiming() {
+			// Check if DWM is available and get QPC frequency
+			BOOL compositionEnabled = FALSE;
+			if (SUCCEEDED(DwmIsCompositionEnabled(&compositionEnabled)) && compositionEnabled) {
+				dwmAvailable = true;
+				QueryPerformanceFrequency(&qpcFrequency);
+			}
+		}
+		
+		int64_t getNextVBlankTime10ns() {
+			if (!dwmAvailable) return 0;
+			
+			DWM_TIMING_INFO timingInfo = { sizeof(timingInfo) };
+			if (SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &timingInfo))) {
+				// Convert QPC time to our 10ns timebase
+				int64_t vblankTime10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+				vblankPeriod10ns = (timingInfo.qpcRefreshPeriod * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+				
+				return vblankTime10ns;
+			}
+			return 0;
+		}
+	};
+
+	static GlobalDWMTiming globalDwmTiming;
+	#endif
+
 	// Timestamped input events now carry 10ns timestamps
 	struct TimestampedInputEvent {
 		SDL_Event event;
@@ -952,16 +987,33 @@ namespace lime {
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
 	bool SDLApplication::Update() {
-		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
-		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
-		static int64_t renderFramesOnAverage = 0;
-
+		static int64_t nextUpdateTime10ns = 0;
+		static int64_t nextVBlankTime10ns = 0;
+		static int64_t vblankPeriod10ns = RENDER_PERIOD_10NS;
+		
 		int64_t now10ns = getTime10ns();
 
 		// First-frame initialization
 		if (nextUpdateTime10ns == 0) {
 			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
-			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			
+			#ifdef HX_WINDOWS
+			if (globalDwmTiming.dwmAvailable) {
+				nextVBlankTime10ns = globalDwmTiming.getNextVBlankTime10ns();
+				vblankPeriod10ns = globalDwmTiming.vblankPeriod10ns;
+				std::cout << "Using DWM timing - VBlank period: " << (vblankPeriod10ns / 100000.0) << "ms" << std::endl;
+			} else {
+				// Fallback to fixed timing if DWM not available
+				nextVBlankTime10ns = now10ns + RENDER_PERIOD_10NS;
+				vblankPeriod10ns = RENDER_PERIOD_10NS;
+				std::cout << "DWM not available, using fixed render timing" << std::endl;
+			}
+			#else
+			// Non-Windows fallback
+			nextVBlankTime10ns = now10ns + RENDER_PERIOD_10NS;
+			vblankPeriod10ns = RENDER_PERIOD_10NS;
+			#endif
+			
 			inputEventQueue.reserve(24);
 		}
 
@@ -1018,20 +1070,40 @@ namespace lime {
 			nextUpdateTime10ns += UPDATE_PERIOD_10NS;
 		}
 
-		renderFramesOnAverage++;
+		// --- Update vblank timing periodically ---
+		#ifdef HX_WINDOWS
+		static int frameCounter = 0;
+		if (globalDwmTiming.dwmAvailable && ++frameCounter >= 10) {
+			// Refresh vblank timing every 10 frames to account for potential changes
+			nextVBlankTime10ns = globalDwmTiming.getNextVBlankTime10ns();
+			vblankPeriod10ns = globalDwmTiming.vblankPeriod10ns;
+			frameCounter = 0;
+		}
+		#endif
 
-		// --- Render if scheduled ---
-		if (now10ns >= nextRenderTime10ns) {
+		// --- Render if we're close to vblank ---
+		int64_t timeToVBlank10ns = nextVBlankTime10ns - now10ns;
+		
+		// If we're within 1ms of vblank, render now
+		if (timeToVBlank10ns <= 100000) { // 1ms in 10ns units
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-			nextRenderTime10ns += RENDER_PERIOD_10NS;
 
-			// If rendering lagged too far, skip frames
-			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
-				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			// Schedule next render at next vblank
+			nextVBlankTime10ns += vblankPeriod10ns;
+
+			// If we're running way behind, resync to current time
+			if (now10ns >= nextVBlankTime10ns + vblankPeriod10ns) {
+				#ifdef HX_WINDOWS
+				if (globalDwmTiming.dwmAvailable) {
+					nextVBlankTime10ns = globalDwmTiming.getNextVBlankTime10ns();
+				} else {
+					nextVBlankTime10ns = now10ns + vblankPeriod10ns;
+				}
+				#else
+				nextVBlankTime10ns = now10ns + vblankPeriod10ns;
+				#endif
 			}
-			//printf("Total frames before render: %lld\n", renderFramesOnAverage);
-			renderFramesOnAverage = 0;
 		}
 
 		return active;
