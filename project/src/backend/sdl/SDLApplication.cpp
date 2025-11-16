@@ -859,7 +859,7 @@ namespace lime {
 	int64_t prevFrameTime = 0;
 
 	// ----------------- 10ns timestamp helpers -----------------
-	// Returns monotonic timestamp in 100-ns ticks
+	// Returns monotonic timestamp in 10-ns ticks
 	int64_t getTime10ns() {
 	#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {};
@@ -929,31 +929,6 @@ namespace lime {
 	}
 
 	int64_t startTimestamp10ns = 0;
-
-	static void SwapWindowLimitedTear(SDL_Window* window, int screenHeight, int refreshRate, int maxTearPixels = 10) {
-		// --- Compute timing ---
-		double timePerFrame = 1.0 / refreshRate;          // seconds per frame
-		double timePerPixel = timePerFrame / screenHeight; // seconds per pixel
-		double targetTimeSec = maxTearPixels * timePerPixel;
-
-		// Convert to 10ns ticks (same unit as getTime10ns)
-		int64_t targetTicks = static_cast<int64_t>(targetTimeSec * 100000000); // 1s = 100_000_000 * 10ns
-
-		// --- Frame start ---
-		int64_t frameStart = getTime10ns();
-
-		// Flush GPU commands to make sure all rendering is queued
-		glFlush();
-
-		// Spin-wait until the display scanout reaches the desired vertical position
-		while (getTime10ns() - frameStart < targetTicks) {
-			// optional: tiny sleep for coarse granularity
-			std::this_thread::sleep_for(std::chrono::microseconds(1));
-		}
-
-		// Swap front/back buffers
-		SDL_GL_SwapWindow(window);
-	}
 
 	void SDLApplication::Init () {
 		active = true;
@@ -1089,29 +1064,11 @@ namespace lime {
 		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
 		int64_t sleepTicks = wakeTime - getTime10ns();
 
-		int64_t refreshFrames = (int64_t)(wakeTime / RENDER_PERIOD_10NS) * RENDER_PERIOD_10NS;
-		int64_t realRefreshOffsetFromOneAnother = wakeTime - refreshFrames;
+		printf("Updates: %d, AccumUpdate: %lld, AccumRender: %lld\n", 
+       		updatesThisFrame, accumulatedUpdateTicks, accumulatedRenderTicks);
 
 		coolSleepUntil10ns(wakeTime - 10000);
 		while (getTime10ns() < wakeTime) {}
-
-   		int64_t refreshRate = TICKS_PER_SECOND_10NS / RENDER_PERIOD_10NS;
-		double frameTimeSec = 1.0 / refreshRate;
-		double timePerPixel = frameTimeSec / 720;
-		double maxTearTimeSec = 600 * timePerPixel;
-
-		int64_t refreshPeriod10ns = TICKS_PER_SECOND_10NS / refreshRate;
-		int64_t maxTearTicks = static_cast<int64_t>(maxTearTimeSec * TICKS_PER_SECOND_10NS); // 10ns units
-
-		int64_t now = getTime10ns();
-		int64_t targetSwapTime = now + maxTearTicks;
-
-		// coarse sleep
-		if (targetSwapTime - now > 10000) // 100µs
-			coolSleepUntil10ns(targetSwapTime - 10000);
-
-		// spin the rest
-		while (getTime10ns() < targetSwapTime) {}
 
 		return active;
 	}
