@@ -1,9 +1,9 @@
 /**
  * This class is where the main loop goes. For one, windows 10;
  * The said main loop uses:
-   - A combination of high res waitable timer and bullshit to create a surreal rhythm game experience!
+   - A combination of high res waitable timer and stuff to create a surreal rhythm game experience!
  * On the other hand, linux just already has an accurate sleep function. I wanted to create a fun crispy smooth experience for literally everyone who are on windows,
- so that meant doing this bullshit to compensate. How about I make a literal main loop library out of this shit?
+ so that meant doing this to compensate. How about I make a literal main loop library out of this?
 **/
 
 #include "SDLApplication.h"
@@ -799,15 +799,11 @@ namespace lime {
 			HandleEvent(&event);
 		}
 
-		//printf("CLOSED RAAAAAAAAAAAAAAGH\n");
-
 		SDL_QuitSubSystem (initFlags);
 
 		SDL_Quit ();
 
 		alreadyQuit = true;
-
-		//stopFrameTimeLogging();
 
 		return 0;
 
@@ -823,7 +819,6 @@ namespace lime {
 	}
 
 
-	// don't llround this shit you fucking mistake
 	void SDLApplication::SetFrameRate (double frameRate) {
 
 		if (frameRate > 0) {
@@ -860,7 +855,7 @@ namespace lime {
 	}
 
 	// ----------------- 10ns timestamp helpers -----------------
-	// Returns monotonic timestamp in 100-ns ticks
+	// Returns monotonic timestamp in 10-ns ticks
 	int64_t getTime10ns() {
 	#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {};
@@ -873,6 +868,7 @@ namespace lime {
 			QueryPerformanceCounter(&start);
 		}
 
+		QueryPerformanceFrequency(&freq);
 		QueryPerformanceCounter(&now);
 
 		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
@@ -902,7 +898,7 @@ namespace lime {
 		// Ensure timer created
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
-				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, SYNCHRONIZE);
 			if (!timer) {
 				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
 			}
@@ -929,198 +925,6 @@ namespace lime {
 	#endif
 	}
 
-	// Frame timing logger for CSV output
-
-	struct FrameTimingLogger {
-		std::ofstream csvFile;
-		bool isLogging = false;
-		int64_t frameCount = 0;
-		int64_t startTime10ns = 0;
-		int maxFrames = 10000;
-		int64_t lastLoggedFrameStart10ns = 0;
-		
-		// Stats tracking
-		double minDeltaMs = 999999.0;
-		double maxDeltaMs = 0.0;
-		double sumDeltaMs = 0.0;
-		int hitchCount = 0;
-		
-		void startLogging(const char* filename = "frame_times.csv", int maxFramesToLog = 10000) {
-			if (isLogging) return;
-			
-			csvFile.open(filename, std::ios::out | std::ios::trunc);
-			if (!csvFile.is_open()) {
-				printf("Failed to open %s for writing\n", filename);
-				return;
-			}
-			
-			csvFile << "FrameNumber,TimestampMs,FrameDeltaMs,WorkTimeMs,UpdateAccumMs,RenderAccumMs,UpdateCount,DidRender,SleepTargetMs,ActualSleepMs\n";
-			csvFile.flush();
-			
-			isLogging = true;
-			frameCount = 0;
-			maxFrames = maxFramesToLog;
-			startTime10ns = getTime10ns();
-			lastLoggedFrameStart10ns = startTime10ns;
-			minDeltaMs = 999999.0;
-			maxDeltaMs = 0.0;
-			sumDeltaMs = 0.0;
-			hitchCount = 0;
-			
-			printf("Started logging frame times to %s (max %d frames)\n", filename, maxFrames);
-		}
-		
-		void logFrame(int64_t frameStartTime10ns, int64_t workTime10ns,
-					int64_t updateAccum10ns, int64_t renderAccum10ns,
-					int updateCount, bool didRender,
-					int64_t sleepTarget10ns, int64_t actualSlept10ns) {
-			if (!isLogging) return;
-			
-			// Calculate frame delta (time between THIS frame start and LAST frame start)
-			int64_t frameDelta10ns = frameStartTime10ns - lastLoggedFrameStart10ns;
-			lastLoggedFrameStart10ns = frameStartTime10ns;
-			
-			double timestampMs = (frameStartTime10ns - startTime10ns) / 100000.0;
-			double frameDeltaMs = frameDelta10ns / 100000.0;
-			double workTimeMs = workTime10ns / 100000.0;
-			double updateAccumMs = updateAccum10ns / 100000.0;
-			double renderAccumMs = renderAccum10ns / 100000.0;
-			double sleepTargetMs = sleepTarget10ns / 100000.0;
-			double actualSleptMs = actualSlept10ns / 100000.0;
-			
-			// Skip first frame for stats (delta is invalid)
-			if (frameCount > 0) {
-				if (frameDeltaMs < minDeltaMs) minDeltaMs = frameDeltaMs;
-				if (frameDeltaMs > maxDeltaMs) maxDeltaMs = frameDeltaMs;
-				sumDeltaMs += frameDeltaMs;
-				
-				// Count hitches (frames >1.5x target)
-				double targetMs = UPDATE_PERIOD_10NS / 100000.0;
-				if (frameDeltaMs > targetMs * 1.5) hitchCount++;
-			}
-			
-			csvFile << frameCount << ","
-					<< std::fixed << std::setprecision(4) << timestampMs << ","
-					<< frameDeltaMs << ","
-					<< workTimeMs << ","
-					<< updateAccumMs << ","
-					<< renderAccumMs << ","
-					<< updateCount << ","
-					<< (didRender ? "1" : "0") << ","
-					<< sleepTargetMs << ","
-					<< actualSleptMs << "\n";
-			
-			frameCount++;
-			
-			if (frameCount >= maxFrames) {
-				stopLogging();
-			}
-			
-			if (frameCount % 100 == 0) {
-				csvFile.flush();
-			}
-		}
-		
-		void stopLogging() {
-			if (!isLogging) return;
-			
-			csvFile.flush();
-			csvFile.close();
-			isLogging = false;
-			
-			// Subtract 1 from frameCount for stats since first frame is skipped
-			int64_t validFrames = frameCount - 1;
-			double avgMs = (validFrames > 0) ? (sumDeltaMs / validFrames) : 0.0;
-			double varianceMs = maxDeltaMs - minDeltaMs;
-			double hitchPercent = (validFrames > 0) ? (100.0 * hitchCount / validFrames) : 0.0;
-			
-			printf("\n=== Frame Timing Statistics ===\n");
-			printf("Total frames: %lld\n", (long long)frameCount);
-			printf("Target frame time: %.3f ms (%.1f FPS)\n", UPDATE_PERIOD_10NS / 100000.0, 1000.0 * 100000.0 / UPDATE_PERIOD_10NS);
-			printf("Avg frame time: %.3f ms (%.1f FPS)\n", avgMs, 1000.0 / avgMs);
-			printf("Min frame time: %.3f ms\n", minDeltaMs);
-			printf("Max frame time: %.3f ms\n", maxDeltaMs);
-			printf("Variance: %.3f ms\n", varianceMs);
-			printf("Hitches: %d (%.2f%%)\n", hitchCount, hitchPercent);
-			printf("===============================\n\n");
-		}
-		
-		~FrameTimingLogger() {
-			if (isLogging) stopLogging();
-		}
-	};
-
-	static FrameTimingLogger frameLogger;
-
-	void startFrameTimeLogging(const char* filename = "frame_times.csv", int maxFrames = 10000) {
-		frameLogger.startLogging(filename, maxFrames);
-	}
-
-	void stopFrameTimeLogging() {
-		frameLogger.stopLogging();
-	}
-
-	// ============= TIMING STABILIZATION =============
-
-	struct TimingStabilizer {
-		int64_t targetFramePeriod10ns = UPDATE_PERIOD_10NS;
-		int64_t nextTargetWakeTime10ns = 0;
-		bool initialized = false;
-		
-		// Timing error tracking
-		int64_t cumulativeError10ns = 0;
-		int64_t maxErrorSeen10ns = 0;
-		
-		void init(int64_t currentTime10ns) {
-			nextTargetWakeTime10ns = currentTime10ns + targetFramePeriod10ns;
-			initialized = true;
-			cumulativeError10ns = 0;
-			maxErrorSeen10ns = 0;
-		}
-		
-		int64_t calculateSleepTarget(int64_t currentTime10ns, int64_t accumulatedTicks) {
-			if (!initialized) {
-				init(currentTime10ns);
-			}
-			
-			// Calculate when we SHOULD wake up based on fixed frame period
-			int64_t timeUntilNextFrame = targetFramePeriod10ns - accumulatedTicks;
-			
-			// Track timing error
-			int64_t error = currentTime10ns - nextTargetWakeTime10ns;
-			cumulativeError10ns += error;
-			if (abs(error) > maxErrorSeen10ns) {
-				maxErrorSeen10ns = abs(error);
-			}
-			
-			// Apply error correction: if we're running late, reduce sleep slightly
-			int64_t errorCorrection = cumulativeError10ns / 10; // Gradual correction
-			if (errorCorrection > 50000) errorCorrection = 50000; // Max 0.5ms correction
-			if (errorCorrection < -50000) errorCorrection = -50000;
-			
-			// Calculate sleep target with error correction
-			int64_t sleepTarget = currentTime10ns + timeUntilNextFrame - errorCorrection;
-			
-			// Update next target wake time
-			nextTargetWakeTime10ns += targetFramePeriod10ns;
-			
-			// If we've fallen too far behind, resync
-			if (currentTime10ns > nextTargetWakeTime10ns + targetFramePeriod10ns * 2) {
-				nextTargetWakeTime10ns = currentTime10ns + targetFramePeriod10ns;
-				cumulativeError10ns = 0;
-			}
-			
-			return sleepTarget;
-		}
-		
-		void printStats() {
-			printf("Max timing error: %.3f ms\n", maxErrorSeen10ns / 100000.0);
-			printf("Cumulative error: %.3f ms\n", cumulativeError10ns / 100000.0);
-		}
-	};
-
-	static TimingStabilizer timingStabilizer;
-
 	int64_t startTimestamp10ns = 0;
 
 	void SDLApplication::Init () {
@@ -1130,13 +934,6 @@ namespace lime {
 
 		// Windows: MMCSS and high-res timer
 		#ifdef HX_WINDOWS
-		// Enable MMCSS for the main thread
-		DWORD taskIndex = 0;
-		HANDLE mmcssHandle = AvSetMmThreadCharacteristicsA("Games", &taskIndex);
-		if (mmcssHandle) {
-			AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_CRITICAL);
-		}
-
 		// Create high-resolution timer if not already created
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
@@ -1150,9 +947,6 @@ namespace lime {
 		}
 
 		#endif
-	
-		// Start logging frame times (will log 10000 frames then auto-stop)
-		//startFrameTimeLogging("frame_times.csv", 10000);
 	}
 
 	// Timestamped input events now carry 10ns timestamps
@@ -1173,8 +967,7 @@ namespace lime {
 		if (nextUpdateTime10ns == 0) {
 			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
 			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			inputEventQueue.reserve(32);
-			timingStabilizer.init(now10ns);
+			inputEventQueue.reserve(24);
 		}
 
 		// --- Poll input ---
