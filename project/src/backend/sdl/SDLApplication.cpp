@@ -1093,7 +1093,25 @@ namespace lime {
 		int64_t realRefreshOffsetFromOneAnother = wakeTime - refreshFrames;
 
 		coolSleepUntil10ns(wakeTime - 10000);
-		while (getTime10ns() < wakeTime - (realRefreshOffsetFromOneAnother / 3)) {}
+		while (getTime10ns() < wakeTime) {}
+
+   		int64_t refreshRate = TICKS_PER_SECOND_10NS / RENDER_PERIOD_10NS;
+		double frameTimeSec = 1.0 / refreshRate;
+		double timePerPixel = frameTimeSec / 720;
+		double maxTearTimeSec = 600 * timePerPixel;
+
+		int64_t refreshPeriod10ns = TICKS_PER_SECOND_10NS / refreshRate;
+		int64_t maxTearTicks = static_cast<int64_t>(maxTearTimeSec * TICKS_PER_SECOND_10NS); // 10ns units
+
+		int64_t now = getTime10ns();
+		int64_t targetSwapTime = now + maxTearTicks;
+
+		// coarse sleep
+		if (targetSwapTime - now > 10000) // 100µs
+			coolSleepUntil10ns(targetSwapTime - 10000);
+
+		// spin the rest
+		while (getTime10ns() < targetSwapTime) {}
 
 		return active;
 	}
