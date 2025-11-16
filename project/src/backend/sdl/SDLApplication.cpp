@@ -1086,44 +1086,8 @@ namespace lime {
 		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
 		int64_t sleepTicks = wakeTime - getTime10ns();
 
-		//var integer6 = 20;
-		// Parameters you must know once:
-		int64_t refreshPeriod = TICKS_PER_SECOND_10NS / RENDER_PERIOD_10NS;
-		int64_t ticksPerPixel = refreshPeriod / 720;
-
-		// Step 1: Where is the scanout RIGHT NOW?
-		int64_t now = getTime10ns();
-		int64_t timeInCycle = (now % refreshPeriod);
-		int64_t currentScanline = timeInCycle / ticksPerPixel;
-
-		// Step 2: We want tearing to occur at <= maxPixels
-		int64_t maxPixels = 10;
-		int64_t targetScanlineTime = maxPixels * ticksPerPixel;
-
-		static int64_t lastSwapEnd = 0;
-
-		int64_t now2 = getTime10ns();
-		if (lastSwapEnd == 0)
-			lastSwapEnd = now2; // initialize
-
-		int64_t frameStart = lastSwapEnd;
-
-		// absolute swap time:
-		int64_t swapTime = frameStart + targetScanlineTime;
-
-		// if we passed it, go to next frame:
-		while (swapTime <= now2)
-			swapTime += refreshPeriod;
-
-		// sleep gently:
-		if (now2 < swapTime - 10000)
-			coolSleepUntil10ns(swapTime - 10000);
-
-		// spin until swap time:
-		while (getTime10ns() < swapTime) {}
-
-		// THIS is the new reference for next frame:
-		lastSwapEnd = getTime10ns();
+		coolSleepUntil10ns(wakeTime - 10000);
+		while (getTime10ns() < wakeTime) {}
 
 		return active;
 	}
