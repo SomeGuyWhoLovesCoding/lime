@@ -37,9 +37,11 @@ using namespace std;
 #include "emscripten.h"
 #endif
 
+#include <fstream>
+#include <sstream>
+
 
 namespace lime {
-
 
 	AutoGCRoot* Application::callback = 0;
 	SDLApplication* SDLApplication::currentApplication = 0;
@@ -926,6 +928,97 @@ namespace lime {
 	#endif
 	}
 
+	// Frame timing logger for CSV output
+
+	struct FrameTimingLogger {
+		std::ofstream csvFile;
+		bool isLogging = false;
+		int64_t frameCount = 0;
+		int64_t startTime10ns = 0;
+		int maxFrames = 10000; // Default: log 10000 frames then stop
+		
+		void startLogging(const char* filename = "frame_times.csv", int maxFramesToLog = 10000) {
+			if (isLogging) return;
+			
+			csvFile.open(filename, std::ios::out | std::ios::trunc);
+			if (!csvFile.is_open()) {
+				printf("Failed to open %s for writing\n", filename);
+				return;
+			}
+			
+			// Write CSV header
+			csvFile << "FrameNumber,TimestampMs,DeltaMs,UpdateAccumMs,RenderAccumMs,UpdateCount,DidRender\n";
+			csvFile.flush();
+			
+			isLogging = true;
+			frameCount = 0;
+			maxFrames = maxFramesToLog;
+			startTime10ns = getTime10ns();
+			
+			printf("Started logging frame times to %s (max %d frames)\n", filename, maxFrames);
+		}
+		
+		void logFrame(int64_t currentTime10ns, int64_t deltaTime10ns, 
+					int64_t updateAccum10ns, int64_t renderAccum10ns,
+					int updateCount, bool didRender) {
+			if (!isLogging) return;
+			
+			// Convert 10ns ticks to milliseconds for readability
+			double timestampMs = (currentTime10ns - startTime10ns) / 100000.0;
+			double deltaMs = deltaTime10ns / 100000.0;
+			double updateAccumMs = updateAccum10ns / 100000.0;
+			double renderAccumMs = renderAccum10ns / 100000.0;
+			
+			csvFile << frameCount << ","
+					<< std::fixed << std::setprecision(4) << timestampMs << ","
+					<< deltaMs << ","
+					<< updateAccumMs << ","
+					<< renderAccumMs << ","
+					<< updateCount << ","
+					<< (didRender ? "1" : "0") << "\n";
+			
+			frameCount++;
+			
+			// Stop logging after reaching max frames
+			if (frameCount >= maxFrames) {
+				stopLogging();
+			}
+			
+			// Flush every 100 frames to ensure data is written
+			if (frameCount % 100 == 0) {
+				csvFile.flush();
+			}
+		}
+		
+		void stopLogging() {
+			if (!isLogging) return;
+			
+			csvFile.flush();
+			csvFile.close();
+			isLogging = false;
+			
+			printf("Stopped logging frame times. Total frames logged: %lld\n", (long long)frameCount);
+		}
+		
+		~FrameTimingLogger() {
+			if (isLogging) {
+				stopLogging();
+			}
+		}
+	};
+
+	static FrameTimingLogger frameLogger;
+
+	// Call this to start logging (e.g., in Init() or when pressing a key)
+	void startFrameTimeLogging(const char* filename = "frame_times.csv", int maxFrames = 10000) {
+		frameLogger.startLogging(filename, maxFrames);
+	}
+
+	// Call this to manually stop logging
+	void stopFrameTimeLogging() {
+		frameLogger.stopLogging();
+	}
+
 	int64_t startTimestamp10ns = 0;
 
 	void SDLApplication::Init () {
@@ -955,9 +1048,9 @@ namespace lime {
 		}
 
 		#endif
-
-		// cooldown in order to fix shit like timing alignment
-		coolSleepUntil10ns(startTimestamp10ns + 200000); // 2 ms in 10ns ticks
+	
+		// Start logging frame times (will log 10000 frames then auto-stop)
+		startFrameTimeLogging("frame_times.csv", 10000);
 	}
 
 	// Timestamped input events now carry 10ns timestamps
@@ -972,16 +1065,21 @@ namespace lime {
 		static int64_t prevRenderTime10ns = 0;
 		static int64_t accumulatedUpdateTicks = 0;
 		static int64_t accumulatedRenderTicks = 0;
+		static int64_t lastFrameTime10ns = 0; // Track for delta calculation
 
 		int64_t currentTime10ns = getTime10ns();
 
 		if (prevUpdateTime10ns == 0) {
 			prevUpdateTime10ns = currentTime10ns;
 			prevRenderTime10ns = currentTime10ns;
+			lastFrameTime10ns = currentTime10ns;
 			accumulatedUpdateTicks = 0;
 			accumulatedRenderTicks = 0;
 			inputEventQueue.reserve(32);
 		}
+
+		int64_t frameDelta10ns = currentTime10ns - lastFrameTime10ns;
+		lastFrameTime10ns = currentTime10ns;
 
 		int64_t updateDeltaTicks = currentTime10ns - prevUpdateTime10ns;
 		prevUpdateTime10ns = currentTime10ns;
@@ -1039,13 +1137,20 @@ namespace lime {
 		inputEventQueue.clear();
 
 		// --- Render at 60Hz ---
+		bool didRender = false;
 		if (accumulatedRenderTicks >= RENDER_PERIOD_10NS) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
 			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
-			prevRenderTime10ns = currentTime10ns;  // Only update render timestamp when we actually render
+			prevRenderTime10ns = currentTime10ns;
+			didRender = true;
 		}
+
+		// --- Log frame timing to CSV ---
+		frameLogger.logFrame(currentTime10ns, frameDelta10ns, 
+							accumulatedUpdateTicks, accumulatedRenderTicks,
+							updatesThisFrame, didRender);
 
 		// --- Sleep until next scheduled update ---
 		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - accumulatedUpdateTicks);
@@ -1053,8 +1158,6 @@ namespace lime {
 		coolSleepUntil10ns(nextUpdateTime - 10000);
 		// Busy-wait for remaining time
 		while (getTime10ns() < nextUpdateTime) {}
-
-		//printf("Hi %lld\n", nextUpdateTime);
 
 		return active;
 	}
