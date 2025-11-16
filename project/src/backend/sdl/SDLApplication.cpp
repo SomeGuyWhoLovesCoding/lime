@@ -952,27 +952,16 @@ namespace lime {
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
 	bool SDLApplication::Update() {
-		static int64_t nextUpdateTime10ns = 0;
-		static int64_t nextVBlankTime10ns = 0;
-		static int64_t vblankPeriod10ns = RENDER_PERIOD_10NS;
-		
+		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
+		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
+		static int64_t renderFramesOnAverage = 0;
+
 		int64_t now10ns = getTime10ns();
 
 		// First-frame initialization
 		if (nextUpdateTime10ns == 0) {
 			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
-			
-			#ifdef HX_WINDOWS
-			if (globalDwmTiming.dwmAvailable) {
-				nextVBlankTime10ns = globalDwmTiming.getNextVBlankTime10ns();
-				vblankPeriod10ns = globalDwmTiming.vblankPeriod10ns;
-			} else {
-				nextVBlankTime10ns = now10ns + vblankPeriod10ns;
-			}
-			#else
-			nextVBlankTime10ns = now10ns + vblankPeriod10ns;
-			#endif
-			
+			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 			inputEventQueue.reserve(24);
 		}
 
@@ -1029,41 +1018,20 @@ namespace lime {
 			nextUpdateTime10ns += UPDATE_PERIOD_10NS;
 		}
 
-		// --- Update vblank timing periodically (only on Windows with DWM) ---
-		#ifdef HX_WINDOWS
-		if (globalDwmTiming.dwmAvailable) {
-			static int frameCounter = 0;
-			if (++frameCounter >= 10) {
-				nextVBlankTime10ns = globalDwmTiming.getNextVBlankTime10ns();
-				vblankPeriod10ns = globalDwmTiming.vblankPeriod10ns;
-				frameCounter = 0;
-			}
-		}
-		#endif
+		renderFramesOnAverage++;
 
-		// --- Render if we're close to vblank ---
-		int64_t timeToVBlank10ns = nextVBlankTime10ns - now10ns;
-		
-		// If we're within 2ms of vblank, render now
-		if (timeToVBlank10ns <= 200000) { // 2ms in 10ns units
+		// --- Render if scheduled ---
+		if (now10ns >= nextRenderTime10ns) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-			
-			// Schedule next render at next vblank
-			nextVBlankTime10ns += vblankPeriod10ns;
-			
-			// If we're running way behind, resync to current time
-			if (now10ns >= nextVBlankTime10ns) {
-				#ifdef HX_WINDOWS
-				if (globalDwmTiming.dwmAvailable) {
-					nextVBlankTime10ns = globalDwmTiming.getNextVBlankTime10ns();
-				} else {
-					nextVBlankTime10ns = now10ns + vblankPeriod10ns;
-				}
-				#else
-				nextVBlankTime10ns = now10ns + vblankPeriod10ns;
-				#endif
+			nextRenderTime10ns += RENDER_PERIOD_10NS;
+
+			// If rendering lagged too far, skip frames
+			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 			}
+			//printf("Total frames before render: %lld\n", renderFramesOnAverage);
+			renderFramesOnAverage = 0;
 		}
 
 		return active;
