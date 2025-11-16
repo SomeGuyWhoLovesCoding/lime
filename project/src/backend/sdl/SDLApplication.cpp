@@ -930,31 +930,6 @@ namespace lime {
 
 	int64_t startTimestamp10ns = 0;
 
-	static void SwapWindowLimitedTear(SDL_Window* window, int screenHeight, int refreshRate, int maxTearPixels = 10) {
-		// --- Compute timing ---
-		double timePerFrame = 1.0 / refreshRate;          // seconds per frame
-		double timePerPixel = timePerFrame / screenHeight; // seconds per pixel
-		double targetTimeSec = maxTearPixels * timePerPixel;
-
-		// Convert to 10ns ticks (same unit as getTime10ns)
-		int64_t targetTicks = static_cast<int64_t>(targetTimeSec * 100000000); // 1s = 100_000_000 * 10ns
-
-		// --- Frame start ---
-		int64_t frameStart = getTime10ns();
-
-		// Flush GPU commands to make sure all rendering is queued
-		glFlush();
-
-		// Spin-wait until the display scanout reaches the desired vertical position
-		while (getTime10ns() - frameStart < targetTicks) {
-			// optional: tiny sleep for coarse granularity
-			std::this_thread::sleep_for(std::chrono::microseconds(1));
-		}
-
-		// Swap front/back buffers
-		SDL_GL_SwapWindow(window);
-	}
-
 	void SDLApplication::Init () {
 		active = true;
 		int64_t now = getTime10ns();
