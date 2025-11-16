@@ -1024,9 +1024,24 @@ namespace lime {
 				case SDL_MOUSEBUTTONDOWN:
 				case SDL_MOUSEBUTTONUP:
 				case SDL_MOUSEWHEEL:
+				case SDL_FINGERMOTION:
+				case SDL_FINGERDOWN:
+				case SDL_FINGERUP:
+				case SDL_TEXTINPUT:
+				case SDL_TEXTEDITING:
+				case SDL_JOYBALLMOTION:
+				case SDL_JOYBUTTONDOWN:
+				case SDL_JOYBUTTONUP:
+				case SDL_JOYHATMOTION:
+				case SDL_JOYDEVICEADDED:
+				case SDL_JOYDEVICEREMOVED:
+				case SDL_JOYAXISMOTION:
 				case SDL_CONTROLLERAXISMOTION:
 				case SDL_CONTROLLERBUTTONDOWN:
 				case SDL_CONTROLLERBUTTONUP:
+				case SDL_CONTROLLERDEVICEADDED:
+				case SDL_CONTROLLERDEVICEREMOVED:
+				case SDL_CLIPBOARDUPDATE:
 					isInputEvent = true;
 					break;
 			}
@@ -1043,6 +1058,7 @@ namespace lime {
 		// --- Fixed-step updates at 120Hz ---
 		const int MAX_UPDATES_PER_FRAME = 4;
 		int updatesThisFrame = 0;
+		//int hadRendered = 1;
 
 		while (accumulatedUpdateTicks >= UPDATE_PERIOD_10NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
 			if (updatesThisFrame == 0) {
@@ -1061,21 +1077,8 @@ namespace lime {
 
 		// --- Render at 60Hz ---
 		if (accumulatedRenderTicks >= RENDER_PERIOD_10NS) {
-			//glFinish();
-
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-
-			//glFlush();
-
-			/*SDL_Window* eventWindow = SDL_GetWindowFromID(windowEvent.windowID);
-			SDL_DisplayMode mode;
-			SDL_GetCurrentDisplayMode( SDL_GetWindowDisplayIndex(mainWindow), &mode );
-			int refreshRate = mode.refresh_rate;  // actual monitor Hz
-			int w = 0;
-			int h = 0;
-			SDL_GL_GetDrawableSize(eventWindow, &w, &h);
-			SwapWindowLimitedTear(eventWindow, h, (int)TICKS_PER_SECOND_10NS / RENDER_PERIOD_10NS, 10);  // <-- SwapBuffers equivalent in SDL*/
 
 			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
 		}
@@ -1086,8 +1089,11 @@ namespace lime {
 		int64_t wakeTime = (nextUpdateTime < nextRenderTime) ? nextUpdateTime : nextRenderTime;
 		int64_t sleepTicks = wakeTime - getTime10ns();
 
+		int64_t refreshFrames = (int64_t)(wakeTime / RENDER_PERIOD_10NS) * RENDER_PERIOD_10NS;
+		int64_t realRefreshOffsetFromOneAnother = wakeTime - refreshFrames;
+
 		coolSleepUntil10ns(wakeTime - 10000);
-		while (getTime10ns() < wakeTime) {}
+		while (getTime10ns() < wakeTime - (realRefreshOffsetFromOneAnother / 3)) {}
 
 		return active;
 	}
