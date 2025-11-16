@@ -968,27 +968,29 @@ namespace lime {
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
 	bool SDLApplication::Update() {
-		static int64_t prevTime10ns = 0;
+		static int64_t prevUpdateTime10ns = 0;
+		static int64_t prevRenderTime10ns = 0;
 		static int64_t accumulatedUpdateTicks = 0;
 		static int64_t accumulatedRenderTicks = 0;
 
 		int64_t currentTime10ns = getTime10ns();
 
-		if (prevTime10ns == 0) {
-			prevTime10ns = currentTime10ns;
+		if (prevUpdateTime10ns == 0) {
+			prevUpdateTime10ns = currentTime10ns;
+			prevRenderTime10ns = currentTime10ns;
 			accumulatedUpdateTicks = 0;
 			accumulatedRenderTicks = 0;
 			inputEventQueue.reserve(32);
 		}
 
-		int64_t deltaTicks = currentTime10ns - prevTime10ns;
-		prevTime10ns = currentTime10ns;
+		int64_t updateDeltaTicks = currentTime10ns - prevUpdateTime10ns;
+		prevUpdateTime10ns = currentTime10ns;
 
 		// Avoid huge delta on pauses or hitches
-		if (deltaTicks > UPDATE_PERIOD_10NS * 5) deltaTicks = UPDATE_PERIOD_10NS;
+		if (updateDeltaTicks > UPDATE_PERIOD_10NS * 5) updateDeltaTicks = UPDATE_PERIOD_10NS;
 
-		accumulatedUpdateTicks += deltaTicks;
-		accumulatedRenderTicks += deltaTicks;
+		accumulatedUpdateTicks += updateDeltaTicks;
+		accumulatedRenderTicks += updateDeltaTicks;
 
 		// --- Poll and batch input ---
 		SDL_Event event;
@@ -1023,11 +1025,8 @@ namespace lime {
 		int updatesThisFrame = 0;
 
 		while (accumulatedUpdateTicks >= UPDATE_PERIOD_10NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
-			if (updatesThisFrame == 0) {
-				for (size_t i = 0; i < inputEventQueue.size(); i++)
-					HandleInputEvent(&inputEventQueue[i].event);
-				inputEventQueue.clear();
-			}
+			for (size_t i = 0; i < inputEventQueue.size(); i++)
+				HandleInputEvent(&inputEventQueue[i].event);
 
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = UPDATE_PERIOD_10NS;
@@ -1037,12 +1036,15 @@ namespace lime {
 			updatesThisFrame++;
 		}
 
+		inputEventQueue.clear();
+
 		// --- Render at 60Hz ---
 		if (accumulatedRenderTicks >= RENDER_PERIOD_10NS) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
 			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
+			prevRenderTime10ns = currentTime10ns;  // Only update render timestamp when we actually render
 		}
 
 		// --- Sleep until next scheduled update ---
