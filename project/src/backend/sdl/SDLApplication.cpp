@@ -954,6 +954,7 @@ namespace lime {
 	bool SDLApplication::Update() {
 		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
 		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
+		static int64_t renderFramesOnAverage = 0;
 
 		int64_t now10ns = getTime10ns();
 
@@ -1017,6 +1018,8 @@ namespace lime {
 			nextUpdateTime10ns += UPDATE_PERIOD_10NS;
 		}
 
+		renderFramesOnAverage++;
+
 		// --- Render if scheduled ---
 		if (now10ns >= nextRenderTime10ns) {
 			renderEvent.type = RENDER;
@@ -1027,6 +1030,8 @@ namespace lime {
 			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
 				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 			}
+			//printf("Total frames before render: %lld\n", renderFramesOnAverage);
+			renderFramesOnAverage = 0;
 		}
 
 		return active;
