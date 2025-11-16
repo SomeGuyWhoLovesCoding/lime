@@ -39,6 +39,7 @@ using namespace std;
 
 #include <fstream>
 #include <sstream>
+#include <cmath>
 
 
 namespace lime {
@@ -806,6 +807,8 @@ namespace lime {
 
 		alreadyQuit = true;
 
+		//stopFrameTimeLogging();
+
 		return 0;
 
 	}
@@ -855,8 +858,6 @@ namespace lime {
 		}
 
 	}
-
-	int64_t prevFrameTime = 0;
 
 	// ----------------- 10ns timestamp helpers -----------------
 	// Returns monotonic timestamp in 100-ns ticks
@@ -935,7 +936,14 @@ namespace lime {
 		bool isLogging = false;
 		int64_t frameCount = 0;
 		int64_t startTime10ns = 0;
-		int maxFrames = 10000; // Default: log 10000 frames then stop
+		int maxFrames = 10000;
+		int64_t lastLoggedFrameStart10ns = 0;
+		
+		// Stats tracking
+		double minDeltaMs = 999999.0;
+		double maxDeltaMs = 0.0;
+		double sumDeltaMs = 0.0;
+		int hitchCount = 0;
 		
 		void startLogging(const char* filename = "frame_times.csv", int maxFramesToLog = 10000) {
 			if (isLogging) return;
@@ -946,45 +954,68 @@ namespace lime {
 				return;
 			}
 			
-			// Write CSV header
-			csvFile << "FrameNumber,TimestampMs,DeltaMs,UpdateAccumMs,RenderAccumMs,UpdateCount,DidRender\n";
+			csvFile << "FrameNumber,TimestampMs,FrameDeltaMs,WorkTimeMs,UpdateAccumMs,RenderAccumMs,UpdateCount,DidRender,SleepTargetMs,ActualSleepMs\n";
 			csvFile.flush();
 			
 			isLogging = true;
 			frameCount = 0;
 			maxFrames = maxFramesToLog;
 			startTime10ns = getTime10ns();
+			lastLoggedFrameStart10ns = startTime10ns;
+			minDeltaMs = 999999.0;
+			maxDeltaMs = 0.0;
+			sumDeltaMs = 0.0;
+			hitchCount = 0;
 			
 			printf("Started logging frame times to %s (max %d frames)\n", filename, maxFrames);
 		}
 		
-		void logFrame(int64_t currentTime10ns, int64_t deltaTime10ns, 
+		void logFrame(int64_t frameStartTime10ns, int64_t workTime10ns,
 					int64_t updateAccum10ns, int64_t renderAccum10ns,
-					int updateCount, bool didRender) {
+					int updateCount, bool didRender,
+					int64_t sleepTarget10ns, int64_t actualSlept10ns) {
 			if (!isLogging) return;
 			
-			// Convert 10ns ticks to milliseconds for readability
-			double timestampMs = (currentTime10ns - startTime10ns) / 100000.0;
-			double deltaMs = deltaTime10ns / 100000.0;
+			// Calculate frame delta (time between THIS frame start and LAST frame start)
+			int64_t frameDelta10ns = frameStartTime10ns - lastLoggedFrameStart10ns;
+			lastLoggedFrameStart10ns = frameStartTime10ns;
+			
+			double timestampMs = (frameStartTime10ns - startTime10ns) / 100000.0;
+			double frameDeltaMs = frameDelta10ns / 100000.0;
+			double workTimeMs = workTime10ns / 100000.0;
 			double updateAccumMs = updateAccum10ns / 100000.0;
 			double renderAccumMs = renderAccum10ns / 100000.0;
+			double sleepTargetMs = sleepTarget10ns / 100000.0;
+			double actualSleptMs = actualSlept10ns / 100000.0;
+			
+			// Skip first frame for stats (delta is invalid)
+			if (frameCount > 0) {
+				if (frameDeltaMs < minDeltaMs) minDeltaMs = frameDeltaMs;
+				if (frameDeltaMs > maxDeltaMs) maxDeltaMs = frameDeltaMs;
+				sumDeltaMs += frameDeltaMs;
+				
+				// Count hitches (frames >1.5x target)
+				double targetMs = UPDATE_PERIOD_10NS / 100000.0;
+				if (frameDeltaMs > targetMs * 1.5) hitchCount++;
+			}
 			
 			csvFile << frameCount << ","
 					<< std::fixed << std::setprecision(4) << timestampMs << ","
-					<< deltaMs << ","
+					<< frameDeltaMs << ","
+					<< workTimeMs << ","
 					<< updateAccumMs << ","
 					<< renderAccumMs << ","
 					<< updateCount << ","
-					<< (didRender ? "1" : "0") << "\n";
+					<< (didRender ? "1" : "0") << ","
+					<< sleepTargetMs << ","
+					<< actualSleptMs << "\n";
 			
 			frameCount++;
 			
-			// Stop logging after reaching max frames
 			if (frameCount >= maxFrames) {
 				stopLogging();
 			}
 			
-			// Flush every 100 frames to ensure data is written
 			if (frameCount % 100 == 0) {
 				csvFile.flush();
 			}
@@ -997,27 +1028,98 @@ namespace lime {
 			csvFile.close();
 			isLogging = false;
 			
-			printf("Stopped logging frame times. Total frames logged: %lld\n", (long long)frameCount);
+			// Subtract 1 from frameCount for stats since first frame is skipped
+			int64_t validFrames = frameCount - 1;
+			double avgMs = (validFrames > 0) ? (sumDeltaMs / validFrames) : 0.0;
+			double varianceMs = maxDeltaMs - minDeltaMs;
+			double hitchPercent = (validFrames > 0) ? (100.0 * hitchCount / validFrames) : 0.0;
+			
+			printf("\n=== Frame Timing Statistics ===\n");
+			printf("Total frames: %lld\n", (long long)frameCount);
+			printf("Target frame time: %.3f ms (%.1f FPS)\n", UPDATE_PERIOD_10NS / 100000.0, 1000.0 * 100000.0 / UPDATE_PERIOD_10NS);
+			printf("Avg frame time: %.3f ms (%.1f FPS)\n", avgMs, 1000.0 / avgMs);
+			printf("Min frame time: %.3f ms\n", minDeltaMs);
+			printf("Max frame time: %.3f ms\n", maxDeltaMs);
+			printf("Variance: %.3f ms\n", varianceMs);
+			printf("Hitches: %d (%.2f%%)\n", hitchCount, hitchPercent);
+			printf("===============================\n\n");
 		}
 		
 		~FrameTimingLogger() {
-			if (isLogging) {
-				stopLogging();
-			}
+			if (isLogging) stopLogging();
 		}
 	};
 
 	static FrameTimingLogger frameLogger;
 
-	// Call this to start logging (e.g., in Init() or when pressing a key)
 	void startFrameTimeLogging(const char* filename = "frame_times.csv", int maxFrames = 10000) {
 		frameLogger.startLogging(filename, maxFrames);
 	}
 
-	// Call this to manually stop logging
 	void stopFrameTimeLogging() {
 		frameLogger.stopLogging();
 	}
+
+	// ============= TIMING STABILIZATION =============
+
+	struct TimingStabilizer {
+		int64_t targetFramePeriod10ns = UPDATE_PERIOD_10NS;
+		int64_t nextTargetWakeTime10ns = 0;
+		bool initialized = false;
+		
+		// Timing error tracking
+		int64_t cumulativeError10ns = 0;
+		int64_t maxErrorSeen10ns = 0;
+		
+		void init(int64_t currentTime10ns) {
+			nextTargetWakeTime10ns = currentTime10ns + targetFramePeriod10ns;
+			initialized = true;
+			cumulativeError10ns = 0;
+			maxErrorSeen10ns = 0;
+		}
+		
+		int64_t calculateSleepTarget(int64_t currentTime10ns, int64_t accumulatedTicks) {
+			if (!initialized) {
+				init(currentTime10ns);
+			}
+			
+			// Calculate when we SHOULD wake up based on fixed frame period
+			int64_t timeUntilNextFrame = targetFramePeriod10ns - accumulatedTicks;
+			
+			// Track timing error
+			int64_t error = currentTime10ns - nextTargetWakeTime10ns;
+			cumulativeError10ns += error;
+			if (abs(error) > maxErrorSeen10ns) {
+				maxErrorSeen10ns = abs(error);
+			}
+			
+			// Apply error correction: if we're running late, reduce sleep slightly
+			int64_t errorCorrection = cumulativeError10ns / 10; // Gradual correction
+			if (errorCorrection > 50000) errorCorrection = 50000; // Max 0.5ms correction
+			if (errorCorrection < -50000) errorCorrection = -50000;
+			
+			// Calculate sleep target with error correction
+			int64_t sleepTarget = currentTime10ns + timeUntilNextFrame - errorCorrection;
+			
+			// Update next target wake time
+			nextTargetWakeTime10ns += targetFramePeriod10ns;
+			
+			// If we've fallen too far behind, resync
+			if (currentTime10ns > nextTargetWakeTime10ns + targetFramePeriod10ns * 2) {
+				nextTargetWakeTime10ns = currentTime10ns + targetFramePeriod10ns;
+				cumulativeError10ns = 0;
+			}
+			
+			return sleepTarget;
+		}
+		
+		void printStats() {
+			printf("Max timing error: %.3f ms\n", maxErrorSeen10ns / 100000.0);
+			printf("Cumulative error: %.3f ms\n", cumulativeError10ns / 100000.0);
+		}
+	};
+
+	static TimingStabilizer timingStabilizer;
 
 	int64_t startTimestamp10ns = 0;
 
@@ -1050,7 +1152,7 @@ namespace lime {
 		#endif
 	
 		// Start logging frame times (will log 10000 frames then auto-stop)
-		startFrameTimeLogging("frame_times.csv", 10000);
+		//startFrameTimeLogging("frame_times.csv", 10000);
 	}
 
 	// Timestamped input events now carry 10ns timestamps
@@ -1061,36 +1163,21 @@ namespace lime {
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
 	bool SDLApplication::Update() {
-		static int64_t prevUpdateTime10ns = 0;
-		static int64_t prevRenderTime10ns = 0;
-		static int64_t accumulatedUpdateTicks = 0;
-		static int64_t accumulatedRenderTicks = 0;
-		static int64_t lastFrameTime10ns = 0; // Track for delta calculation
+		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
+		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
+		const int64_t BUSY_WAIT_MARGIN = 5000;   // 50 µs in 10ns units
 
-		int64_t currentTime10ns = getTime10ns();
+		int64_t now10ns = getTime10ns();
 
-		if (prevUpdateTime10ns == 0) {
-			prevUpdateTime10ns = currentTime10ns;
-			prevRenderTime10ns = currentTime10ns;
-			lastFrameTime10ns = currentTime10ns;
-			accumulatedUpdateTicks = 0;
-			accumulatedRenderTicks = 0;
+		// First-frame initialization
+		if (nextUpdateTime10ns == 0) {
+			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
+			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 			inputEventQueue.reserve(32);
+			timingStabilizer.init(now10ns);
 		}
 
-		int64_t frameDelta10ns = currentTime10ns - lastFrameTime10ns;
-		lastFrameTime10ns = currentTime10ns;
-
-		int64_t updateDeltaTicks = currentTime10ns - prevUpdateTime10ns;
-		prevUpdateTime10ns = currentTime10ns;
-
-		// Avoid huge delta on pauses or hitches
-		if (updateDeltaTicks > UPDATE_PERIOD_10NS * 5) updateDeltaTicks = UPDATE_PERIOD_10NS;
-
-		accumulatedUpdateTicks += updateDeltaTicks;
-		accumulatedRenderTicks += updateDeltaTicks;
-
-		// --- Poll and batch input ---
+		// --- Poll input ---
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
@@ -1109,55 +1196,52 @@ namespace lime {
 					break;
 			}
 			if (isInputEvent) {
-				TimestampedInputEvent tie;
-				tie.event = event;
-				tie.timestamp10ns = currentTime10ns;
-				inputEventQueue.push_back(tie);
+				inputEventQueue.push_back({event, now10ns});
 			} else {
 				HandleEvent(&event);
 			}
 		}
 
-		// --- Fixed-step updates at 120Hz ---
-		const int MAX_UPDATES_PER_FRAME = 4;
-		int updatesThisFrame = 0;
-
-		while (accumulatedUpdateTicks >= UPDATE_PERIOD_10NS && updatesThisFrame < MAX_UPDATES_PER_FRAME) {
-			for (size_t i = 0; i < inputEventQueue.size(); i++)
-				HandleInputEvent(&inputEventQueue[i].event);
-
-			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = UPDATE_PERIOD_10NS;
-			ApplicationEvent::Dispatch(&applicationEvent);
-
-			accumulatedUpdateTicks -= UPDATE_PERIOD_10NS;
-			updatesThisFrame++;
+		for (auto &tie : inputEventQueue) {
+			HandleInputEvent(&tie.event);
 		}
-
 		inputEventQueue.clear();
 
-		// --- Render at 60Hz ---
-		bool didRender = false;
-		if (accumulatedRenderTicks >= RENDER_PERIOD_10NS) {
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
-
-			accumulatedRenderTicks -= RENDER_PERIOD_10NS;
-			prevRenderTime10ns = currentTime10ns;
-			didRender = true;
+		// --- Sleep until scheduled update boundary if we are ahead ---
+		now10ns = getTime10ns();
+		if (now10ns < nextUpdateTime10ns) {
+			int64_t sleepUntil10ns = nextUpdateTime10ns - BUSY_WAIT_MARGIN;
+			if (sleepUntil10ns > now10ns) {
+				coolSleepUntil10ns(sleepUntil10ns);
+			}
+			while (getTime10ns() < nextUpdateTime10ns) {}
+			now10ns = getTime10ns();
 		}
 
-		// --- Log frame timing to CSV ---
-		frameLogger.logFrame(currentTime10ns, frameDelta10ns, 
-							accumulatedUpdateTicks, accumulatedRenderTicks,
-							updatesThisFrame, didRender);
+		// --- Dispatch exactly one update ---
+		applicationEvent.type = UPDATE;
+		applicationEvent.deltaTime = UPDATE_PERIOD_10NS;
+		ApplicationEvent::Dispatch(&applicationEvent);
 
-		// --- Sleep until next scheduled update ---
-		int64_t nextUpdateTime = currentTime10ns + (UPDATE_PERIOD_10NS - accumulatedUpdateTicks);
+		// --- Schedule next update WITHOUT speeding up ---
+		if (now10ns >= nextUpdateTime10ns + UPDATE_PERIOD_10NS) {
+			// We are catastrophically behind, skip frames
+			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
+		} else {
+			nextUpdateTime10ns += UPDATE_PERIOD_10NS;
+		}
 
-		coolSleepUntil10ns(nextUpdateTime - 10000);
-		// Busy-wait for remaining time
-		while (getTime10ns() < nextUpdateTime) {}
+		// --- Render if scheduled ---
+		if (now10ns >= nextRenderTime10ns) {
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+			nextRenderTime10ns += RENDER_PERIOD_10NS;
+
+			// If rendering lagged too far, skip frames
+			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			}
+		}
 
 		return active;
 	}
