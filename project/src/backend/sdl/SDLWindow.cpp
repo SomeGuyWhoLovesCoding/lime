@@ -952,11 +952,7 @@ namespace lime {
 
 			displayModeSet = true;
 
-			if (SDL_GetWindowFlags (sdlWindow) & SDL_WINDOW_FULLSCREEN_DESKTOP) {
-
-				SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN);
-
-			}
+			SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
 
 		}
 
@@ -967,15 +963,7 @@ namespace lime {
 
 		if (fullscreen) {
 
-			if (displayModeSet) {
-
-				SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN);
-
-			} else {
-
-				SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
-
-			}
+			SDL_SetWindowFullscreen (sdlWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
 
 		} else {
 
