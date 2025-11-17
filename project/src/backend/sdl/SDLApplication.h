@@ -54,9 +54,6 @@ namespace lime {
 			void ProcessTouchEvent (SDL_Event* event);
 			void ProcessWindowEvent (SDL_Event* event);
 
-			static void UpdateFrame ();
-			static void UpdateFrame (void*);
-
 			static SDLApplication* currentApplication;
 
 			ApplicationEvent applicationEvent;

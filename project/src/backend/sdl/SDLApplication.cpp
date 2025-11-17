@@ -128,7 +128,7 @@ namespace lime {
 
 		#ifdef EMSCRIPTEN
 		emscripten_cancel_main_loop ();
-		emscripten_set_main_loop (UpdateFrame, 0, 0);
+		emscripten_set_main_loop (Update, 0, 0);
 		emscripten_set_main_loop_timing (EM_TIMING_RAF, 1);
 		#endif
 
@@ -814,7 +814,7 @@ namespace lime {
 	void SDLApplication::RegisterWindow (SDLWindow *window) {
 
 		#ifdef IPHONE
-		SDL_iPhoneSetAnimationCallback (window->sdlWindow, 1, UpdateFrame, NULL);
+		SDL_iPhoneSetAnimationCallback (SDLWindow::sdlWindow, 1, Update, NULL);
 		#endif
 
 	}
@@ -975,94 +975,88 @@ namespace lime {
 	}
 
 	inline bool SDLApplication::Update() {
-    static int64_t nextUpdateTime10ns = 0;
-    static int64_t nextRenderTime10ns = 0;
-    static int64_t renderFramesOnAverage = 0;
-    static int64_t updateCounter = 0;  // NEW: track updates
+		static int64_t nextUpdateTime10ns = 0;
+		static int64_t nextRenderTime10ns = 0;
+		static int64_t renderFramesOnAverage = 0;
+		static int64_t updateCounter = 0;  // NEW: track updates
 
-    int64_t now10ns = getTime10ns();
+		int64_t now10ns = getTime10ns();
 
-    if (nextUpdateTime10ns == 0) {
-        nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
-        nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-        inputEventQueue.reserve(24);
-    }
+		if (nextUpdateTime10ns == 0) {
+			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
+			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			inputEventQueue.reserve(24);
+		}
 
-    bool vsyncEnabled = SDLWindow::vsync;
+		bool vsyncEnabled = SDLWindow::vsync;
 
-    if (!vsyncEnabled) {
-        InputPool();
-    }
+		if (!vsyncEnabled) {
+			InputPool();
+		}
 
-    now10ns = getTime10ns();
-    
-    // --- Fixed scheduling with drift correction ---
-    if (now10ns < nextUpdateTime10ns && !vsyncEnabled) {
-        coolSleepUntil10ns(nextUpdateTime10ns);
-        now10ns = getTime10ns();
-    }
+		now10ns = getTime10ns();
+		
+		// --- Fixed scheduling with drift correction ---
+		if (now10ns < nextUpdateTime10ns && !vsyncEnabled) {
+			coolSleepUntil10ns(nextUpdateTime10ns);
+			now10ns = getTime10ns();
+		}
 
-    int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
+		int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
 
-    if (vsyncEnabled) {
-        SDL_DisplayMode currentMode;
-        if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
-            std::cerr << "Could not get display mode! SDL_Error: " << SDL_GetError() << std::endl;
-            active = false;
-            return active;
-        }
-        double refreshRate = currentMode.refresh_rate;
-        if (refreshRate == 0) refreshRate = 60;
-        updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
-    }
+		if (vsyncEnabled) {
+			SDL_DisplayMode currentMode;
+			if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
+				std::cerr << "Could not get display mode! SDL_Error: " << SDL_GetError() << std::endl;
+				active = false;
+				return active;
+			}
+			double refreshRate = currentMode.refresh_rate;
+			if (refreshRate == 0) refreshRate = 60;
+			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
+		}
 
-    applicationEvent.type = UPDATE;
-    applicationEvent.deltaTime = updateRefreshRate;
-    ApplicationEvent::Dispatch(&applicationEvent);
+		applicationEvent.type = UPDATE;
+		applicationEvent.deltaTime = updateRefreshRate;
+		ApplicationEvent::Dispatch(&applicationEvent);
 
-    updateCounter++;
+		updateCounter++;
 
-    // --- KEY FIX: Recalculate next update from INITIAL timestamp ---
-    int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
-    
-    // Prevent catastrophic lag (more than 4 frames behind)
-    if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
-        // Reset counter to current position
-        updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
-        idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
-    }
-    
-    nextUpdateTime10ns = idealNextUpdate;
+		// --- KEY FIX: Recalculate next update from INITIAL timestamp ---
+		int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+		
+		// Prevent catastrophic lag (more than 4 frames behind)
+		if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
+			// Reset counter to current position
+			updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
+			idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+		}
+		
+		nextUpdateTime10ns = idealNextUpdate;
 
-    renderFramesOnAverage++;
+		renderFramesOnAverage++;
 
-    // --- Render scheduling (similar fix) ---
-    if (now10ns >= nextRenderTime10ns || vsyncEnabled) {
-        renderEvent.type = RENDER;
-        RenderEvent::Dispatch(&renderEvent);
-        
-        // Advance render time predictably
-        nextRenderTime10ns += RENDER_PERIOD_10NS;
-        
-        // Skip frames if catastrophically behind
-        if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
-            nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-        }
-        
-        renderFramesOnAverage = 0;
-    }
+		// --- Render scheduling (similar fix) ---
+		if (now10ns >= nextRenderTime10ns || vsyncEnabled) {
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+			
+			// Advance render time predictably
+			nextRenderTime10ns += RENDER_PERIOD_10NS;
+			
+			// Skip frames if catastrophically behind
+			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			}
+			
+			renderFramesOnAverage = 0;
+		}
 
-    if (vsyncEnabled) {
-        InputPool();
-    }
+		if (vsyncEnabled) {
+			InputPool();
+		}
 
-    return active;
-	}
-
-void SDLApplication::UpdateFrame (void*) {
-
-		UpdateFrame ();
-
+		return active;
 	}
 
 	Application* CreateApplication () {
