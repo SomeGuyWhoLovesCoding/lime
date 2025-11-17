@@ -62,6 +62,7 @@ namespace lime {
 			SDL_Renderer* sdlRenderer;
 			SDL_Texture* sdlTexture;
 			static SDL_Window* sdlWindow;
+			static bool vsync;
 
 		private:
 

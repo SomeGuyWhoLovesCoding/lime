@@ -32,6 +32,7 @@ namespace lime {
 	static bool displayModeSet = false;
 
 	SDL_Window* SDLWindow::sdlWindow = nullptr;
+	bool SDLWindow::vsync = false;
 
 	SDLWindow::SDLWindow (Application* application, int width, int height, int flags, const char* title) {
 
@@ -213,14 +214,13 @@ namespace lime {
 
 				if (flags & WINDOW_FLAG_VSYNC) {
 
-					//if (!SDL_GL_SetSwapInterval (-1)) { // Fuck you
-						printf("Adaptive Sync (GSync) Unsupported - VSync\n");
-						SDL_GL_SetSwapInterval (1);
-					//}
+					SDL_GL_SetSwapInterval (1);
+					vsync = true;
 
 				} else {
 
 					SDL_GL_SetSwapInterval (0);
+					vsync = false;
 
 				}
 

@@ -56,8 +56,8 @@ namespace lime {
 	// 1 second = 100000000 ticks of 10ns
 	constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
 	// Default target frame rates
-	static int64_t UPDATE_PERIOD_10NS = (int64_t)llround((double)TICKS_PER_SECOND_10NS / 120.0); // default update period (e.g. 120Hz)
-	static int64_t RENDER_PERIOD_10NS = (int64_t)llround((double)TICKS_PER_SECOND_10NS / 60.0);  // default render period (60Hz)
+	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
+	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
 
     #if HX_WINDOWS
     static HANDLE timer;
@@ -891,15 +891,6 @@ namespace lime {
 		long long relative = - (long long) (sleepForTicks / 10); // already in 10ns ticks; negative => relative
 		due.QuadPart = relative;
 
-		// Ensure timer created
-		if (!timer) {
-			timer = CreateWaitableTimerEx(nullptr, nullptr,
-				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, SYNCHRONIZE);
-			if (!timer) {
-				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
-			}
-		}
-
 		BOOL ok = SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
 		if (!ok) {
 			// fallback coarse sleep in milliseconds (best-effort)
@@ -997,10 +988,7 @@ namespace lime {
 			inputEventQueue.reserve(24);
 		}
 
-		SDL_RendererInfo info;
-		SDL_Renderer* renderer = SDL_GetRenderer(SDLWindow::sdlWindow);
-    	SDL_GetRendererInfo(renderer, &info);
-		bool vsyncEnabled = info.flags & SDL_RENDERER_PRESENTVSYNC;
+		bool vsyncEnabled = SDLWindow::vsync;
 
 		// --- Poll input (non-vsync) ---
 		if (!vsyncEnabled) {
@@ -1018,8 +1006,31 @@ namespace lime {
 		}
 
 		// --- Dispatch exactly one update ---
+		int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
+
+		// Since we're on vsync, use monitor's refresh rate (if available)
+		if (vsyncEnabled) {
+			printf("Fuck yes\n", vsyncEnabled);
+		} else {
+			printf("Fuck you\n", vsyncEnabled);
+		}
+
+		if (vsyncEnabled) {
+			SDL_DisplayMode currentMode;
+			// Get the current display mode for the default display (display index 0)
+			if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
+				std::cerr << "Could not get display mode! SDL_Error: " << SDL_GetError() << std::endl;
+				active = false;
+				return active;
+			}
+
+			double refreshRate = currentMode.refresh_rate;
+			if (refreshRate == 0) refreshRate = 60;
+			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
+		}
+
 		applicationEvent.type = UPDATE;
-		applicationEvent.deltaTime = UPDATE_PERIOD_10NS;
+		applicationEvent.deltaTime = updateRefreshRate;
 		ApplicationEvent::Dispatch(&applicationEvent);
 
 		// --- Schedule next update WITHOUT speeding up ---
