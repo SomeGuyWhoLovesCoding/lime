@@ -34,6 +34,7 @@ namespace lime {
 			int Quit ();
 			void SetFrameRate (double frameRate);
 			void SetRenderFrameRate (double renderFrameRate);
+			void InputPool ();
 			inline bool Update ();
 
 			void RegisterWindow (SDLWindow *window);

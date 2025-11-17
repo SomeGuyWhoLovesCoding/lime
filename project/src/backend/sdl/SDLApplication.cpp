@@ -952,21 +952,7 @@ namespace lime {
 	};
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
-	inline bool SDLApplication::Update() {
-		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
-		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
-		static int64_t renderFramesOnAverage = 0;
-
-		int64_t now10ns = getTime10ns();
-
-		// First-frame initialization
-		if (nextUpdateTime10ns == 0) {
-			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
-			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			inputEventQueue.reserve(24);
-		}
-
-		// --- Poll input ---
+	void SDLApplication::InputPool() {
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
@@ -985,7 +971,7 @@ namespace lime {
 					break;
 			}
 			if (isInputEvent) {
-				inputEventQueue.push_back({event, now10ns});
+				inputEventQueue.push_back({event, getTime10ns()});
 			} else {
 				HandleEvent(&event);
 			}
@@ -995,10 +981,31 @@ namespace lime {
 			HandleInputEvent(&tie.event);
 		}
 		inputEventQueue.clear();
+	}
+
+	inline bool SDLApplication::Update() {
+		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
+		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
+		static int64_t renderFramesOnAverage = 0;
+
+		int64_t now10ns = getTime10ns();
+
+		// First-frame initialization
+		if (nextUpdateTime10ns == 0) {
+			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
+			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			inputEventQueue.reserve(24);
+		}
 
 		SDL_RendererInfo info;
-    	SDL_GetRendererInfo(SDL_GetRenderer(SDLWindow::sdlWindow), &info);
+		SDL_Renderer* renderer = SDL_GetRenderer(SDLWindow::sdlWindow);
+    	SDL_GetRendererInfo(renderer, &info);
 		bool vsyncEnabled = info.flags & SDL_RENDERER_PRESENTVSYNC;
+
+		// --- Poll input (non-vsync) ---
+		if (!vsyncEnabled) {
+			InputPool();
+		}
 
 		// --- Sleep until scheduled update boundary if we are ahead ---
 		now10ns = getTime10ns();
@@ -1038,6 +1045,12 @@ namespace lime {
 			}
 			//printf("Total frames before render: %lld\n", renderFramesOnAverage);
 			renderFramesOnAverage = 0;
+		}
+
+		// --- Poll input (vsync) ---
+		// like be for real that's how you get faster input??? wow thats weird
+		if (vsyncEnabled) {
+			InputPool();
 		}
 
 		return active;
