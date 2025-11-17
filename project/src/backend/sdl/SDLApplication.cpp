@@ -1010,12 +1010,6 @@ namespace lime {
 
 		// Since we're on vsync, use monitor's refresh rate (if available)
 		if (vsyncEnabled) {
-			printf("Fuck yes\n", vsyncEnabled);
-		} else {
-			printf("Fuck you\n", vsyncEnabled);
-		}
-
-		if (vsyncEnabled) {
 			SDL_DisplayMode currentMode;
 			// Get the current display mode for the default display (display index 0)
 			if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
