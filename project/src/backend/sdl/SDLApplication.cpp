@@ -53,9 +53,16 @@ namespace lime {
 	// ---------- Timing configuration in 10ns ticks ----------
 	// 1 second = 100000000 ticks of 10ns
 	constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
+
 	// Default target frame rates
 	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
 	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
+
+	// For cross-platform best sleep implementations (SDL3's SDL_DelayPrecise uses the same thing
+	// except it does spinlock but this uses a high-precision waitable timer which has basically 10us of granularity)
+	// And for cohesion sake it's 10 microseconds since linux has an accurate sleep implementation already
+	// and it's nuts that windows can even handle 10us of sleep at minimum without throttling the cpu so yeah that's that
+	static int64_t TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 100000LL; // 10us
 
     #if HX_WINDOWS
     static HANDLE timer;
@@ -926,6 +933,7 @@ namespace lime {
 			if (!timer) {
 				std::cout << "Failed to create high-res timer, using regular timer\n";
 				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+				TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 1000LL; // 1ms at minimum since this is bound to system timer resolution
 			} else {
 				std::cout << "Successfully created high-res timer!\n";
 			}
@@ -983,7 +991,7 @@ namespace lime {
 		
 		// --- Fixed scheduling with drift correction ---
 		if (now10ns < nextUpdateTime10ns && !vsyncEnabled) {
-			coolSleepUntil10ns(nextUpdateTime10ns);
+			coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
 			now10ns = getTime10ns();
 		}
 
@@ -1001,23 +1009,25 @@ namespace lime {
 			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
 		}
 
-		applicationEvent.type = UPDATE;
-		applicationEvent.deltaTime = updateRefreshRate;
-		ApplicationEvent::Dispatch(&applicationEvent);
+		if (now10ns >= nextUpdateTime10ns || vsyncEnabled) {
+			applicationEvent.type = UPDATE;
+			applicationEvent.deltaTime = updateRefreshRate;
+			ApplicationEvent::Dispatch(&applicationEvent);
 
-		updateCounter++;
+			updateCounter++;
 
-		// --- KEY FIX: Recalculate next update from INITIAL timestamp ---
-		int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
-		
-		// Prevent catastrophic lag (more than 4 frames behind)
-		if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
-			// Reset counter to current position
-			updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
-			idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+			// --- KEY FIX: Recalculate next update from INITIAL timestamp ---
+			int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+			
+			// Prevent catastrophic lag (more than 4 frames behind)
+			if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
+				// Reset counter to current position
+				updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
+				idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+			}
+			
+			nextUpdateTime10ns = idealNextUpdate;
 		}
-		
-		nextUpdateTime10ns = idealNextUpdate;
 
 		renderFramesOnAverage++;
 
