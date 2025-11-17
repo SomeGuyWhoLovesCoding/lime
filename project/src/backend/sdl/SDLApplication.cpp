@@ -936,13 +936,6 @@ namespace lime {
 		#endif
 	}
 
-	// Timestamped input events now carry 10ns timestamps
-	struct TimestampedInputEvent {
-		SDL_Event event;
-		int64_t timestamp10ns;
-	};
-	static std::vector<TimestampedInputEvent> inputEventQueue;
-
 	void SDLApplication::InputPool() {
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
@@ -962,16 +955,11 @@ namespace lime {
 					break;
 			}
 			if (isInputEvent) {
-				inputEventQueue.push_back({event, getTime10ns()});
+				HandleInputEvent(&event);
 			} else {
 				HandleEvent(&event);
 			}
 		}
-
-		for (auto &tie : inputEventQueue) {
-			HandleInputEvent(&tie.event);
-		}
-		inputEventQueue.clear();
 	}
 
 	inline bool SDLApplication::Update() {
@@ -985,7 +973,6 @@ namespace lime {
 		if (nextUpdateTime10ns == 0) {
 			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
 			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			inputEventQueue.reserve(24);
 		}
 
 		bool vsyncEnabled = SDLWindow::vsync;
