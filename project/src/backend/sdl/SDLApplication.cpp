@@ -975,99 +975,91 @@ namespace lime {
 	}
 
 	inline bool SDLApplication::Update() {
-		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
-		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
-		static int64_t renderFramesOnAverage = 0;
+    static int64_t nextUpdateTime10ns = 0;
+    static int64_t nextRenderTime10ns = 0;
+    static int64_t renderFramesOnAverage = 0;
+    static int64_t updateCounter = 0;  // NEW: track updates
 
-		int64_t now10ns = getTime10ns();
+    int64_t now10ns = getTime10ns();
 
-		// First-frame initialization
-		if (nextUpdateTime10ns == 0) {
-			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
-			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			inputEventQueue.reserve(24);
-		}
+    if (nextUpdateTime10ns == 0) {
+        nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
+        nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+        inputEventQueue.reserve(24);
+    }
 
-		bool vsyncEnabled = SDLWindow::vsync;
+    bool vsyncEnabled = SDLWindow::vsync;
 
-		// --- Poll input (non-vsync) ---
-		if (!vsyncEnabled) {
-			InputPool();
-		}
+    if (!vsyncEnabled) {
+        InputPool();
+    }
 
-		// --- Sleep until scheduled update boundary if we are ahead ---
-		now10ns = getTime10ns();
-		if (now10ns < nextUpdateTime10ns && !vsyncEnabled) {
-			int64_t sleepUntil10ns = nextUpdateTime10ns;
-			if (sleepUntil10ns > now10ns) {
-				coolSleepUntil10ns(sleepUntil10ns);
-			}
-			now10ns = getTime10ns();
-		}
+    now10ns = getTime10ns();
+    
+    // --- Fixed scheduling with drift correction ---
+    if (now10ns < nextUpdateTime10ns && !vsyncEnabled) {
+        coolSleepUntil10ns(nextUpdateTime10ns);
+        now10ns = getTime10ns();
+    }
 
-		// --- Dispatch exactly one update ---
-		int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
+    int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
 
-		// Since we're on vsync, use monitor's refresh rate (if available)
-		if (vsyncEnabled) {
-			SDL_DisplayMode currentMode;
-			// Get the current display mode for the default display (display index 0)
-			if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
-				std::cerr << "Could not get display mode! SDL_Error: " << SDL_GetError() << std::endl;
-				active = false;
-				return active;
-			}
+    if (vsyncEnabled) {
+        SDL_DisplayMode currentMode;
+        if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
+            std::cerr << "Could not get display mode! SDL_Error: " << SDL_GetError() << std::endl;
+            active = false;
+            return active;
+        }
+        double refreshRate = currentMode.refresh_rate;
+        if (refreshRate == 0) refreshRate = 60;
+        updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
+    }
 
-			double refreshRate = currentMode.refresh_rate;
-			if (refreshRate == 0) refreshRate = 60;
-			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
-		}
+    applicationEvent.type = UPDATE;
+    applicationEvent.deltaTime = updateRefreshRate;
+    ApplicationEvent::Dispatch(&applicationEvent);
 
-		applicationEvent.type = UPDATE;
-		applicationEvent.deltaTime = updateRefreshRate;
-		ApplicationEvent::Dispatch(&applicationEvent);
+    updateCounter++;
 
-		// --- Schedule next update WITHOUT speeding up ---
-		if (now10ns >= nextUpdateTime10ns + UPDATE_PERIOD_10NS) {
-			// We are catastrophically behind, skip frames
-			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
-		} else {
-			nextUpdateTime10ns += UPDATE_PERIOD_10NS;
-		}
+    // --- KEY FIX: Recalculate next update from INITIAL timestamp ---
+    int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+    
+    // Prevent catastrophic lag (more than 4 frames behind)
+    if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
+        // Reset counter to current position
+        updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
+        idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+    }
+    
+    nextUpdateTime10ns = idealNextUpdate;
 
-		renderFramesOnAverage++;
+    renderFramesOnAverage++;
 
-		// --- Render if scheduled ---
+    // --- Render scheduling (similar fix) ---
+    if (now10ns >= nextRenderTime10ns || vsyncEnabled) {
+        renderEvent.type = RENDER;
+        RenderEvent::Dispatch(&renderEvent);
+        
+        // Advance render time predictably
+        nextRenderTime10ns += RENDER_PERIOD_10NS;
+        
+        // Skip frames if catastrophically behind
+        if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
+            nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+        }
+        
+        renderFramesOnAverage = 0;
+    }
 
-		if (now10ns >= nextRenderTime10ns || vsyncEnabled) {
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
-			nextRenderTime10ns += RENDER_PERIOD_10NS;
+    if (vsyncEnabled) {
+        InputPool();
+    }
 
-			// If rendering lagged too far, skip frames
-			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
-				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			}
-			//printf("Total frames before render: %lld\n", renderFramesOnAverage);
-			renderFramesOnAverage = 0;
-		}
-
-		// --- Poll input (vsync) ---
-		// like be for real that's how you get faster input??? wow thats weird
-		if (vsyncEnabled) {
-			InputPool();
-		}
-
-		return active;
+    return active;
 	}
 
-
-	void SDLApplication::UpdateFrame () {
-		currentApplication->Update ();
-	}
-
-
-	void SDLApplication::UpdateFrame (void*) {
+void SDLApplication::UpdateFrame (void*) {
 
 		UpdateFrame ();
 
