@@ -9,6 +9,7 @@
 #include "SDLApplication.h"
 #include "SDLGamepad.h"
 #include "SDLJoystick.h"
+#include "SDLWindow.h"
 #include <system/System.h>
 #include <iostream>
 #include <iomanip>
@@ -951,7 +952,7 @@ namespace lime {
 	};
 	static std::vector<TimestampedInputEvent> inputEventQueue;
 
-	bool SDLApplication::Update() {
+	inline bool SDLApplication::Update() {
 		static int64_t nextUpdateTime10ns = 0;   // scheduled update boundary
 		static int64_t nextRenderTime10ns = 0;   // scheduled render boundary
 		static int64_t renderFramesOnAverage = 0;
@@ -995,9 +996,13 @@ namespace lime {
 		}
 		inputEventQueue.clear();
 
+		SDL_RendererInfo info;
+    	SDL_GetRendererInfo(SDL_GetRenderer(SDLWindow::sdlWindow), &info);
+		bool vsyncEnabled = info.flags & SDL_RENDERER_PRESENTVSYNC;
+
 		// --- Sleep until scheduled update boundary if we are ahead ---
 		now10ns = getTime10ns();
-		if (now10ns < nextUpdateTime10ns) {
+		if (now10ns < nextUpdateTime10ns && !vsyncEnabled) {
 			int64_t sleepUntil10ns = nextUpdateTime10ns;
 			if (sleepUntil10ns > now10ns) {
 				coolSleepUntil10ns(sleepUntil10ns);
@@ -1021,7 +1026,8 @@ namespace lime {
 		renderFramesOnAverage++;
 
 		// --- Render if scheduled ---
-		if (now10ns >= nextRenderTime10ns) {
+
+		if (now10ns >= nextRenderTime10ns || vsyncEnabled) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 			nextRenderTime10ns += RENDER_PERIOD_10NS;

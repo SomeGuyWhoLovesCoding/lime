@@ -61,7 +61,7 @@ namespace lime {
 			virtual void WarpMouse (int x, int y);
 			SDL_Renderer* sdlRenderer;
 			SDL_Texture* sdlTexture;
-			SDL_Window* sdlWindow;
+			static SDL_Window* sdlWindow;
 
 		private:
 

@@ -29,12 +29,12 @@ namespace lime {
 			SDLApplication ();
 			~SDLApplication ();
 
-			virtual int Exec ();
-			virtual void Init ();
-			virtual int Quit ();
-			virtual void SetFrameRate (double frameRate);
-			virtual void SetRenderFrameRate (double renderFrameRate);
-			virtual bool Update ();
+			int Exec ();
+			void Init ();
+			int Quit ();
+			void SetFrameRate (double frameRate);
+			void SetRenderFrameRate (double renderFrameRate);
+			inline bool Update ();
 
 			void RegisterWindow (SDLWindow *window);
 
