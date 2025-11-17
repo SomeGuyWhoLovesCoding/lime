@@ -56,7 +56,6 @@ namespace lime {
 	// Default target frame rates
 	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
 	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
-	static int64_t VSYNC_TOGGLE_INTERVAL_10NS = TICKS_PER_SECOND_10NS / 2LL; // for sync
 
     #if HX_WINDOWS
     static HANDLE timer;
@@ -966,14 +965,12 @@ namespace lime {
 		static int64_t nextRenderTime10ns = 0;
 		static int64_t renderFramesOnAverage = 0;
 		static int64_t updateCounter = 0;  // NEW: track updates
-		static int64_t lastVsyncToggleTime10ns = 0;
 
 		int64_t now10ns = getTime10ns();
 
 		if (nextUpdateTime10ns == 0) {
 			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
 			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			lastVsyncToggleTime10ns = now10ns;
 		}
 
 		bool vsyncEnabled = SDLWindow::vsync;
@@ -1026,12 +1023,6 @@ namespace lime {
 
 		// --- Render scheduling (similar fix) ---
 		if (now10ns >= nextRenderTime10ns || vsyncEnabled) {
-			// Toggle VSync every 1/4 second
-			bool hi = now10ns - lastVsyncToggleTime10ns >= VSYNC_TOGGLE_INTERVAL_10NS && !vsyncEnabled;
-			if (hi) {
-				SDL_GL_SetSwapInterval(1);
-			}
-
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 			
@@ -1041,12 +1032,6 @@ namespace lime {
 			// Skip frames if catastrophically behind
 			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
 				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			}
-
-			if (hi) {
-				lastVsyncToggleTime10ns = now10ns;
-				printf("The shit\n");
-				SDL_GL_SetSwapInterval(0);
 			}
 			
 			renderFramesOnAverage = 0;
