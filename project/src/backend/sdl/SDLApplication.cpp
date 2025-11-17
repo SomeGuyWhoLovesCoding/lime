@@ -988,7 +988,7 @@ namespace lime {
 		}
 
 		now10ns = getTime10ns();
-		
+
 		// --- Fixed scheduling with drift correction ---
 		if (now10ns < nextUpdateTime10ns && !vsyncEnabled) {
 			coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
@@ -1018,14 +1018,14 @@ namespace lime {
 
 			// --- KEY FIX: Recalculate next update from INITIAL timestamp ---
 			int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
-			
+
 			// Prevent catastrophic lag (more than 4 frames behind)
 			if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
 				// Reset counter to current position
 				updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
 				idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
 			}
-			
+
 			nextUpdateTime10ns = idealNextUpdate;
 		}
 
@@ -1035,15 +1035,15 @@ namespace lime {
 		if (now10ns >= nextRenderTime10ns || vsyncEnabled) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-			
+
 			// Advance render time predictably
 			nextRenderTime10ns += RENDER_PERIOD_10NS;
-			
+
 			// Skip frames if catastrophically behind
 			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
 				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 			}
-			
+
 			renderFramesOnAverage = 0;
 		}
 
