@@ -863,7 +863,7 @@ class NativeCFFI
 		return 0;
 	}
 
-	@:hlNative("lime", "hl_subloop_event_manager_register") private static function hl_subloop_event_manager_register(callback:Float->Void,
+	@:hlNative("lime", "hl_subloop_event_manager_register") private static function lime_subloop_event_manager_register(callback:Void->Void,
 		eventObject:SubLoopTickEventInfo):Void {}
 
 	@:hlNative("lime", "hl_clipboard_event_manager_register") private static function lime_clipboard_event_manager_register(callback:Void->Void,
