@@ -79,88 +79,68 @@ class CFFIMacro
 							}
 							else
 							{
-								// OPTIMIZATION: Use direct Prime calls for C++ targets when not lazy
-								if (Context.defined("cpp") && !lazy)
-								{
-									var primeVarName = "_prime_" + field.name;
-									
-									// Add static prime variable
-									newFields.push({
-										name: primeVarName,
-										access: [APrivate, AStatic],
-										kind: FVar((macro:cpp.Prime), macro cpp.Prime._loadPrime($v{library}, $v{method}, $v{typeSignature}, false)),
-										pos: field.pos
-									});
+								var cffiName = "cffi_" + field.name;
+								var cffiExpr, cffiType;
 
-									// Build direct call expression
-									var isVoid = type.result.toString() == "Void" || type.result.toString() == "cpp.Void";
-									var callMethod = _getPrimeCallMethod(type.result);
-									
-									if (!isVoid) {
-										expr += "return untyped __global__.__prime_result(";
-									}
-									
-									expr += primeVarName + "." + callMethod + "(";
-									
-									for (i in 0...type.args.length)
-									{
-										if (i > 0) expr += ", ";
-										expr += type.args[i].name;
-									}
-									
-									expr += ")";
-									
-									if (!isVoid) {
-										expr += ")";
-									}
+								if (Context.defined("cpp"))
+								{
+									cffiExpr = 'new cpp.Callable<$typeString> (cpp.Prime._loadPrime ("$library", "$method", "$typeSignature", $lazy))';
+
+									// Sys.println ("private static var " + field.name + ':$typeString = CFFI.loadPrime ("$library", "$method", "$typeSignature");');
+									// Sys.println ("private static var " + field.name + ' = new cpp.Callable<$typeString> (cpp.Prime._loadPrime ("$library", "$method", "$typeSignature", $lazy));');
 								}
 								else
 								{
-									// Fall back to original Callable approach for non-CPP or lazy calls
-									var cffiName = "cffi_" + field.name;
-									var cffiExpr, cffiType;
+									var args = typeSignature.length - 1;
 
-									if (Context.defined("cpp"))
+									if (args > 5)
 									{
-										cffiExpr = 'new cpp.Callable<$typeString> (cpp.Prime._loadPrime ("$library", "$method", "$typeSignature", $lazy))';
-									}
-									else
-									{
-										var args = typeSignature.length - 1;
-
-										if (args > 5)
-										{
-											args = -1;
-										}
-
-										cffiExpr = 'new cpp.Callable<$typeString> (lime.system.CFFI.load ("$library", "$method", $args, $lazy))';
+										args = -1;
 									}
 
-									cffiType = TPath({pack: ["cpp"], name: "Callable", params: [TPType(TFun(type.args, type.result).toComplexType())]});
+									cffiExpr = 'new cpp.Callable<$typeString> (lime.system.CFFI.load ("$library", "$method", $args, $lazy))';
 
-									newFields.push(
-										{
-											name: cffiName,
-											access: [APrivate, AStatic],
-											kind: FieldType.FVar(cffiType, Context.parse(cffiExpr, field.pos)),
-											pos: field.pos
-										});
-
-									if (type.result.toString() != "Void" && type.result.toString() != "cpp.Void")
-									{
-										expr += "return ";
-									}
-
-									expr += '$cffiName.call (';
-
-									for (i in 0...type.args.length)
-									{
-										if (i > 0) expr += ", ";
-										expr += type.args[i].name;
-									}
-
-									expr += ")";
+									// Sys.println ("private static var " + field.name + ':$typeString = CFFI.load ("$library", "$method", $args);');
 								}
+
+								cffiType = TPath({pack: ["cpp"], name: "Callable", params: [TPType(TFun(type.args, type.result).toComplexType())]});
+
+								newFields.push(
+									{
+										name: cffiName,
+										access: [APrivate, AStatic],
+										kind: FieldType.FVar(cffiType, Context.parse(cffiExpr, field.pos)),
+										pos: field.pos
+									});
+
+								if (type.result.toString() != "Void" && type.result.toString() != "cpp.Void")
+								{
+									expr += "return ";
+								}
+
+								expr += '$cffiName.call (';
+
+								for (i in 0...type.args.length)
+								{
+									if (i > 0) expr += ", ";
+									expr += type.args[i].name;
+								}
+
+								expr += ")";
+
+								// if (Context.defined ("cpp")) {
+
+								// 	Sys.println ('private static var $cffiName = new cpp.Callable<$typeString> (cpp.Prime._loadPrime ("$library", "$method", "$typeSignature", $lazy));');
+
+								// 	var _args = "";
+								// 	for (i in 0...typeArgs.length) {
+								// 		if (i > 0) _args += ", ";
+								// 		_args += typeArgs[i].name + ":" + typeArgs[i].t.toString ();
+								// 	}
+
+								// 	Sys.println ('private static function ${field.name} ($_args) { $expr; }');
+
+								// }
 							}
 
 							field.access.push(AInline);
@@ -174,18 +154,6 @@ class CFFIMacro
 
 		fields = fields.concat(newFields);
 		return fields;
-	}
-
-	private static function _getPrimeCallMethod(returnType:Type):String
-	{
-		return switch (returnType.toString()) {
-			case "Int", "cpp.Int16", "cpp.Int32": "call_i";
-			case "Bool": "call_b";
-			case "Float", "cpp.Float64", "cpp.Float32": "call_f";
-			case "String", "cpp.ConstCharStar": "call_s";
-			case "Void", "cpp.Void": "call_v";
-			default: "call_o";
-		}
 	}
 
 	private static function __getFunctionType(args:Array<{name:String, opt:Bool, t:Type}>, result:Type)
