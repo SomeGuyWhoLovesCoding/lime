@@ -180,14 +180,16 @@ class NativeApplication
 			case UPDATE:
 				updateTimer();
 
-				parent.onUpdate.dispatch(applicationEventInfo.deltaTime);
+				if (@:privateAccess parent.onUpdate.__listeners.length != 0)
+					parent.onUpdate.dispatch(applicationEventInfo.deltaTime);
 
 			default:
 		}
 	}
 
 	private function handleSubLoopEvent():Void {
-		parent.onSubLoopTick.dispatch(subLoopTickEventInfo.timestamp);
+		if (@:privateAccess parent.onSubLoopTick.__listeners.length != 0)
+			parent.onSubLoopTick.dispatch(subLoopTickEventInfo.timestamp);
 	}
 
 	private function handleClipboardEvent():Void
@@ -199,7 +201,8 @@ class NativeApplication
 	{
 		for (window in parent.windows)
 		{
-			window.onDropFile.dispatch(#if hl @:privateAccess String.fromUTF8(dropEventInfo.file) #else dropEventInfo.file #end);
+			if (@:privateAccess window.onDropFile.__listeners.length != 0)
+				window.onDropFile.dispatch(#if hl @:privateAccess String.fromUTF8(dropEventInfo.file) #else dropEventInfo.file #end);
 		}
 	}
 
@@ -285,7 +288,7 @@ class NativeApplication
 			{
 				if (type == KEY_DOWN)
 				{
-					if (toggleFullscreen && modifier.altKey && (!modifier.ctrlKey && !modifier.shiftKey && !modifier.metaKey))
+					if (toggleFullscreen && (!modifier.ctrlKey && !modifier.shiftKey && !modifier.metaKey))
 					{
 						toggleFullscreen = false;
 
