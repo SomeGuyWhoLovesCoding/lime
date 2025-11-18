@@ -87,6 +87,7 @@ namespace lime {
 		currentApplication = this;
 
 		ApplicationEvent applicationEvent;
+		SubLoopTickEvent subLoopTickEvent;
 		ClipboardEvent clipboardEvent;
 		DropEvent dropEvent;
 		GamepadEvent gamepadEvent;
@@ -922,7 +923,7 @@ namespace lime {
 	void SDLApplication::Init () {
 		active = true;
 		int64_t now = getTime10ns();
-		startTimestamp10ns = lastUpdate = now;
+		startTimestamp10ns = now;
 
 		// Windows: MMCSS and high-res timer
 		#ifdef HX_WINDOWS
@@ -985,6 +986,8 @@ namespace lime {
 
 		if (!vsyncEnabled) {
 			InputPool();
+			subLoopTickEvent.timestamp = getTime10ns();
+			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 		}
 
 		now10ns = getTime10ns();
@@ -1049,6 +1052,8 @@ namespace lime {
 
 		if (vsyncEnabled) {
 			InputPool();
+			subLoopTickEvent.timestamp = getTime10ns();
+			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 		}
 
 		return active;

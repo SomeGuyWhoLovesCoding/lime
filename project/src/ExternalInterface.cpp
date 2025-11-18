@@ -22,6 +22,7 @@
 #include <system/CFFIPointer.h>
 #include <system/Clipboard.h>
 #include <system/ClipboardEvent.h>
+#include <ui/SubLoopTickEvent.h>
 #include <system/Endian.h>
 #include <system/FileWatcher.h>
 #include <system/JNI.h>
@@ -582,6 +583,22 @@ namespace lime {
 		value abstract = alloc_abstract (k_finalizer, callback);
 		val_gc (abstract, lime_cffi_finalizer);
 		return abstract;
+
+	}
+
+
+	void lime_subloop_event_manager_register (value callback, value eventObject) {
+
+		SubLoopTickEvent::callback = new ValuePointer (callback);
+		SubLoopTickEvent::eventObject = new ValuePointer (eventObject);
+
+	}
+
+
+	HL_PRIM void HL_NAME(hl_subloop_event_manager_register) (vclosure* callback, SubLoopTickEvent* eventObject) {
+
+		SubLoopTickEvent::callback = new ValuePointer (callback);
+		SubLoopTickEvent::eventObject = new ValuePointer ((vobj*)eventObject);
 
 	}
 
@@ -3997,6 +4014,7 @@ namespace lime {
 	DEFINE_PRIME2 (lime_bytes_read_file);
 	DEFINE_PRIME1 (lime_cffi_get_native_pointer);
 	DEFINE_PRIME1 (lime_cffi_set_finalizer);
+	DEFINE_PRIME2v (lime_subloop_event_manager_register);
 	DEFINE_PRIME2v (lime_clipboard_event_manager_register);
 	DEFINE_PRIME0 (lime_clipboard_get_text);
 	DEFINE_PRIME1v (lime_clipboard_set_text);
@@ -4147,6 +4165,7 @@ namespace lime {
 	#define _TAPPLICATION_EVENT _OBJ (_I32 _I32)
 	#define _TBYTES _OBJ (_I32 _BYTES)
 	#define _TCFFIPOINTER _DYN
+	#define _TSUBLOOP_EVENT _OBJ (_I64)
 	#define _TCLIPBOARD_EVENT _OBJ (_I32)
 	#define _TDISPLAYMODE _OBJ (_I32 _I32 _F64 _I32)
 	#define _TDROP_EVENT _OBJ (_BYTES _I32)
@@ -4189,6 +4208,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_TBYTES, hl_bytes_read_file, _STRING _TBYTES);
 	DEFINE_HL_PRIM (_F64, hl_cffi_get_native_pointer, _TCFFIPOINTER);
 	// DEFINE_PRIME1 (lime_cffi_set_finalizer);
+	DEFINE_HL_PRIM (_VOID, hl_subloop_event_manager_register, _FUN(_VOID, _NO_ARG) _TSUBLOOP_EVENT);
 	DEFINE_HL_PRIM (_VOID, hl_clipboard_event_manager_register, _FUN(_VOID, _NO_ARG) _TCLIPBOARD_EVENT);
 	DEFINE_HL_PRIM (_BYTES, hl_clipboard_get_text, _NO_ARG);
 	DEFINE_HL_PRIM (_VOID, hl_clipboard_set_text, _STRING);

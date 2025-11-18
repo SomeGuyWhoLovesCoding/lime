@@ -15,6 +15,7 @@ import lime.ui.Touch;
 import lime.ui.Window;
 import lime.ui.WindowAttributes;
 import lime.utils.Preloader;
+import haxe.Int64;
 
 /**
 	The Application class forms the foundation for most Lime projects.
@@ -48,6 +49,11 @@ class Application extends Module
 		Update events are dispatched each frame (usually just before rendering)
 	**/
 	public var onUpdate = new Event<Int->Void>();
+
+	/**
+		Sub look tick events are dispatched each frame (usually occupies the entire 100khz loop, just the update and render running on top of it for platform cohesion)
+	**/
+	public var onSubLoopTick = new Event<Int64->Void>();
 
 	/**
 		Dispatched when a new window has been created by this application
@@ -457,6 +463,12 @@ class Application extends Module
 	**/
 	public function update(deltaTime:Int):Void {}
 
+	/**
+		Called when a sub loop event is fired on the primary window
+		@param	timestamp	The amount of time in milliseconds, measured in precise system time
+	**/
+	public function subLoopTick(timestamp:Int64):Void {}
+
 	@:noCompletion private function __addWindow(window:Window):Void
 	{
 		if (window != null)
@@ -513,6 +525,7 @@ class Application extends Module
 	@:noCompletion private override function __registerLimeModule(application:Application):Void
 	{
 		application.onUpdate.add(update);
+		application.onSubLoopTick.add(subLoopTick);
 		application.onExit.add(onModuleExit, false, 0);
 		application.onExit.add(__onModuleExit, false, -1000);
 
@@ -616,6 +629,7 @@ class Application extends Module
 	@:noCompletion private override function __unregisterLimeModule(application:Application):Void
 	{
 		application.onUpdate.remove(update);
+		application.onSubLoopTick.remove(subLoopTick);
 		application.onExit.remove(__onModuleExit);
 		application.onExit.remove(onModuleExit);
 

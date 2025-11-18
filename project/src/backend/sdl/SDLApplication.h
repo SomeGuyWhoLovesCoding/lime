@@ -6,6 +6,7 @@
 #include <app/Application.h>
 #include <app/ApplicationEvent.h>
 #include <graphics/RenderEvent.h>
+#include <ui/SubLoopTickEvent.h>
 #include <system/ClipboardEvent.h>
 #include <system/SensorEvent.h>
 #include <ui/DropEvent.h>
@@ -57,6 +58,7 @@ namespace lime {
 			static SDLApplication* currentApplication;
 
 			ApplicationEvent applicationEvent;
+			SubLoopTickEvent subLoopTickEvent;
 			ClipboardEvent clipboardEvent;
 			DropEvent dropEvent;
 			GamepadEvent gamepadEvent;
@@ -69,7 +71,6 @@ namespace lime {
 			TouchEvent touchEvent;
 			WindowEvent windowEvent;
 
-			double lastUpdate;
 			bool active;
 
 	};

@@ -22,6 +22,7 @@ import lime.ui.KeyCode;
 import lime.ui.KeyModifier;
 import lime.ui.Touch;
 import lime.ui.Window;
+import haxe.Int64;
 
 #if !lime_debug
 @:fileXml('tags="haxe,release"')
@@ -43,6 +44,7 @@ import lime.ui.Window;
 class NativeApplication
 {
 	private var applicationEventInfo = new ApplicationEventInfo(UPDATE);
+	private var subLoopTickEventInfo = new SubLoopTickEventInfo(10000); // 10 microseconds, usually
 	private var clipboardEventInfo = new ClipboardEventInfo();
 	private var currentTouches = new Map<Int, Touch>();
 	private var dropEventInfo = new DropEventInfo();
@@ -108,6 +110,7 @@ class NativeApplication
 		#if lime_cffi
 		//Sys.println('What the hell');
 		NativeCFFI.lime_application_event_manager_register(handleApplicationEvent, applicationEventInfo);
+		NativeCFFI.lime_subloop_event_manager_register(handleSubLoopEvent, subLoopTickEventInfo);
 		NativeCFFI.lime_clipboard_event_manager_register(handleClipboardEvent, clipboardEventInfo);
 		NativeCFFI.lime_drop_event_manager_register(handleDropEvent, dropEventInfo);
 		NativeCFFI.lime_gamepad_event_manager_register(handleGamepadEvent, gamepadEventInfo);
@@ -181,6 +184,10 @@ class NativeApplication
 
 			default:
 		}
+	}
+
+	private function handleSubLoopEvent():Void {
+		parent.onSubLoopTick.dispatch(subLoopTickEventInfo.timestamp);
 	}
 
 	private function handleClipboardEvent():Void
@@ -657,6 +664,21 @@ class NativeApplication
 {
 	var UPDATE = 0;
 	var EXIT = 1;
+}
+
+@:keep /*private*/ class SubLoopTickEventInfo
+{
+	public var timestamp:Int64;
+
+	public function new(timestamp:Int64)
+	{
+		this.timestamp = timestamp;
+	}
+
+	public function clone():SubLoopTickEventInfo
+	{
+		return new SubLoopTickEventInfo(timestamp);
+	}
 }
 
 @:keep /*private*/ class ClipboardEventInfo
