@@ -132,8 +132,8 @@ private:
         if (kr != KERN_SUCCESS) {
             throw std::runtime_error("Failed to set thread policy on macOS");
         }
-        std::cout << "Attempted to optimize for cores " << core1 << " and " 
-                  << core2 << " on macOS (limited support)" << std::endl;
+        std::cout << "Attempted to optimize for cores " << (core1+1) << " and " 
+                  << (core2+1) << " on macOS (limited support)" << std::endl;
     }
 
 #elif __ANDROID__
@@ -152,7 +152,7 @@ private:
                       << "This may require special permissions or root access." << std::endl;
             return;
         }
-        std::cout << "Pinned to cores " << core1 << " and " << core2 
+        std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1) 
                   << " on Android" << std::endl;
     }
 
@@ -166,7 +166,7 @@ private:
         if (sched_setaffinity(0, sizeof(set), &set) == -1) {
             throw std::runtime_error("Failed to set thread affinity on Linux");
         }
-        std::cout << "Pinned to cores " << core1 << " and " << core2 
+        std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1) 
                   << " on Linux" << std::endl;
     }
 #endif
