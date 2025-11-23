@@ -1062,27 +1062,21 @@ namespace lime {
 
 	void SDLApplication::Init () {
 		active = true;
-		int64_t now = getTime10ns();
-		startTimestamp10ns = now;
 
-		// Windows: MMCSS and high-res timer
 		#ifdef HX_WINDOWS
-		// Create high-resolution timer if not already created
 		if (!timer) {
 			timer = CreateWaitableTimerEx(nullptr, nullptr,
 				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
 			if (!timer) {
 				std::cout << "Failed to create high-res timer, using regular timer\n";
 				timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
-				TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 1000LL; // 1ms at minimum since this is bound to system timer resolution
+				TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 1000LL;
 			} else {
 				std::cout << "Successfully created high-res timer!\n";
 			}
 		}
 
-		// Boost process priority to reduce preemption during frames
 		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-
 		#endif
 	}
 
@@ -1112,11 +1106,12 @@ namespace lime {
 		}
 	}
 
+
 	bool SDLApplication::Update() {
 		static int64_t nextUpdateTime10ns = 0;
 		static int64_t nextRenderTime10ns = 0;
-		static int64_t renderFramesOnAverage = 0;
-		static int64_t updateCounter = 0;  // NEW: track updates
+		static int64_t updateCounter = 0;
+		static bool firstFrame = true;
 
 		bool vsyncEnabled = SDLWindow::vsync;
 
@@ -1125,16 +1120,22 @@ namespace lime {
 		}
 
 		int64_t now10ns = getTime10ns();
-		now10ns -= updateOffset;
 
-		if (nextUpdateTime10ns == 0) {
+		// Initialize timing on FIRST frame only
+		if (firstFrame) {
+			startTimestamp10ns = now10ns;
 			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
 			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			firstFrame = false;
 		}
+
+		// Apply updateOffset to compress frame time (don't subtract, it slides the window backward)
+		// Instead, use it to accelerate the schedule slightly
+		int64_t adjustedNow = now10ns - updateOffset;
 
 		// --- Fixed scheduling with drift correction ---
 		if (!vsyncEnabled) coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
-		now10ns = getTime10ns() - updateOffset;
+		now10ns = getTime10ns();
 
 		int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
 
@@ -1150,42 +1151,37 @@ namespace lime {
 			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
 		}
 
-		if (now10ns >= nextUpdateTime10ns || vsyncEnabled) {
+		// Use adjustedNow for scheduling (accounts for frame overage)
+		if (adjustedNow >= nextUpdateTime10ns || vsyncEnabled) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = updateRefreshRate;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			updateCounter++;
 
-			// --- KEY FIX: Recalculate next update from INITIAL timestamp ---
+			// Calculate next update from startup reference
 			int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
 
-			// Prevent catastrophic lag (more than 4 frames behind)
-			if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
-				// Reset counter to current position
-				updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
+			// Skip frames only if severely behind (>4 frames)
+			if (adjustedNow > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
+				updateCounter = (adjustedNow - startTimestamp10ns) / UPDATE_PERIOD_10NS;
 				idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
 			}
 
-			nextUpdateTime10ns = idealNextUpdate;
+			nextUpdateTime10ns = idealNextUpdate + UPDATE_PERIOD_10NS;
 		}
 
-		renderFramesOnAverage++;
-
-		// --- Render scheduling (similar fix) ---
-		if (now10ns >= nextRenderTime10ns || vsyncEnabled) {
+		// --- Render scheduling ---
+		if (adjustedNow >= nextRenderTime10ns || vsyncEnabled) {
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
-			// Advance render time predictably
 			nextRenderTime10ns += RENDER_PERIOD_10NS;
 
 			// Skip frames if catastrophically behind
-			if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
-				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			if (adjustedNow > nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
+				nextRenderTime10ns = adjustedNow + RENDER_PERIOD_10NS;
 			}
-
-			renderFramesOnAverage = 0;
 		}
 
 		if (vsyncEnabled) {
