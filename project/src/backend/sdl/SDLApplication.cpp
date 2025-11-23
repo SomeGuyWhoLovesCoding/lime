@@ -258,7 +258,31 @@ namespace lime {
 
 	}
 
+	// ----------------- 10ns timestamp helpers -----------------
+	// Returns monotonic timestamp in 10-ns ticks
+	int64_t getTime10ns() {
+	#ifdef HX_WINDOWS
+		static LARGE_INTEGER freq = {};
+		static LARGE_INTEGER start = {};
 
+		LARGE_INTEGER now;
+
+		QueryPerformanceFrequency(&freq);
+		QueryPerformanceCounter(&now);
+
+		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
+		return (int64_t)(delta / freq.QuadPart);
+
+	#else
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+
+		return ts.tv_sec * TICKS_PER_SECOND_10NS + (ts.tv_nsec / 10LL);
+	#endif
+	}
+
+
+	static int64_t updateOffset = 0;
 	int SDLApplication::Exec () {
 
 		Init ();
@@ -290,7 +314,10 @@ namespace lime {
 
 		while (active) {
 
+			int64_t __time = getTime10ns();
 			Update ();
+			int64_t _time = getTime10ns() - __time;
+			updateOffset = _time;
 
 		}
 
@@ -1005,29 +1032,6 @@ namespace lime {
 
 	}
 
-	// ----------------- 10ns timestamp helpers -----------------
-	// Returns monotonic timestamp in 10-ns ticks
-	int64_t getTime10ns() {
-	#ifdef HX_WINDOWS
-		static LARGE_INTEGER freq = {};
-		static LARGE_INTEGER start = {};
-
-		LARGE_INTEGER now;
-
-		QueryPerformanceFrequency(&freq);
-		QueryPerformanceCounter(&now);
-
-		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
-		return (int64_t)(delta / freq.QuadPart);
-
-	#else
-		struct timespec ts;
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-
-		return ts.tv_sec * TICKS_PER_SECOND_10NS + (ts.tv_nsec / 10LL);
-	#endif
-	}
-
 	// Sleep until wakeTime10ns (10ns ticks) using the platform's monotonic sleep; does not mix clock domains.
 	void coolSleepUntil10ns(int64_t wakeTime10ns) {
 		int64_t currentTime = getTime10ns();
@@ -1087,7 +1091,7 @@ namespace lime {
 		#endif
 	}
 
-	void SDLApplication::InputPool() {
+	void SDLApplication::PollInputs() {
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			bool isInputEvent = false;
@@ -1113,34 +1117,31 @@ namespace lime {
 		}
 	}
 
-	inline bool SDLApplication::Update() {
+	bool SDLApplication::Update() {
 		static int64_t nextUpdateTime10ns = 0;
 		static int64_t nextRenderTime10ns = 0;
 		static int64_t renderFramesOnAverage = 0;
 		static int64_t updateCounter = 0;  // NEW: track updates
 
+		bool vsyncEnabled = SDLWindow::vsync;
+
+		if (!vsyncEnabled) {
+			PollInputs();
+			subLoopTickEvent.timestamp = getTime10ns();
+			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+		}
+
 		int64_t now10ns = getTime10ns();
+		now10ns -= updateOffset;
 
 		if (nextUpdateTime10ns == 0) {
 			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
 			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 		}
 
-		bool vsyncEnabled = SDLWindow::vsync;
-
-		if (!vsyncEnabled) {
-			InputPool();
-			subLoopTickEvent.timestamp = getTime10ns();
-			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-		}
-
-		now10ns = getTime10ns();
-
 		// --- Fixed scheduling with drift correction ---
-		if (now10ns < nextUpdateTime10ns && !vsyncEnabled) {
-			coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
-			now10ns = getTime10ns();
-		}
+		if (!vsyncEnabled) coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
+		now10ns = getTime10ns() - updateOffset;
 
 		int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
 
@@ -1195,7 +1196,7 @@ namespace lime {
 		}
 
 		if (vsyncEnabled) {
-			InputPool();
+			PollInputs();
 			subLoopTickEvent.timestamp = getTime10ns();
 			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 		}
