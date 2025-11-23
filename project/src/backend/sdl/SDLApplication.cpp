@@ -302,15 +302,7 @@ namespace lime {
 
 		#ifdef EMSCRIPTEN
 		emscripten_cancel_main_loop ();
-		emscripten_set_main_loop (Update, 0, 0);
-		emscripten_set_main_loop_timing (EM_TIMING_RAF, 1);
 		#endif
-
-		#if defined(IPHONE) || defined(EMSCRIPTEN)
-
-		return 0;
-
-		#else
 
 		while (active) {
 
@@ -322,8 +314,6 @@ namespace lime {
 		}
 
 		return 0;
-
-		#endif
 
 	}
 
@@ -1088,6 +1078,9 @@ namespace lime {
 			}
 		}
 
+		// Boost process priority to reduce preemption during frames
+		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+
 		#endif
 	}
 
@@ -1127,8 +1120,6 @@ namespace lime {
 
 		if (!vsyncEnabled) {
 			PollInputs();
-			subLoopTickEvent.timestamp = getTime10ns();
-			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 		}
 
 		int64_t now10ns = getTime10ns();
@@ -1197,9 +1188,10 @@ namespace lime {
 
 		if (vsyncEnabled) {
 			PollInputs();
-			subLoopTickEvent.timestamp = getTime10ns();
-			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 		}
+
+		subLoopTickEvent.timestamp = getTime10ns();
+		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
 		return active;
 	}
