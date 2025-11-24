@@ -214,12 +214,10 @@ namespace lime {
 
 				if (flags & WINDOW_FLAG_VSYNC) {
 
-					SDL_GL_SetSwapInterval (1);
 					vsync = true;
 
 				} else {
 
-					SDL_GL_SetSwapInterval (0);
 					vsync = false;
 
 				}
