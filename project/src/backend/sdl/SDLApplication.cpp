@@ -1147,7 +1147,7 @@ namespace lime {
 		static int64_t lastRenderTime = getTime10ns();
 		static int64_t renderCounter = 0;
 		static bool firstFrame = true;
-		static int lastVBlankCounter = 0; // ← ADD THIS for Linux
+		static unsigned int lastVBlankCounter = 0; // ← ADD THIS for Linux
 
 		bool vsyncEnabled = SDLWindow::vsync;
 
@@ -1209,24 +1209,52 @@ namespace lime {
 			}
 		}
 		#elif defined(HX_LINUX)
-		// Linux VSync detection with proper GLX headers
-		Display* display = XOpenDisplay(NULL);
-		if (display) {
-			// Check if the GLX_SGI_video_sync extension is available
-			const char* extensions = glXQueryExtensionsString(display, DefaultScreen(display));
-			if (extensions && strstr(extensions, "GLX_SGI_video_sync")) {
-				unsigned int vblankCount = 0;
-				// Use glXGetVideoSyncSGI if available
-				if (glXGetVideoSyncSGI(&vblankCount) == 0) {
-					if (vblankCount != lastVBlankCounter) {
-						shouldRender = true;
-						render_timestamp = getTime10ns() - lastRenderTime;
-						lastRenderTime = getTime10ns();
-						lastVBlankCounter = vblankCount;
+		static bool glxExtensionsChecked = false;
+		static bool glxVideoSyncSupported = false;
+		static int (*glXGetVideoSyncSGI_ptr)(unsigned int*) = nullptr;
+		static int (*glXWaitVideoSyncSGI_ptr)(int, int, unsigned int*) = nullptr;
+
+		// Check and load GLX extensions on first use
+		if (!glxExtensionsChecked) {
+			Display* display = XOpenDisplay(NULL);
+			if (display) {
+				const char* extensions = glXQueryExtensionsString(display, DefaultScreen(display));
+				if (extensions && strstr(extensions, "GLX_SGI_video_sync")) {
+					// Dynamically load the extension functions
+					void* libGL = dlopen("libGL.so.1", RTLD_LAZY);
+					if (libGL) {
+						glXGetVideoSyncSGI_ptr = (int (*)(unsigned int*))dlsym(libGL, "glXGetVideoSyncSGI");
+						glXWaitVideoSyncSGI_ptr = (int (*)(int, int, unsigned int*))dlsym(libGL, "glXWaitVideoSyncSGI");
+						
+						if (glXGetVideoSyncSGI_ptr && glXWaitVideoSyncSGI_ptr) {
+							glxVideoSyncSupported = true;
+							std::cout << "GLX_SGI_video_sync extension supported" << std::endl;
+						} else {
+							std::cout << "GLX_SGI_video_sync symbols not found" << std::endl;
+						}
+						// Don't close the library - we need the symbols
+					} else {
+						std::cout << "Could not load libGL.so.1" << std::endl;
 					}
+				} else {
+					std::cout << "GLX_SGI_video_sync extension not available" << std::endl;
+				}
+				XCloseDisplay(display);
+			}
+			glxExtensionsChecked = true;
+		}
+
+		if (glxVideoSyncSupported && glXGetVideoSyncSGI_ptr) {
+			unsigned int vblankCount = 0;
+			if (glXGetVideoSyncSGI_ptr(&vblankCount) == 0) {
+				if (vblankCount != lastVBlankCounter) {
+					shouldRender = true;
+					render_timestamp = getTime10ns() - lastRenderTime;
+					lastRenderTime = getTime10ns();
+					lastVBlankCounter = vblankCount;
 				}
 			} else {
-				// Fallback: use timer-based rendering if extension not available
+				// Fallback if glXGetVideoSyncSGI fails
 				shouldRender = (now10ns >= nextRenderTime10ns);
 				if (shouldRender) {
 					render_timestamp = now10ns - lastRenderTime;
@@ -1234,15 +1262,22 @@ namespace lime {
 					nextRenderTime10ns += RENDER_PERIOD_10NS;
 				}
 			}
-			XCloseDisplay(display);
 		} else {
-			// Fallback if X11 display couldn't be opened
+			// Fallback timer-based approach
 			shouldRender = (now10ns >= nextRenderTime10ns);
 			if (shouldRender) {
 				render_timestamp = now10ns - lastRenderTime;
 				lastRenderTime = now10ns;
 				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
+		}
+		#else
+		// Non-Linux fallback
+		shouldRender = (now10ns >= nextRenderTime10ns);
+		if (shouldRender) {
+			render_timestamp = now10ns - lastRenderTime;
+			lastRenderTime = now10ns;
+			nextRenderTime10ns += RENDER_PERIOD_10NS;
 		}
 		#elif defined(HX_ANDROID)
 		// Android VSync detection
