@@ -66,7 +66,6 @@ using namespace std;
 	#ifndef RTLD_LAZY
 	#define RTLD_LAZY 1
 	#endif
-	#endif
 
 	#endif
 	#if HX_ANDROID
