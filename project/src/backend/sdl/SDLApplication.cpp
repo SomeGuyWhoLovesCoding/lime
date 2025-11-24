@@ -1207,21 +1207,35 @@ namespace lime {
 			}
 		}
 		#elif defined(HX_LINUX)
-		// Original X11 GLX VSync detection
+		// Linux VSync detection with proper GLX headers
+		#ifdef __linux__
 		Display* display = XOpenDisplay(NULL);
 		if (display) {
-			unsigned int vblankCount = 0;
-			if (glXGetVideoSyncSGI(&vblankCount) == 0) {
-				if (vblankCount != lastVBlankCounter) {
-					shouldRender = true;
-					render_timestamp = getTime10ns() - lastRenderTime;
-					lastRenderTime = getTime10ns();
-					lastVBlankCounter = vblankCount;
+			// Check if the GLX_SGI_video_sync extension is available
+			const char* extensions = glXQueryExtensionsString(display, DefaultScreen(display));
+			if (extensions && strstr(extensions, "GLX_SGI_video_sync")) {
+				unsigned int vblankCount = 0;
+				// Use glXGetVideoSyncSGI if available
+				if (glXGetVideoSyncSGI(&vblankCount) == 0) {
+					if (vblankCount != lastVBlankCounter) {
+						shouldRender = true;
+						render_timestamp = getTime10ns() - lastRenderTime;
+						lastRenderTime = getTime10ns();
+						lastVBlankCounter = vblankCount;
+					}
+				}
+			} else {
+				// Fallback: use timer-based rendering if extension not available
+				shouldRender = (now10ns >= nextRenderTime10ns);
+				if (shouldRender) {
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns += RENDER_PERIOD_10NS;
 				}
 			}
 			XCloseDisplay(display);
 		} else {
-			// Fallback timer-based approach
+			// Fallback if X11 display couldn't be opened
 			shouldRender = (now10ns >= nextRenderTime10ns);
 			if (shouldRender) {
 				render_timestamp = now10ns - lastRenderTime;
