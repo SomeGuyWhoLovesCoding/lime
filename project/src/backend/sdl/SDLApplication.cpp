@@ -195,6 +195,7 @@ namespace lime {
 	// except it does spinlock but this uses a high-precision waitable timer which has basically 10us of granularity)
 	// And for cohesion sake it's 10 microseconds since linux has an accurate sleep implementation already
 	// and it's nuts that windows can even handle 10us of sleep at minimum without throttling the cpu so yeah that's that
+	// turned it if you do this every 10 microconds it would start throttling performance on linux and android so yeah I reduced the precision to 100 microseconds to be safe
 	static int64_t TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 10000LL; // 100us
 
     #if HX_WINDOWS
@@ -1106,7 +1107,6 @@ namespace lime {
 		}
 	}
 
-
 	bool SDLApplication::Update() {
 		static int64_t nextUpdateTime10ns = 0;
 		static int64_t nextRenderTime10ns = 0;
@@ -1131,7 +1131,7 @@ namespace lime {
 
 		// Apply updateOffset to compress frame time (don't subtract, it slides the window backward)
 		// Instead, use it to accelerate the schedule slightly
-		int64_t adjustedNow = now10ns - updateOffset;
+		int64_t adjustedNow = now10ns;
 
 		// --- Fixed scheduling with drift correction ---
 		if (!vsyncEnabled) coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
@@ -1160,7 +1160,7 @@ namespace lime {
 			updateCounter++;
 
 			// Calculate next update from startup reference
-			int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+			int64_t idealNextUpdate = startTimestamp10ns + ((updateCounter * UPDATE_PERIOD_10NS) - updateOffset);
 
 			// Skip frames only if severely behind (>4 frames)
 			if (adjustedNow > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
