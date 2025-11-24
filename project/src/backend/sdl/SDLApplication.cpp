@@ -205,25 +205,27 @@ namespace lime {
 	// turned it if you do this every 10 microconds it would start throttling performance on linux and android so yeah I reduced the precision to 100 microseconds to be safe
 	static int64_t TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 10000LL; // 100us
 
-	static int64_t render_timestamp = 0;
-
     #if HX_WINDOWS
     static HANDLE timer;
     #endif
 
-    #if HX_ANDROID
-    // Global choreographer state
-    static AChoreographer* choreographer = nullptr;
-    static bool shouldRenderFromCallback = false;
+    // Add these near the top of your file with other static variables
+static int64_t lastRenderTime = 0;
+static int64_t render_timestamp = 0;
 
-    static void choreographer_callback(long frameTimeNanos, void* data) {
-        shouldRenderFromCallback = true;
-        // Convert nanoseconds to 10ns ticks
-        int64_t frameTime10ns = frameTimeNanos / 10;
-        render_timestamp = frameTime10ns - lastRenderTime;
-        lastRenderTime = frameTime10ns;
-    }
-    #endif
+#if HX_ANDROID
+// Global choreographer state
+static AChoreographer* choreographer = nullptr;
+static bool shouldRenderFromCallback = false;
+
+static void choreographer_callback(long frameTimeNanos, void* data) {
+    shouldRenderFromCallback = true;
+    // Convert nanoseconds to 10ns ticks
+    int64_t frameTime10ns = frameTimeNanos / 10;
+    render_timestamp = frameTime10ns - lastRenderTime;
+    lastRenderTime = frameTime10ns;
+}
+#endif
 
 	static Uint32 initFlags;
 
@@ -1138,68 +1140,69 @@ namespace lime {
 	}
 
 	bool SDLApplication::Update() {
-		static int64_t nextUpdateTime10ns = 0;
-        static int64_t nextRenderTime10ns = 0;
-		static int64_t lastRenderTime = getTime10ns(); // for vrr. not used on windows because there's already functionality for said vblank qpc delta.
-		static int64_t updateCounter = 0;
-		static bool firstFrame = true;
+    static int64_t nextUpdateTime10ns = 0;
+    static int64_t nextRenderTime10ns = 0;
+    static int64_t lastRenderTime = getTime10ns();
+    static int64_t updateCounter = 0;
+    static bool firstFrame = true;
+    static int lastVBlankCounter = 0; // ← ADD THIS for Linux
 
-		bool vsyncEnabled = SDLWindow::vsync;
+    bool vsyncEnabled = SDLWindow::vsync;
 
-		if (!vsyncEnabled) {
-			PollInputs();
-		}
+    if (!vsyncEnabled) {
+        PollInputs();
+    }
 
-		int64_t now10ns = getTime10ns();
+    int64_t now10ns = getTime10ns();
 
-		// Initialize timing on FIRST frame only
-		if (firstFrame) {
-			startTimestamp10ns = now10ns;
-			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
-			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			firstFrame = false;
-		}
+    // Initialize timing on FIRST frame only
+    if (firstFrame) {
+        startTimestamp10ns = now10ns;
+        nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
+        nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+        firstFrame = false;
+    }
 
-		// --- Fixed scheduling with drift correction ---
-		if (!vsyncEnabled) coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
-		now10ns = getTime10ns();
+    // --- Fixed scheduling with drift correction ---
+    if (!vsyncEnabled) coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
+    now10ns = getTime10ns();
 
-		int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
+    int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
 
-		if (vsyncEnabled) {
-			SDL_DisplayMode currentMode;
-			if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
-				std::cerr << "Could not get display mode! SDL_Error: " << SDL_GetError() << std::endl;
-				active = false;
-				return active;
-			}
-			double refreshRate = currentMode.refresh_rate;
-			if (refreshRate == 0) refreshRate = 60;
-			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
-		}
+    if (vsyncEnabled) {
+        SDL_DisplayMode currentMode;
+        if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
+            std::cerr << "Could not get display mode! SDL_Error: " << SDL_GetError() << std::endl;
+            active = false;
+            return active;
+        }
+        double refreshRate = currentMode.refresh_rate;
+        if (refreshRate == 0) refreshRate = 60;
+        updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
+    }
 
-		// --- Render scheduling ---
-		bool shouldRender = false;
+    // --- Render scheduling ---
+    bool shouldRender = false;
 
-		#ifdef HX_WINDOWS
-		static int64_t qpcVBlank = 0;
-		if (!vsyncEnabled) {
-			// Use DWM composition timing for precise VSync synchronization
-			DWM_TIMING_INFO timingInfo = {};
-			timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
-			
-			HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
+    #ifdef HX_WINDOWS
+    static int64_t qpcVBlank = 0;
+    if (!vsyncEnabled) {
+        // Use DWM composition timing for precise VSync synchronization
+        DWM_TIMING_INFO timingInfo = {};
+        timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+        
+        HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
 
-			if (SUCCEEDED(hr)) {
-				if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank) {
-					shouldRender = true;
-					render_timestamp = timingInfo.qpcVBlank - qpcVBlank;
-					qpcVBlank = timingInfo.qpcVBlank;
-				}
-			}
-		}
-		#elif defined(HX_LINUX)
-// Linux GLX VSync detection (generated by deepseek.)
+        if (SUCCEEDED(hr)) {
+            if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank) {
+                shouldRender = true;
+                render_timestamp = timingInfo.qpcVBlank - qpcVBlank;
+                qpcVBlank = timingInfo.qpcVBlank;
+            }
+        }
+    }
+    #elif defined(HX_LINUX)
+    // Linux GLX VSync detection
     if (!vsyncEnabled) {
         Display* display = XOpenDisplay(NULL);
         if (display) {
@@ -1207,81 +1210,92 @@ namespace lime {
             if (glXGetVideoSyncSGI(&vblankCount) == 0) {
                 if (vblankCount != lastVBlankCounter) {
                     shouldRender = true;
-					render_timestamp = getTime10ns() - lastRenderTime;
-					lastRenderTime = getTime10ns();
+                    render_timestamp = getTime10ns() - lastRenderTime;
+                    lastRenderTime = getTime10ns();
+                    lastVBlankCounter = vblankCount; // ← ADD THIS
                 }
             }
             XCloseDisplay(display);
-		}
-	} else {
-    // Fallback timer-based approach
-    shouldRender = (now10ns >= nextRenderTime10ns);
-    if (shouldRender) {
-        render_timestamp = now10ns - lastRenderTime;
-        lastRenderTime = now10ns;
-        nextRenderTime10ns += RENDER_PERIOD_10NS;
-	}
-		#elif defined(HX_ANDROID)
-		if (!vsyncEnabled && choreographer) {
-    if (shouldRenderFromCallback) {
-        shouldRender = true;
-        shouldRenderFromCallback = false;
-        // Re-register for next frame
-        AChoreographer_postFrameCallback(choreographer, 
-                                        choreographer_callback, 
-                                        nullptr);
+        } else {
+            // Fallback timer-based approach
+            shouldRender = (now10ns >= nextRenderTime10ns);
+            if (shouldRender) {
+                render_timestamp = now10ns - lastRenderTime;
+                lastRenderTime = now10ns;
+                nextRenderTime10ns += RENDER_PERIOD_10NS;
+            }
+        }
     }
-} else {
-    // Fallback timer-based approach
-    shouldRender = (now10ns >= nextRenderTime10ns);
+    #elif defined(HX_ANDROID)
+    // Android VSync detection
+    if (!vsyncEnabled && choreographer) {
+        if (shouldRenderFromCallback) {
+            shouldRender = true;
+            shouldRenderFromCallback = false;
+            // Re-register for next frame
+            AChoreographer_postFrameCallback(choreographer, 
+                                            choreographer_callback, 
+                                            nullptr);
+        } else {
+            // Fallback timer-based approach
+            shouldRender = (now10ns >= nextRenderTime10ns);
+            if (shouldRender) {
+                render_timestamp = now10ns - lastRenderTime;
+                lastRenderTime = now10ns;
+                nextRenderTime10ns += RENDER_PERIOD_10NS;
+            }
+        }
+    } else {
+        // Fallback timer-based approach
+        shouldRender = (now10ns >= nextRenderTime10ns);
+        if (shouldRender) {
+            render_timestamp = now10ns - lastRenderTime;
+            lastRenderTime = now10ns;
+            nextRenderTime10ns += RENDER_PERIOD_10NS;
+        }
+    }
+    #else
+    // Other platforms use the original logic
+    shouldRender = (now10ns >= nextRenderTime10ns) || vsyncEnabled;
     if (shouldRender) {
-        render_timestamp = now10ns - lastRenderTime;
-        lastRenderTime = now10ns;
+        render_timestamp = RENDER_PERIOD_10NS;
         nextRenderTime10ns += RENDER_PERIOD_10NS;
     }
-		}
-		#else
-		// Non-Windows platforms use the original logic
-		shouldRender = (now10ns >= nextRenderTime10ns) || vsyncEnabled;
-		if (shouldRender) {
-			render_timestamp = RENDER_PERIOD_10NS;
-			nextRenderTime10ns += RENDER_PERIOD_10NS;
-		}
-		#endif
+    #endif
 
-		if (shouldRender) {
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
-		}
+    if (shouldRender) {
+        renderEvent.type = RENDER;
+        RenderEvent::Dispatch(&renderEvent);
+    }
 
-		if (vsyncEnabled) {
-			PollInputs();
-		}
+    if (vsyncEnabled) {
+        PollInputs();
+    }
 
-		if (now10ns >= nextUpdateTime10ns || vsyncEnabled) {
-			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = render_timestamp;
-			ApplicationEvent::Dispatch(&applicationEvent);
+    if (now10ns >= nextUpdateTime10ns || vsyncEnabled) {
+        applicationEvent.type = UPDATE;
+        applicationEvent.deltaTime = render_timestamp;
+        ApplicationEvent::Dispatch(&applicationEvent);
 
-			updateCounter++;
+        updateCounter++;
 
-			// Calculate next update from startup reference
-			int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+        // Calculate next update from startup reference
+        int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
 
-			// Skip frames only if severely behind (>4 frames)
-			if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
-				updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
-				idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
-			}
+        // Skip frames only if severely behind (>4 frames)
+        if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
+            updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
+            idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
+        }
 
-			nextUpdateTime10ns = idealNextUpdate + UPDATE_PERIOD_10NS;
-		}
+        nextUpdateTime10ns = idealNextUpdate + UPDATE_PERIOD_10NS;
+    }
 
-		subLoopTickEvent.timestamp = getTime10ns();
-		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+    subLoopTickEvent.timestamp = getTime10ns();
+    SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
-		return active;
-	}
+    return active;
+}
 
 	Application* CreateApplication () {
 
