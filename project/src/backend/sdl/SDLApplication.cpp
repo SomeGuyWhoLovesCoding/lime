@@ -69,27 +69,6 @@ using namespace std;
 	#endif
 #endif
 
-#ifdef __linux__
-#include <wayland-client.h>
-#include <wayland-presentation-timing-client-protocol.h>
-
-// Wayland VSync state structure
-struct WaylandVSyncData {
-	struct wl_display* display = nullptr;
-	struct wl_compositor* compositor = nullptr;
-	struct wp_presentation* presentation = nullptr;
-	struct wl_surface* surface = nullptr;
-	struct wl_callback* frame_callback = nullptr;
-
-	int64_t last_presentation_time = 0;
-	int64_t presentation_interval = 0;
-	uint32_t last_sequence = 0;
-	bool presentation_available = false;
-	bool frame_pending = false;
-	bool initialized = false;
-};
-#endif
-
 class CPUAffinity {
 public:
 	static int getNumCores() {
@@ -882,214 +861,6 @@ namespace lime {
 	}
 	#endif
 
-	#ifdef __linux__
-	static WaylandVSyncData wayland_data;
-
-	// Wayland presentation feedback handler
-	static void handle_presentation_feedback(void* data,
-		struct wp_presentation_feedback* feedback,
-		uint32_t tv_sec_hi, uint32_t tv_sec_lo,
-		uint32_t tv_nsec, uint32_t refresh_nsec,
-		uint32_t seq_hi, uint32_t seq_lo,
-		uint32_t flags) {
-
-		uint64_t tv_sec = ((uint64_t)tv_sec_hi << 32) | tv_sec_lo;
-		uint64_t sequence = ((uint64_t)seq_hi << 32) | seq_lo;
-
-		int64_t presentation_time = tv_sec * TICKS_PER_SECOND_10NS + (tv_nsec / 10);
-		wayland_data.last_presentation_time = presentation_time;
-		wayland_data.presentation_interval = refresh_nsec / 10; // Convert to 10ns ticks
-
-		if (wayland_data.last_sequence != 0) {
-			wayland_data.presentation_available = true;
-		}
-		wayland_data.last_sequence = sequence;
-
-		wp_presentation_feedback_destroy(feedback);
-	}
-
-	static const struct wp_presentation_feedback_listener presentation_listener = {
-		.presented = handle_presentation_feedback,
-		.discarded = [](void*, wp_presentation_feedback*) {}
-	};
-
-	// Wayland frame callback handler
-	static void handle_frame_callback(void* data, struct wl_callback* callback, uint32_t time) {
-		wayland_data.frame_pending = false;
-		wl_callback_destroy(callback);
-
-		// Request presentation feedback if available
-		if (wayland_data.presentation && wayland_data.surface) {
-			struct wp_presentation_feedback* feedback =
-				wp_presentation_feedback(wayland_data.presentation, wayland_data.surface);
-			wp_presentation_feedback_add_listener(feedback, &presentation_listener, nullptr);
-		}
-	}
-
-	static const struct wl_callback_listener frame_listener = {
-		.done = handle_frame_callback
-	};
-
-	// Initialize Wayland VSync
-	bool init_wayland_vsync() {
-		if (wayland_data.initialized) return true;
-
-		// Try to get Wayland display from SDL
-		SDL_SysWMinfo wmInfo;
-		SDL_VERSION(&wmInfo.version);
-
-		if (!SDL_GetWindowWMInfo(SDL_GL_GetCurrentWindow(), &wmInfo)) {
-			std::cout << "Failed to get window manager info: " << SDL_GetError() << std::endl;
-			return false;
-		}
-
-	#if defined(SDL_VIDEO_DRIVER_WAYLAND)
-		if (wmInfo.subsystem != SDL_SYSWM_WAYLAND) {
-			std::cout << "Not running on Wayland" << std::endl;
-			return false;
-		}
-
-		wayland_data.display = wmInfo.info.wl.display;
-		if (!wayland_data.display) {
-			std::cout << "Failed to get Wayland display" << std::endl;
-			return false;
-		}
-
-		// Create a surface for timing (we'll use the existing window surface)
-		wayland_data.surface = wmInfo.info.wl.surface;
-		if (!wayland_data.surface) {
-			std::cout << "Failed to get Wayland surface" << std::endl;
-			return false;
-		}
-
-		// Get compositor
-		struct wl_registry* registry = wl_display_get_registry(wayland_data.display);
-		if (!registry) {
-			std::cout << "Failed to get Wayland registry" << std::endl;
-			return false;
-		}
-
-		// Registry global handler
-		static struct wl_registry_listener registry_listener = {
-			.global = [](void* data, struct wl_registry* registry,
-						uint32_t name, const char* interface, uint32_t version) {
-				if (std::strcmp(interface, "wl_compositor") == 0) {
-					wayland_data.compositor = static_cast<wl_compositor*>(
-						wl_registry_bind(registry, name, &wl_compositor_interface, 3));
-				} else if (std::strcmp(interface, "wp_presentation") == 0) {
-					wayland_data.presentation = static_cast<wp_presentation*>(
-						wl_registry_bind(registry, name, &wp_presentation_interface, 1));
-					std::cout << "Wayland presentation timing extension available" << std::endl;
-				}
-			},
-			.global_remove = [](void*, struct wl_registry*, uint32_t) {}
-		};
-
-		wl_registry_add_listener(registry, &registry_listener, nullptr);
-		wl_display_roundtrip(wayland_data.display);
-		wl_registry_destroy(registry);
-
-		if (!wayland_data.compositor) {
-			std::cout << "Failed to get Wayland compositor" << std::endl;
-			return false;
-		}
-
-		wayland_data.initialized = true;
-		std::cout << "Wayland VSync initialized successfully" << std::endl;
-		if (wayland_data.presentation) {
-			std::cout << "Presentation timing extension enabled" << std::endl;
-		}
-
-		return true;
-	#else
-		std::cout << "Wayland support not compiled in SDL" << std::endl;
-		return false;
-	#endif
-	}
-
-	// Request a frame callback for VSync
-	void request_wayland_frame_callback() {
-		if (!wayland_data.initialized || wayland_data.frame_pending) return;
-
-		wayland_data.frame_callback = wl_surface_frame(wayland_data.surface);
-		wl_callback_add_listener(wayland_data.frame_callback, &frame_listener, nullptr);
-		wayland_data.frame_pending = true;
-
-		// Commit to ensure the frame callback works
-		wl_surface_commit(wayland_data.surface);
-	}
-
-	// Get Wayland VSync timing
-	bool get_wayland_vsync_timing(int64_t& presentation_time, int64_t& refresh_interval) {
-		if (!wayland_data.initialized || !wayland_data.presentation_available) {
-			return false;
-		}
-
-		presentation_time = wayland_data.last_presentation_time;
-		refresh_interval = wayland_data.presentation_interval;
-		wayland_data.presentation_available = false;
-
-		return true;
-	}
-
-	// Enhanced Wayland detection function
-	bool isWayland() {
-		// Primary detection through environment variables
-		const char* xdg_session_type = std::getenv("XDG_SESSION_TYPE");
-		const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
-		const char* current_desktop = std::getenv("XDG_CURRENT_DESKTOP");
-
-		// Check if we're explicitly on Wayland
-		if (xdg_session_type && std::strcmp(xdg_session_type, "wayland") == 0) {
-			return true;
-		}
-
-		// Check for Wayland display
-		if (wayland_display && wayland_display[0] != '\0') {
-			return true;
-		}
-
-		// Check for Wayland-specific desktop environments
-		if (current_desktop) {
-			std::string desktop(current_desktop);
-			std::transform(desktop.begin(), desktop.end(), desktop.begin(), ::tolower);
-			if (desktop.find("wayland") != std::string::npos ||
-				desktop.find("sway") != std::string::npos ||
-				desktop.find("hyprland") != std::string::npos) {
-				return true;
-			}
-		}
-
-		// SDL-based detection
-		const char* sdl_video_driver = SDL_GetCurrentVideoDriver();
-		if (sdl_video_driver && std::strstr(sdl_video_driver, "wayland")) {
-			return true;
-		}
-
-		// Additional check through SDL windowing system
-		SDL_SysWMinfo wmInfo;
-		SDL_VERSION(&wmInfo.version);
-
-		if (SDL_GetWindowWMInfo(SDL_GL_GetCurrentWindow(), &wmInfo)) {
-	#if defined(SDL_VIDEO_DRIVER_WAYLAND)
-			if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
-				return true;
-			}
-	#endif
-		}
-
-		return false;
-	}
-
-	// Process Wayland events (call this regularly)
-	void process_wayland_events() {
-		if (!wayland_data.initialized || !wayland_data.display) return;
-
-		wl_display_dispatch_pending(wayland_data.display);
-		wl_display_flush(wayland_data.display);
-	}
-	#endif
-
 	static Uint32 initFlags;
 
 	SDLApplication::SDLApplication () {
@@ -1147,19 +918,6 @@ namespace lime {
 		if (timer) CloseHandle(timer);
 		#endif
 
-		#ifdef __linux
-		// Clean up Wayland resources
-		if (wayland_data.frame_callback) {
-			wl_callback_destroy(wayland_data.frame_callback);
-		}
-		if (wayland_data.presentation) {
-			wp_presentation_destroy(wayland_data.presentation);
-		}
-		if (wayland_data.compositor) {
-			wl_compositor_destroy(wayland_data.compositor);
-		}
-		#endif
-
 	}
 
 	// ----------------- 10ns timestamp helpers -----------------
@@ -1189,20 +947,6 @@ namespace lime {
 	int SDLApplication::Exec () {
 
 		Init ();
-
-		// Debug output for display server detection
-		#ifdef HX_LINUX
-		if (isWayland()) {
-			std::cout << "Running on Wayland compositor" << std::endl;
-		} else {
-			std::cout << "Running on X11" << std::endl;
-		}
-
-		const char* video_driver = SDL_GetCurrentVideoDriver();
-		if (video_driver) {
-			std::cout << "SDL video driver: " << video_driver << std::endl;
-		}
-		#endif
 
 		try {
 			int numCores = CPUAffinity::getNumCores();
@@ -1463,73 +1207,26 @@ namespace lime {
 			}
 		}
 		#elif defined(HX_LINUX)
-		bool wayland = isWayland();
-		static bool wayland_initialized = false;
-
-		if (wayland && !wayland_initialized) {
-			wayland_initialized = init_wayland_vsync();
-			if (wayland_initialized) {
-				std::cout << "Using Wayland VSync timing" << std::endl;
-			}
-		}
-
-		if (wayland && wayland_initialized) {
-			// Process Wayland events
-			process_wayland_events();
-
-			// Wayland VSync detection using all three methods
-			bool should_render_from_frame_callback = !wayland_data.frame_pending;
-			bool should_render_from_presentation = false;
-			int64_t presentation_time = 0;
-			int64_t refresh_interval = 0;
-
-			// Check presentation timing
-			if (get_wayland_vsync_timing(presentation_time, refresh_interval)) {
-				should_render_from_presentation = true;
-				render_timestamp = refresh_interval;
-				lastRenderTime = presentation_time;
-			}
-
-			// Determine if we should render
-			shouldRender = should_render_from_frame_callback || should_render_from_presentation;
-
-			if (shouldRender) {
-				// Use presentation timing if available, otherwise estimate
-				if (!should_render_from_presentation) {
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-				}
-
-				// Request next frame callback for continuous VSync
-				request_wayland_frame_callback();
-
-				// If we don't have presentation data, use reasonable fallback
-				if (render_timestamp <= 0) {
-					render_timestamp = RENDER_PERIOD_10NS;
+		// Original X11 GLX VSync detection
+		Display* display = XOpenDisplay(NULL);
+		if (display) {
+			unsigned int vblankCount = 0;
+			if (glXGetVideoSyncSGI(&vblankCount) == 0) {
+				if (vblankCount != lastVBlankCounter) {
+					shouldRender = true;
+					render_timestamp = getTime10ns() - lastRenderTime;
+					lastRenderTime = getTime10ns();
+					lastVBlankCounter = vblankCount;
 				}
 			}
+			XCloseDisplay(display);
 		} else {
-			// Original X11 GLX VSync detection
-			Display* display = XOpenDisplay(NULL);
-			if (display) {
-				unsigned int vblankCount = 0;
-				if (glXGetVideoSyncSGI(&vblankCount) == 0) {
-					if (vblankCount != lastVBlankCounter) {
-						shouldRender = true;
-						render_timestamp = getTime10ns() - lastRenderTime;
-						lastRenderTime = getTime10ns();
-						lastVBlankCounter = vblankCount;
-					}
-				}
-				XCloseDisplay(display);
-			} else {
-				// Fallback timer-based approach
-				shouldRender = (now10ns >= nextRenderTime10ns);
-				if (shouldRender) {
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
-				}
+			// Fallback timer-based approach
+			shouldRender = (now10ns >= nextRenderTime10ns);
+			if (shouldRender) {
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
 		}
 		#elif defined(HX_ANDROID)
