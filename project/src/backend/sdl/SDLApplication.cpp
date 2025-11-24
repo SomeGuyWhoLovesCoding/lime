@@ -285,7 +285,6 @@ namespace lime {
 	}
 
 
-	static int64_t updateOffset = 0;
 	int SDLApplication::Exec () {
 
 		Init ();
@@ -309,10 +308,7 @@ namespace lime {
 
 		while (active) {
 
-			int64_t __time = getTime10ns();
 			Update ();
-			int64_t _time = getTime10ns() - __time;
-			updateOffset = _time;
 
 		}
 
@@ -1129,10 +1125,6 @@ namespace lime {
 			firstFrame = false;
 		}
 
-		// Apply updateOffset to compress frame time (don't subtract, it slides the window backward)
-		// Instead, use it to accelerate the schedule slightly
-		int64_t adjustedNow = now10ns;
-
 		// --- Fixed scheduling with drift correction ---
 		if (!vsyncEnabled) coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
 		now10ns = getTime10ns();
@@ -1151,8 +1143,50 @@ namespace lime {
 			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
 		}
 
-		// Use adjustedNow for scheduling (accounts for frame overage)
-		if (adjustedNow >= nextUpdateTime10ns || vsyncEnabled) {
+		// --- Render scheduling ---
+		bool shouldRender = false;
+
+		#ifdef HX_WINDOWS
+		static int64_t qpcVBlank = 0;
+		if (!vsyncEnabled) {
+			// Use DWM composition timing for precise VSync synchronization
+			DWM_TIMING_INFO timingInfo = {};
+			timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+			
+			HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
+
+			if (SUCCEEDED(hr)) {
+				if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank) {
+					shouldRender = true;
+					qpcVBlank = timingInfo.qpcVBlank;
+				}
+			}
+		}
+		#else
+		// Non-Windows platforms use the original logic
+		shouldRender = (now10ns >= nextRenderTime10ns) || vsyncEnabled;
+		if (shouldRender) {
+			nextRenderTime10ns += RENDER_PERIOD_10NS;
+		}
+		#endif
+
+		if (shouldRender) {
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+
+			// Skip frames if catastrophically behind (non-Windows or DWM fallback)
+		#ifndef HX_WINDOWS
+			if (!vsyncEnabled && now10ns > nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			}
+		#endif
+		}
+
+		if (vsyncEnabled) {
+			PollInputs();
+		}
+
+		if (now10ns >= nextUpdateTime10ns || vsyncEnabled) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = updateRefreshRate;
 			ApplicationEvent::Dispatch(&applicationEvent);
@@ -1160,32 +1194,15 @@ namespace lime {
 			updateCounter++;
 
 			// Calculate next update from startup reference
-			int64_t idealNextUpdate = startTimestamp10ns + ((updateCounter * UPDATE_PERIOD_10NS) - updateOffset);
+			int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
 
 			// Skip frames only if severely behind (>4 frames)
-			if (adjustedNow > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
-				updateCounter = (adjustedNow - startTimestamp10ns) / UPDATE_PERIOD_10NS;
+			if (now10ns > idealNextUpdate + UPDATE_PERIOD_10NS * 4) {
+				updateCounter = (now10ns - startTimestamp10ns) / UPDATE_PERIOD_10NS;
 				idealNextUpdate = startTimestamp10ns + (updateCounter * UPDATE_PERIOD_10NS);
 			}
 
 			nextUpdateTime10ns = idealNextUpdate + UPDATE_PERIOD_10NS;
-		}
-
-		// --- Render scheduling ---
-		if (adjustedNow >= nextRenderTime10ns || vsyncEnabled) {
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
-
-			nextRenderTime10ns += RENDER_PERIOD_10NS;
-
-			// Skip frames if catastrophically behind
-			if (adjustedNow > nextRenderTime10ns + RENDER_PERIOD_10NS * 4) {
-				nextRenderTime10ns = adjustedNow + RENDER_PERIOD_10NS;
-			}
-		}
-
-		if (vsyncEnabled) {
-			PollInputs();
 		}
 
 		subLoopTickEvent.timestamp = getTime10ns();
