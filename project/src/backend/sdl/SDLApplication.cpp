@@ -57,7 +57,9 @@ using namespace std;
 	#include <sched.h>
 	#ifdef __linux__
 	#include <X11/Xlib.h>
+	#include <GL/gl.h>
 	#include <GL/glx.h>
+	#include <cstring> // for strstr
 	#endif
 	#if HX_ANDROID
 	#include <android/choreographer.h>
