@@ -1210,7 +1210,6 @@ namespace lime {
 		}
 		#elif defined(HX_LINUX)
 		// Linux VSync detection with proper GLX headers
-		#ifdef __linux__
 		Display* display = XOpenDisplay(NULL);
 		if (display) {
 			// Check if the GLX_SGI_video_sync extension is available
