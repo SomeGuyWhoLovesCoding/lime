@@ -51,133 +51,154 @@ using namespace std;
 #include <stdexcept>
 
 #ifdef _WIN32
-    #include <windows.h>
+	#include <windows.h>
 #else
-    #include <unistd.h>
-    #include <sched.h>
-    #ifdef __linux__
-    #include <X11/Xlib.h>
-    #include <GL/glx.h>
-    #endif
-    #if HX_ANDROID
-    #include <android/choreographer.h>
-    #endif
-    #ifdef __APPLE__
-        #include <thread>
-        #include <mach/thread_policy.h>
-        #include <mach/mach.h>
-    #endif
+	#include <unistd.h>
+	#include <sched.h>
+	#ifdef __linux__
+	#include <X11/Xlib.h>
+	#include <GL/glx.h>
+	#endif
+	#if HX_ANDROID
+	#include <android/choreographer.h>
+	#endif
+	#ifdef __APPLE__
+		#include <thread>
+		#include <mach/thread_policy.h>
+		#include <mach/mach.h>
+	#endif
+#endif
+
+#ifdef __linux__
+#include <wayland-client.h>
+#include <wayland-presentation-timing-client-protocol.h>
+
+// Wayland VSync state structure
+struct WaylandVSyncData {
+	struct wl_display* display = nullptr;
+	struct wl_compositor* compositor = nullptr;
+	struct wp_presentation* presentation = nullptr;
+	struct wl_surface* surface = nullptr;
+	struct wl_callback* frame_callback = nullptr;
+
+	int64_t last_presentation_time = 0;
+	int64_t presentation_interval = 0;
+	uint32_t last_sequence = 0;
+	bool presentation_available = false;
+	bool frame_pending = false;
+	bool initialized = false;
+};
 #endif
 
 class CPUAffinity {
 public:
-    static int getNumCores() {
+	static int getNumCores() {
 #ifdef _WIN32
-        SYSTEM_INFO sysinfo;
-        GetSystemInfo(&sysinfo);
-        return sysinfo.dwNumberOfProcessors;
+		SYSTEM_INFO sysinfo;
+		GetSystemInfo(&sysinfo);
+		return sysinfo.dwNumberOfProcessors;
 #elif __APPLE__
-        return std::thread::hardware_concurrency();
+		return std::thread::hardware_concurrency();
 #elif __ANDROID__
-        return sysconf(_SC_NPROCESSORS_ONLN);
+		return sysconf(_SC_NPROCESSORS_ONLN);
 #else // Linux
-        return sysconf(_SC_NPROCESSORS_ONLN);
+		return sysconf(_SC_NPROCESSORS_ONLN);
 #endif
-    }
+	}
 
-    static void pinToLastTwoCores() {
-        int numCores = getNumCores();
-        if (numCores < 3) {
-            printf("System has fewer than 3 cores. Cancelling by now.");
+	static void pinToLastTwoCores() {
+		int numCores = getNumCores();
+		if (numCores < 3) {
+			printf("System has fewer than 3 cores. Cancelling by now.");
 			return;
-        }
+		}
 
-        int core1 = numCores - 2;
-        int core2 = numCores - 1;
+		int core1 = numCores - 2;
+		int core2 = numCores - 1;
 
-        pinToCore(core1, core2);
-    }
+		pinToCore(core1, core2);
+	}
 
-    static void pinToCore(int core1, int core2) {
+	static void pinToCore(int core1, int core2) {
 #ifdef _WIN32
-        pinToCore_Windows(core1, core2);
+		pinToCore_Windows(core1, core2);
 #elif __APPLE__
-        pinToCore_macOS(core1, core2);
+		pinToCore_macOS(core1, core2);
 #elif __ANDROID__
-        pinToCore_Android(core1, core2);
+		pinToCore_Android(core1, core2);
 #else
-        pinToCore_Linux(core1, core2);
+		pinToCore_Linux(core1, core2);
 #endif
-    }
+	}
 
 private:
 #ifdef _WIN32
-    static void pinToCore_Windows(int core1, int core2) {
-        DWORD mask = (1ULL << core1) | (1ULL << core2);
-        if (!SetThreadAffinityMask(GetCurrentThread(), mask)) {
-            throw std::runtime_error("Failed to set thread affinity on Windows");
-        }
-        std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1) 
-                  << " on Windows" << std::endl;
-    }
+	static void pinToCore_Windows(int core1, int core2) {
+		DWORD mask = (1ULL << core1) | (1ULL << core2);
+		if (!SetThreadAffinityMask(GetCurrentThread(), mask)) {
+			throw std::runtime_error("Failed to set thread affinity on Windows");
+		}
+		std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1)
+				  << " on Windows" << std::endl;
+	}
 
 #elif __APPLE__
-    static void pinToCore_macOS(int core1, int core2) {
-        // macOS has limited CPU affinity support at the thread level
-        // This uses thread_policy_set, but macOS may not honor it strictly
-        thread_extended_policy_data_t policy;
-        policy.timeshare = 0;
-        
-        thread_port_t thread = mach_thread_self();
-        kern_return_t kr = thread_policy_set(
-            thread,
-            THREAD_EXTENDED_POLICY,
-            (thread_policy_t)&policy,
-            THREAD_EXTENDED_POLICY_COUNT
-        );
+	static void pinToCore_macOS(int core1, int core2) {
+		// macOS has limited CPU affinity support at the thread level
+		// This uses thread_policy_set, but macOS may not honor it strictly
+		thread_extended_policy_data_t policy;
+		policy.timeshare = 0;
 
-        mach_port_deallocate(mach_task_self(), thread);
+		thread_port_t thread = mach_thread_self();
+		kern_return_t kr = thread_policy_set(
+			thread,
+			THREAD_EXTENDED_POLICY,
+			(thread_policy_t)&policy,
+			THREAD_EXTENDED_POLICY_COUNT
+		);
 
-        if (kr != KERN_SUCCESS) {
-            throw std::runtime_error("Failed to set thread policy on macOS");
-        }
-        std::cout << "Attempted to optimize for cores " << (core1+1) << " and " 
-                  << (core2+1) << " on macOS (limited support)" << std::endl;
-    }
+		mach_port_deallocate(mach_task_self(), thread);
+
+		if (kr != KERN_SUCCESS) {
+			throw std::runtime_error("Failed to set thread policy on macOS");
+		}
+		std::cout << "Attempted to optimize for cores " << (core1+1) << " and "
+				  << (core2+1) << " on macOS (limited support)" << std::endl;
+	}
 
 #elif __ANDROID__
-    static void pinToCore_Android(int core1, int core2) {
-        // Android uses the same Linux kernel, so sched_setaffinity works
-        // However, some devices may have restrictions
-        cpu_set_t set;
-        CPU_ZERO(&set);
-        CPU_SET(core1, &set);
-        CPU_SET(core2, &set);
+	static void pinToCore_Android(int core1, int core2) {
+		// Android uses the same Linux kernel, so sched_setaffinity works
+		// However, some devices may have restrictions
+		cpu_set_t set;
+		CPU_ZERO(&set);
+		CPU_SET(core1, &set);
+		CPU_SET(core2, &set);
 
-        if (sched_setaffinity(0, sizeof(set), &set) == -1) {
-            // On some Android devices, affinity may fail due to SELinux or permissions
-            // Log warning but don't fail completely
-            std::cerr << "Warning: Failed to set thread affinity on Android. "
-                      << "This may require special permissions or root access." << std::endl;
-            return;
-        }
-        std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1) 
-                  << " on Android" << std::endl;
-    }
+		if (sched_setaffinity(0, sizeof(set), &set) == -1) {
+			// On some Android devices, affinity may fail due to SELinux or permissions
+			// Log warning but don't fail completely
+			std::cerr << "Warning: Failed to set thread affinity on Android. "
+					  << "This may require special permissions or root access." << std::endl;
+			return;
+		}
+		std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1)
+				  << " on Android" << std::endl;
+	}
 
 #else
-    static void pinToCore_Linux(int core1, int core2) {
-        cpu_set_t set;
-        CPU_ZERO(&set);
-        CPU_SET(core1, &set);
-        CPU_SET(core2, &set);
+	static void pinToCore_Linux(int core1, int core2) {
+		cpu_set_t set;
+		CPU_ZERO(&set);
+		CPU_SET(core1, &set);
+		CPU_SET(core2, &set);
 
-        if (sched_setaffinity(0, sizeof(set), &set) == -1) {
-            throw std::runtime_error("Failed to set thread affinity on Linux");
-        }
-        std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1) 
-                  << " on Linux" << std::endl;
-    }
+		if (sched_setaffinity(0, sizeof(set), &set) == -1) {
+			throw std::runtime_error("Failed to set thread affinity on Linux");
+		}
+		std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1)
+				  << " on Linux" << std::endl;
+	}
 #endif
 };
 
@@ -189,157 +210,6 @@ namespace lime {
 	const int analogAxisDeadZone = 1000;
 	std::map<int, std::map<int, int> > gamepadsAxisMap;
 	bool inBackground = false;
-
-	// ---------- Timing configuration in 10ns ticks ----------
-	// 1 second = 100000000 ticks of 10ns
-	constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
-
-	// Default target frame rates
-	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
-	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
-
-	// For cross-platform best sleep implementations (SDL3's SDL_DelayPrecise uses the same thing
-	// except it does spinlock but this uses a high-precision waitable timer which has basically 10us of granularity)
-	// And for cohesion sake it's 10 microseconds since linux has an accurate sleep implementation already
-	// and it's nuts that windows can even handle 10us of sleep at minimum without throttling the cpu so yeah that's that
-	// turned it if you do this every 10 microconds it would start throttling performance on linux and android so yeah I reduced the precision to 100 microseconds to be safe
-	static int64_t TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 10000LL; // 100us
-
-    #if HX_WINDOWS
-    static HANDLE timer;
-    #endif
-
-    // Add these near the top of your file with other static variables
-static int64_t lastRenderTime = 0;
-static int64_t render_timestamp = 0;
-
-#if HX_ANDROID
-// Global choreographer state
-static AChoreographer* choreographer = nullptr;
-static bool shouldRenderFromCallback = false;
-
-static void choreographer_callback(long frameTimeNanos, void* data) {
-    shouldRenderFromCallback = true;
-    // Convert nanoseconds to 10ns ticks
-    int64_t frameTime10ns = frameTimeNanos / 10;
-    render_timestamp = frameTime10ns - lastRenderTime;
-    lastRenderTime = frameTime10ns;
-}
-#endif
-
-	static Uint32 initFlags;
-
-	SDLApplication::SDLApplication () {
-		initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
-		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
-		initFlags |= SDL_INIT_AUDIO;
-		#endif
-
-		if (SDL_Init (initFlags) != 0) {
-
-			printf ("Could not initialize SDL: %s.\n", SDL_GetError ());
-
-		}
-
-		SDL_LogSetPriority (SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_WARN);
-
-		currentApplication = this;
-
-		ApplicationEvent applicationEvent;
-		SubLoopTickEvent subLoopTickEvent;
-		ClipboardEvent clipboardEvent;
-		DropEvent dropEvent;
-		GamepadEvent gamepadEvent;
-		JoystickEvent joystickEvent;
-		KeyEvent keyEvent;
-		MouseEvent mouseEvent;
-		RenderEvent renderEvent;
-		SensorEvent sensorEvent;
-		TextEvent textEvent;
-		TouchEvent touchEvent;
-		WindowEvent windowEvent;
-
-		SDL_EventState (SDL_DROPFILE, SDL_ENABLE);
-		SDLJoystick::Init ();
-
-		#ifdef HX_MACOS
-		CFURLRef resourcesURL = CFBundleCopyResourcesDirectoryURL (CFBundleGetMainBundle ());
-		char path[PATH_MAX];
-
-		if (CFURLGetFileSystemRepresentation (resourcesURL, TRUE, (UInt8 *)path, PATH_MAX)) {
-
-			chdir (path);
-
-		}
-
-		CFRelease (resourcesURL);
-		#endif
-
-	}
-
-
-	SDLApplication::~SDLApplication () {
-
-		#if HX_WINDOWS
-		if (timer) CloseHandle(timer);
-		#endif
-
-	}
-
-	// ----------------- 10ns timestamp helpers -----------------
-	// Returns monotonic timestamp in 10-ns ticks
-	int64_t getTime10ns() {
-	#ifdef HX_WINDOWS
-		static LARGE_INTEGER freq = {};
-		static LARGE_INTEGER start = {};
-
-		LARGE_INTEGER now;
-
-		QueryPerformanceFrequency(&freq);
-		QueryPerformanceCounter(&now);
-
-		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
-		return (int64_t)(delta / freq.QuadPart);
-
-	#else
-		struct timespec ts;
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-
-		return ts.tv_sec * TICKS_PER_SECOND_10NS + (ts.tv_nsec / 10LL);
-	#endif
-	}
-
-
-	int SDLApplication::Exec () {
-
-		Init ();
-
-		try {
-			int numCores = CPUAffinity::getNumCores();
-			std::cout << "System has " << numCores << " cores" << std::endl;
-
-			CPUAffinity::pinToLastTwoCores();
-			
-			// Your work here
-			std::cout << "Process affinity set successfully" << std::endl;
-		} catch (const std::exception& e) {
-			std::cerr << "Error: " << e.what() << std::endl;
-			return 1;
-		}
-
-		#ifdef EMSCRIPTEN
-		emscripten_cancel_main_loop ();
-		#endif
-
-		while (active) {
-
-			Update ();
-
-		}
-
-		return 0;
-
-	}
 
 	void SDLApplication::HandleEvent (SDL_Event* event) {
 
@@ -975,6 +845,392 @@ static void choreographer_callback(long frameTimeNanos, void* data) {
 
 	}
 
+	// ---------- Timing configuration in 10ns ticks ----------
+	// 1 second = 100000000 ticks of 10ns
+	constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
+
+	// Default target frame rates
+	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
+	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
+
+	// For cross-platform best sleep implementations (SDL3's SDL_DelayPrecise uses the same thing
+	// except it does spinlock but this uses a high-precision waitable timer which has basically 10us of granularity)
+	// And for cohesion sake it's 10 microseconds since linux has an accurate sleep implementation already
+	// and it's nuts that windows can even handle 10us of sleep at minimum without throttling the cpu so yeah that's that
+	// turned it if you do this every 10 microconds it would start throttling performance on linux and android so yeah I reduced the precision to 100 microseconds to be safe
+	static int64_t TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 10000LL; // 100us
+
+	#if HX_WINDOWS
+	static HANDLE timer;
+	#endif
+
+	// Add these near the top of your file with other static variables
+	static int64_t lastRenderTime = 0;
+	static int64_t render_timestamp = 0;
+
+	#if HX_ANDROID
+	// Global choreographer state
+	static AChoreographer* choreographer = nullptr;
+	static bool shouldRenderFromCallback = false;
+
+	static void choreographer_callback(long frameTimeNanos, void* data) {
+		shouldRenderFromCallback = true;
+		// Convert nanoseconds to 10ns ticks
+		int64_t frameTime10ns = frameTimeNanos / 10;
+		render_timestamp = frameTime10ns - lastRenderTime;
+		lastRenderTime = frameTime10ns;
+	}
+	#endif
+
+	#ifdef __linux__
+	static WaylandVSyncData wayland_data;
+
+	// Wayland presentation feedback handler
+	static void handle_presentation_feedback(void* data,
+		struct wp_presentation_feedback* feedback,
+		uint32_t tv_sec_hi, uint32_t tv_sec_lo,
+		uint32_t tv_nsec, uint32_t refresh_nsec,
+		uint32_t seq_hi, uint32_t seq_lo,
+		uint32_t flags) {
+
+		uint64_t tv_sec = ((uint64_t)tv_sec_hi << 32) | tv_sec_lo;
+		uint64_t sequence = ((uint64_t)seq_hi << 32) | seq_lo;
+
+		int64_t presentation_time = tv_sec * TICKS_PER_SECOND_10NS + (tv_nsec / 10);
+		wayland_data.last_presentation_time = presentation_time;
+		wayland_data.presentation_interval = refresh_nsec / 10; // Convert to 10ns ticks
+
+		if (wayland_data.last_sequence != 0) {
+			wayland_data.presentation_available = true;
+		}
+		wayland_data.last_sequence = sequence;
+
+		wp_presentation_feedback_destroy(feedback);
+	}
+
+	static const struct wp_presentation_feedback_listener presentation_listener = {
+		.presented = handle_presentation_feedback,
+		.discarded = [](void*, wp_presentation_feedback*) {}
+	};
+
+	// Wayland frame callback handler
+	static void handle_frame_callback(void* data, struct wl_callback* callback, uint32_t time) {
+		wayland_data.frame_pending = false;
+		wl_callback_destroy(callback);
+
+		// Request presentation feedback if available
+		if (wayland_data.presentation && wayland_data.surface) {
+			struct wp_presentation_feedback* feedback =
+				wp_presentation_feedback(wayland_data.presentation, wayland_data.surface);
+			wp_presentation_feedback_add_listener(feedback, &presentation_listener, nullptr);
+		}
+	}
+
+	static const struct wl_callback_listener frame_listener = {
+		.done = handle_frame_callback
+	};
+
+	// Initialize Wayland VSync
+	bool init_wayland_vsync() {
+		if (wayland_data.initialized) return true;
+
+		// Try to get Wayland display from SDL
+		SDL_SysWMinfo wmInfo;
+		SDL_VERSION(&wmInfo.version);
+
+		if (!SDL_GetWindowWMInfo(SDL_GL_GetCurrentWindow(), &wmInfo)) {
+			std::cout << "Failed to get window manager info: " << SDL_GetError() << std::endl;
+			return false;
+		}
+
+	#if defined(SDL_VIDEO_DRIVER_WAYLAND)
+		if (wmInfo.subsystem != SDL_SYSWM_WAYLAND) {
+			std::cout << "Not running on Wayland" << std::endl;
+			return false;
+		}
+
+		wayland_data.display = wmInfo.info.wl.display;
+		if (!wayland_data.display) {
+			std::cout << "Failed to get Wayland display" << std::endl;
+			return false;
+		}
+
+		// Create a surface for timing (we'll use the existing window surface)
+		wayland_data.surface = wmInfo.info.wl.surface;
+		if (!wayland_data.surface) {
+			std::cout << "Failed to get Wayland surface" << std::endl;
+			return false;
+		}
+
+		// Get compositor
+		struct wl_registry* registry = wl_display_get_registry(wayland_data.display);
+		if (!registry) {
+			std::cout << "Failed to get Wayland registry" << std::endl;
+			return false;
+		}
+
+		// Registry global handler
+		static struct wl_registry_listener registry_listener = {
+			.global = [](void* data, struct wl_registry* registry,
+						uint32_t name, const char* interface, uint32_t version) {
+				if (std::strcmp(interface, "wl_compositor") == 0) {
+					wayland_data.compositor = static_cast<wl_compositor*>(
+						wl_registry_bind(registry, name, &wl_compositor_interface, 3));
+				} else if (std::strcmp(interface, "wp_presentation") == 0) {
+					wayland_data.presentation = static_cast<wp_presentation*>(
+						wl_registry_bind(registry, name, &wp_presentation_interface, 1));
+					std::cout << "Wayland presentation timing extension available" << std::endl;
+				}
+			},
+			.global_remove = [](void*, struct wl_registry*, uint32_t) {}
+		};
+
+		wl_registry_add_listener(registry, &registry_listener, nullptr);
+		wl_display_roundtrip(wayland_data.display);
+		wl_registry_destroy(registry);
+
+		if (!wayland_data.compositor) {
+			std::cout << "Failed to get Wayland compositor" << std::endl;
+			return false;
+		}
+
+		wayland_data.initialized = true;
+		std::cout << "Wayland VSync initialized successfully" << std::endl;
+		if (wayland_data.presentation) {
+			std::cout << "Presentation timing extension enabled" << std::endl;
+		}
+
+		return true;
+	#else
+		std::cout << "Wayland support not compiled in SDL" << std::endl;
+		return false;
+	#endif
+	}
+
+	// Request a frame callback for VSync
+	void request_wayland_frame_callback() {
+		if (!wayland_data.initialized || wayland_data.frame_pending) return;
+
+		wayland_data.frame_callback = wl_surface_frame(wayland_data.surface);
+		wl_callback_add_listener(wayland_data.frame_callback, &frame_listener, nullptr);
+		wayland_data.frame_pending = true;
+
+		// Commit to ensure the frame callback works
+		wl_surface_commit(wayland_data.surface);
+	}
+
+	// Get Wayland VSync timing
+	bool get_wayland_vsync_timing(int64_t& presentation_time, int64_t& refresh_interval) {
+		if (!wayland_data.initialized || !wayland_data.presentation_available) {
+			return false;
+		}
+
+		presentation_time = wayland_data.last_presentation_time;
+		refresh_interval = wayland_data.presentation_interval;
+		wayland_data.presentation_available = false;
+
+		return true;
+	}
+
+	// Enhanced Wayland detection function
+	bool isWayland() {
+		// Primary detection through environment variables
+		const char* xdg_session_type = std::getenv("XDG_SESSION_TYPE");
+		const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
+		const char* current_desktop = std::getenv("XDG_CURRENT_DESKTOP");
+
+		// Check if we're explicitly on Wayland
+		if (xdg_session_type && std::strcmp(xdg_session_type, "wayland") == 0) {
+			return true;
+		}
+
+		// Check for Wayland display
+		if (wayland_display && wayland_display[0] != '\0') {
+			return true;
+		}
+
+		// Check for Wayland-specific desktop environments
+		if (current_desktop) {
+			std::string desktop(current_desktop);
+			std::transform(desktop.begin(), desktop.end(), desktop.begin(), ::tolower);
+			if (desktop.find("wayland") != std::string::npos ||
+				desktop.find("sway") != std::string::npos ||
+				desktop.find("hyprland") != std::string::npos) {
+				return true;
+			}
+		}
+
+		// SDL-based detection
+		const char* sdl_video_driver = SDL_GetCurrentVideoDriver();
+		if (sdl_video_driver && std::strstr(sdl_video_driver, "wayland")) {
+			return true;
+		}
+
+		// Additional check through SDL windowing system
+		SDL_SysWMinfo wmInfo;
+		SDL_VERSION(&wmInfo.version);
+
+		if (SDL_GetWindowWMInfo(SDL_GL_GetCurrentWindow(), &wmInfo)) {
+	#if defined(SDL_VIDEO_DRIVER_WAYLAND)
+			if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
+				return true;
+			}
+	#endif
+		}
+
+		return false;
+	}
+
+	// Process Wayland events (call this regularly)
+	void process_wayland_events() {
+		if (!wayland_data.initialized || !wayland_data.display) return;
+
+		wl_display_dispatch_pending(wayland_data.display);
+		wl_display_flush(wayland_data.display);
+	}
+	#endif
+
+	static Uint32 initFlags;
+
+	SDLApplication::SDLApplication () {
+		initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
+		#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
+		initFlags |= SDL_INIT_AUDIO;
+		#endif
+
+		if (SDL_Init (initFlags) != 0) {
+
+			printf ("Could not initialize SDL: %s.\n", SDL_GetError ());
+
+		}
+
+		SDL_LogSetPriority (SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_WARN);
+
+		currentApplication = this;
+
+		ApplicationEvent applicationEvent;
+		SubLoopTickEvent subLoopTickEvent;
+		ClipboardEvent clipboardEvent;
+		DropEvent dropEvent;
+		GamepadEvent gamepadEvent;
+		JoystickEvent joystickEvent;
+		KeyEvent keyEvent;
+		MouseEvent mouseEvent;
+		RenderEvent renderEvent;
+		SensorEvent sensorEvent;
+		TextEvent textEvent;
+		TouchEvent touchEvent;
+		WindowEvent windowEvent;
+
+		SDL_EventState (SDL_DROPFILE, SDL_ENABLE);
+		SDLJoystick::Init ();
+
+		#ifdef HX_MACOS
+		CFURLRef resourcesURL = CFBundleCopyResourcesDirectoryURL (CFBundleGetMainBundle ());
+		char path[PATH_MAX];
+
+		if (CFURLGetFileSystemRepresentation (resourcesURL, TRUE, (UInt8 *)path, PATH_MAX)) {
+
+			chdir (path);
+
+		}
+
+		CFRelease (resourcesURL);
+		#endif
+
+	}
+
+
+	SDLApplication::~SDLApplication () {
+
+		#if HX_WINDOWS
+		if (timer) CloseHandle(timer);
+		#endif
+
+		#ifdef __linux
+		// Clean up Wayland resources
+		if (wayland_data.frame_callback) {
+			wl_callback_destroy(wayland_data.frame_callback);
+		}
+		if (wayland_data.presentation) {
+			wp_presentation_destroy(wayland_data.presentation);
+		}
+		if (wayland_data.compositor) {
+			wl_compositor_destroy(wayland_data.compositor);
+		}
+		#endif
+
+	}
+
+	// ----------------- 10ns timestamp helpers -----------------
+	// Returns monotonic timestamp in 10-ns ticks
+	int64_t getTime10ns() {
+	#ifdef HX_WINDOWS
+		static LARGE_INTEGER freq = {};
+		static LARGE_INTEGER start = {};
+
+		LARGE_INTEGER now;
+
+		QueryPerformanceFrequency(&freq);
+		QueryPerformanceCounter(&now);
+
+		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
+		return (int64_t)(delta / freq.QuadPart);
+
+	#else
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+
+		return ts.tv_sec * TICKS_PER_SECOND_10NS + (ts.tv_nsec / 10LL);
+	#endif
+	}
+
+
+	int SDLApplication::Exec () {
+
+		Init ();
+
+		// Debug output for display server detection
+		#ifdef HX_LINUX
+		if (isWayland()) {
+			std::cout << "Running on Wayland compositor" << std::endl;
+		} else {
+			std::cout << "Running on X11" << std::endl;
+		}
+
+		const char* video_driver = SDL_GetCurrentVideoDriver();
+		if (video_driver) {
+			std::cout << "SDL video driver: " << video_driver << std::endl;
+		}
+		#endif
+
+		try {
+			int numCores = CPUAffinity::getNumCores();
+			std::cout << "System has " << numCores << " cores" << std::endl;
+
+			CPUAffinity::pinToLastTwoCores();
+
+			// Your work here
+			std::cout << "Process affinity set successfully" << std::endl;
+		} catch (const std::exception& e) {
+			std::cerr << "Error: " << e.what() << std::endl;
+			return 1;
+		}
+
+		#ifdef EMSCRIPTEN
+		emscripten_cancel_main_loop ();
+		#endif
+
+		while (active) {
+
+			Update ();
+
+		}
+
+		return 0;
+
+	}
+
 	static bool alreadyQuit = false;
 	int SDLApplication::Quit () {
 		if (alreadyQuit) return 0;
@@ -1103,12 +1359,12 @@ static void choreographer_callback(long frameTimeNanos, void* data) {
 
 		#ifdef HX_ANDROID
 		if (!choreographer) {
-    choreographer = AChoreographer_getInstance();
-    if (choreographer) {
-        AChoreographer_postFrameCallback(choreographer, 
-                                        choreographer_callback, 
-                                        nullptr);
-    }
+	choreographer = AChoreographer_getInstance();
+	if (choreographer) {
+		AChoreographer_postFrameCallback(choreographer,
+										choreographer_callback,
+										nullptr);
+	}
 		}
 		#endif
 	}
@@ -1143,15 +1399,11 @@ static void choreographer_callback(long frameTimeNanos, void* data) {
 		static int64_t nextUpdateTime10ns = 0;
 		static int64_t nextRenderTime10ns = 0;
 		static int64_t lastRenderTime = getTime10ns();
-		static int64_t updateCounter = 0;
+		static int64_t renderCounter = 0;
 		static bool firstFrame = true;
 		static int lastVBlankCounter = 0; // ← ADD THIS for Linux
 
 		bool vsyncEnabled = SDLWindow::vsync;
-
-		if (!vsyncEnabled) {
-			PollInputs();
-		}
 
 		int64_t now10ns = getTime10ns();
 
@@ -1167,6 +1419,9 @@ static void choreographer_callback(long frameTimeNanos, void* data) {
 		if (!vsyncEnabled) coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
 		now10ns = getTime10ns();
 
+		subLoopTickEvent.timestamp = getTime10ns();
+		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+
 		int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
 
 		if (vsyncEnabled) {
@@ -1181,37 +1436,80 @@ static void choreographer_callback(long frameTimeNanos, void* data) {
 			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
 		}
 
-		subLoopTickEvent.timestamp = getTime10ns();
-		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-
 		// --- Render scheduling ---
 		bool shouldRender = false;
 
-		if (!vsyncEnabled) {
-			// Other platforms use the original logic
-			shouldRender = (now10ns >= nextRenderTime10ns);
-			if (shouldRender) {
-				render_timestamp = RENDER_PERIOD_10NS;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
+		#ifdef HX_WINDOWS
+		static int64_t qpcVBlank = 0;
+		// Use DWM composition timing for precise VSync synchronization
+		static DWM_TIMING_INFO timingInfo = {};
+		timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+
+		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
+
+		if (SUCCEEDED(hr)) {
+			if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank) {
+				shouldRender = true;
+				render_timestamp = (timingInfo.qpcVBlank - qpcVBlank) * 10LL;
+				qpcVBlank = timingInfo.qpcVBlank;
 			}
 		} else {
-			#ifdef HX_WINDOWS
-			static int64_t qpcVBlank = 0;
-			// Use DWM composition timing for precise VSync synchronization
-			static DWM_TIMING_INFO timingInfo = {};
-			timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
-			
-			HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
+			// Fallback timer-based approach
+			shouldRender = (now10ns >= nextRenderTime10ns);
+			if (shouldRender) {
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns += RENDER_PERIOD_10NS;
+			}
+		}
+		#elif defined(HX_LINUX)
+		bool wayland = isWayland();
+		static bool wayland_initialized = false;
 
-			if (SUCCEEDED(hr)) {
-				if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank) {
-					shouldRender = true;
-					render_timestamp = (timingInfo.qpcVBlank - qpcVBlank) * 10LL;
-					qpcVBlank = timingInfo.qpcVBlank;
+		if (wayland && !wayland_initialized) {
+			wayland_initialized = init_wayland_vsync();
+			if (wayland_initialized) {
+				std::cout << "Using Wayland VSync timing" << std::endl;
+			}
+		}
+
+		if (wayland && wayland_initialized) {
+			// Process Wayland events
+			process_wayland_events();
+
+			// Wayland VSync detection using all three methods
+			bool should_render_from_frame_callback = !wayland_data.frame_pending;
+			bool should_render_from_presentation = false;
+			int64_t presentation_time = 0;
+			int64_t refresh_interval = 0;
+
+			// Check presentation timing
+			if (get_wayland_vsync_timing(presentation_time, refresh_interval)) {
+				should_render_from_presentation = true;
+				render_timestamp = refresh_interval;
+				lastRenderTime = presentation_time;
+			}
+
+			// Determine if we should render
+			shouldRender = should_render_from_frame_callback || should_render_from_presentation;
+
+			if (shouldRender) {
+				// Use presentation timing if available, otherwise estimate
+				if (!should_render_from_presentation) {
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+				}
+
+				// Request next frame callback for continuous VSync
+				request_wayland_frame_callback();
+
+				// If we don't have presentation data, use reasonable fallback
+				if (render_timestamp <= 0) {
+					render_timestamp = RENDER_PERIOD_10NS;
 				}
 			}
-			#elif defined(HX_LINUX)
-			// Linux GLX VSync detection
+		} else {
+			// Original X11 GLX VSync detection
 			Display* display = XOpenDisplay(NULL);
 			if (display) {
 				unsigned int vblankCount = 0;
@@ -1220,7 +1518,7 @@ static void choreographer_callback(long frameTimeNanos, void* data) {
 						shouldRender = true;
 						render_timestamp = getTime10ns() - lastRenderTime;
 						lastRenderTime = getTime10ns();
-						lastVBlankCounter = vblankCount; // ← ADD THIS
+						lastVBlankCounter = vblankCount;
 					}
 				}
 				XCloseDisplay(display);
@@ -1233,80 +1531,46 @@ static void choreographer_callback(long frameTimeNanos, void* data) {
 					nextRenderTime10ns += RENDER_PERIOD_10NS;
 				}
 			}
-			#elif defined(HX_ANDROID)
-			// Android VSync detection
-			if (choreographer) {
-				if (shouldRenderFromCallback) {
-					shouldRender = true;
-					shouldRenderFromCallback = false;
-					// Re-register for next frame
-					AChoreographer_postFrameCallback(choreographer, 
-													choreographer_callback, 
-													nullptr);
-				} else {
-					// Fallback timer-based approach
-					shouldRender = (now10ns >= nextRenderTime10ns);
-					if (shouldRender) {
-						render_timestamp = now10ns - lastRenderTime;
-						lastRenderTime = now10ns;
-						nextRenderTime10ns += RENDER_PERIOD_10NS;
-					}
-				}
-			} else {
-				// Fallback timer-based approach
-				shouldRender = (now10ns >= nextRenderTime10ns);
-				if (shouldRender) {
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
-				}
+		}
+		#elif defined(HX_ANDROID)
+		// Android VSync detection
+		if (choreographer) {
+			if (shouldRenderFromCallback) {
+				shouldRender = true;
+				shouldRenderFromCallback = false;
+				// Re-register for next frame
+				AChoreographer_postFrameCallback(choreographer,
+												choreographer_callback,
+												nullptr);
 			}
-			#else
-			// Other platforms use the original logic
+		} else {
+			// Fallback timer-based approach
 			shouldRender = (now10ns >= nextRenderTime10ns);
 			if (shouldRender) {
-				render_timestamp = RENDER_PERIOD_10NS;
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
 				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
-			#endif
 		}
-
+		#else
+		// Other platforms use the original logic
+		shouldRender = (now10ns >= nextRenderTime10ns);
 		if (shouldRender) {
-			if (now10ns >= nextUpdateTime10ns) {
-				int ogDeltaTime = applicationEvent.deltaTime;
+			render_timestamp = RENDER_PERIOD_10NS;
+			nextRenderTime10ns += RENDER_PERIOD_10NS;
+		}
+		#endif
 
-				applicationEvent.type = UPDATE;
-				applicationEvent.deltaTime = vsyncEnabled ? render_timestamp : UPDATE_PERIOD_10NS;
-
-				// In cases of vrr
-				if (applicationEvent.deltaTime != ogDeltaTime) {
-					updateCounter = 0;
-					startTimestamp10ns = now10ns;
-				} else {
-					updateCounter++;
-				}
-
-				// Calculate next update from startup reference
-				int64_t idealNextUpdate = startTimestamp10ns + (updateCounter * applicationEvent.deltaTime);
-
-				// Skip frames only if severely behind (>4 frames)
-				if (now10ns > idealNextUpdate + applicationEvent.deltaTime * 4) {
-					updateCounter = (now10ns - startTimestamp10ns) / applicationEvent.deltaTime;
-					idealNextUpdate = startTimestamp10ns + (updateCounter * applicationEvent.deltaTime);
-				}
-
-				nextUpdateTime10ns = idealNextUpdate + applicationEvent.deltaTime;
-
-				ApplicationEvent::Dispatch(&applicationEvent);
-			}
+		if (shouldRender || vsyncEnabled) {
+			applicationEvent.type = UPDATE;
+			applicationEvent.deltaTime = render_timestamp;
+			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 		}
 
-		if (vsyncEnabled) {
-			PollInputs();
-		}
+		PollInputs();
 
 		return active;
 	}
