@@ -60,6 +60,14 @@ using namespace std;
 	#include <GL/gl.h>
 	#include <GL/glx.h>
 	#include <cstring> // for strstr
+	#include <dlfcn.h> // for dynamic loading
+
+	// Define RTLD_LAZY if not already defined (for some older systems)
+	#ifndef RTLD_LAZY
+	#define RTLD_LAZY 1
+	#endif
+	#endif
+
 	#endif
 	#if HX_ANDROID
 	#include <android/choreographer.h>
@@ -1270,14 +1278,6 @@ namespace lime {
 				lastRenderTime = now10ns;
 				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
-		}
-		#else
-		// Non-Linux fallback
-		shouldRender = (now10ns >= nextRenderTime10ns);
-		if (shouldRender) {
-			render_timestamp = now10ns - lastRenderTime;
-			lastRenderTime = now10ns;
-			nextRenderTime10ns += RENDER_PERIOD_10NS;
 		}
 		#elif defined(HX_ANDROID)
 		// Android VSync detection
