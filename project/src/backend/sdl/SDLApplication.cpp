@@ -55,7 +55,7 @@ using namespace std;
 #else
     #include <unistd.h>
     #include <sched.h>
-    #ifdef __linux__
+    #if defined(__linux__) || HX_ANDROID
     #include <X11/Xlib.h>
     #include <GL/glx.h>
     #endif
@@ -1109,6 +1109,7 @@ namespace lime {
 
 	bool SDLApplication::Update() {
 		static int64_t nextUpdateTime10ns = 0;
+        static int64_t nextRenderTime10ns = 0;
 		static int64_t lastRenderTime = getTime10ns(); // for vrr. not used on windows because there's already functionality for said vblank qpc delta.
 		static int64_t render_timestamp = 0;
 		static int64_t updateCounter = 0;
