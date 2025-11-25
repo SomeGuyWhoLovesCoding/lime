@@ -1,11 +1,9 @@
 /**
  * This class is where the main loop goes. For one, windows 10;
  * The said main loop uses:
-   - A combination of high res waitable timer and `updateOffset` to create a surreal rhythm game experience!
- * On the other hand, linux just already has an accurate sleep function. I wanted to create a fun crispy smooth experience for literally everyone who are on windows,
- so that meant doing this to compensate. How about I make a literal main loop library out of this?
-
- * Note: `updateOffset`, which naturally increases cpu usage in case you didn't know already, and is a tradeoff to the pure main loop accuracy it has.
+   - A combination of high res waitable timer and the DWM timing info method to create a surreal rhythm game experience!
+ * On the other hand, I wanted to create a fun crispy smooth experience for literally everyone who are on windows,
+ so that meant doing it in the first place to compensate. How about I make a literal main loop library out of this?
 **/
 
 #include "SDLApplication.h"
