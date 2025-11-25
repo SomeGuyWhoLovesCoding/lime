@@ -53,17 +53,6 @@ using namespace std;
 #else
 	#include <unistd.h>
 	#include <sched.h>
-	#ifdef __linux__
-	#include <X11/Xlib.h>
-	#include <GL/gl.h>
-	#include <GL/glx.h>
-	#include <cstring> // for strstr
-	#include <dlfcn.h> // for dynamic loading
-
-	// Define RTLD_LAZY if not already defined (for some older systems)
-	#ifndef RTLD_LAZY
-	#define RTLD_LAZY 1
-	#endif
 
 	#endif
 	#if HX_ANDROID
@@ -1214,68 +1203,74 @@ namespace lime {
 			}
 		}
 		#elif defined(HX_LINUX)
-		static bool glxExtensionsChecked = false;
-		static bool glxVideoSyncSupported = false;
-		static int (*glXGetVideoSyncSGI_ptr)(unsigned int*) = nullptr;
-		static int (*glXWaitVideoSyncSGI_ptr)(int, int, unsigned int*) = nullptr;
+  // Read vblank counter from kernel DRM interface (non-blocking, no libraries)
+  static bool drmInitialized = false;
+  static std::string drmPath;
+  static unsigned int lastVBlankCount = 0;
 
-		// Check and load GLX extensions on first use
-		if (!glxExtensionsChecked) {
-			Display* display = XOpenDisplay(NULL);
-			if (display) {
-				const char* extensions = glXQueryExtensionsString(display, DefaultScreen(display));
-				if (extensions && strstr(extensions, "GLX_SGI_video_sync")) {
-					// Dynamically load the extension functions
-					void* libGL = dlopen("libGL.so.1", RTLD_LAZY);
-					if (libGL) {
-						glXGetVideoSyncSGI_ptr = (int (*)(unsigned int*))dlsym(libGL, "glXGetVideoSyncSGI");
-						glXWaitVideoSyncSGI_ptr = (int (*)(int, int, unsigned int*))dlsym(libGL, "glXWaitVideoSyncSGI");
-						
-						if (glXGetVideoSyncSGI_ptr && glXWaitVideoSyncSGI_ptr) {
-							glxVideoSyncSupported = true;
-							std::cout << "GLX_SGI_video_sync extension supported" << std::endl;
-						} else {
-							std::cout << "GLX_SGI_video_sync symbols not found" << std::endl;
-						}
-						// Don't close the library - we need the symbols
-					} else {
-						std::cout << "Could not load libGL.so.1" << std::endl;
-					}
-				} else {
-					std::cout << "GLX_SGI_video_sync extension not available" << std::endl;
-				}
-				XCloseDisplay(display);
-			}
-			glxExtensionsChecked = true;
-		}
+  if (!drmInitialized) {
+   // Find active DRM device
+   for (int i = 0; i < 16; i++) {
+    std::string testPath = "/sys/class/drm/card" + std::to_string(i) + "/crtc0/state";
+    std::ifstream testFile(testPath);
+    if (testFile.good()) {
+     drmPath = "/sys/class/drm/card" + std::to_string(i) + "/crtc0/state";
+     drmInitialized = true;
+     std::cout << "Found DRM device at: " << drmPath << std::endl;
+     break;
+    }
+   }
+   
+   if (!drmInitialized) {
+    std::cerr << "Warning: Could not find DRM device, falling back to timer" << std::endl;
+    drmInitialized = true; // Don't retry
+    drmPath = "";
+   }
+  }
 
-		if (glxVideoSyncSupported && glXGetVideoSyncSGI_ptr) {
-			unsigned int vblankCount = 0;
-			if (glXGetVideoSyncSGI_ptr(&vblankCount) == 0) {
-				if (vblankCount != lastVBlankCounter) {
-					shouldRender = true;
-					render_timestamp = getTime10ns() - lastRenderTime;
-					lastRenderTime = getTime10ns();
-					lastVBlankCounter = vblankCount;
-				}
-			} else {
-				// Fallback if glXGetVideoSyncSGI fails
-				shouldRender = (now10ns >= nextRenderTime10ns);
-				if (shouldRender) {
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
-				}
-			}
-		} else {
-			// Fallback timer-based approach
-			shouldRender = (now10ns >= nextRenderTime10ns);
-			if (shouldRender) {
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
-			}
-		}
+  shouldRender = false;
+
+  if (!drmPath.empty()) {
+   // Try to read vblank info from sysfs
+   std::ifstream drmFile(drmPath);
+   if (drmFile.is_open()) {
+    std::string line;
+    unsigned int currentVBlank = 0;
+    bool foundVBlank = false;
+    
+    while (std::getline(drmFile, line)) {
+     // Look for "vblank:" line in crtc state
+     if (line.find("vblank:") != std::string::npos) {
+      try {
+       size_t pos = line.find(':') + 1;
+       currentVBlank = std::stoul(line.substr(pos));
+       foundVBlank = true;
+       break;
+      } catch (...) {
+       // Parse failed, continue
+      }
+     }
+    }
+    drmFile.close();
+
+    if (foundVBlank && currentVBlank != lastVBlankCount) {
+     shouldRender = true;
+     render_timestamp = now10ns - lastRenderTime;
+     lastRenderTime = now10ns;
+     lastVBlankCount = currentVBlank;
+    }
+   }
+  }
+
+  // Fallback to timer-based if DRM read failed or no new vblank
+  if (!shouldRender) {
+   shouldRender = (now10ns >= nextRenderTime10ns);
+   if (shouldRender) {
+    render_timestamp = now10ns - lastRenderTime;
+    lastRenderTime = now10ns;
+    nextRenderTime10ns += RENDER_PERIOD_10NS;
+   }
+  }
 		#elif defined(HX_ANDROID)
 		// Android VSync detection
 		if (choreographer) {
