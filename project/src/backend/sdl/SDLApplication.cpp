@@ -53,8 +53,6 @@ using namespace std;
 #else
 	#include <unistd.h>
 	#include <sched.h>
-
-	#endif
 	#if HX_ANDROID
 	#include <android/choreographer.h>
 	#endif
