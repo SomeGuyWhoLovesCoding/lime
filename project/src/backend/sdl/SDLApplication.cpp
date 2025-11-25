@@ -1209,95 +1209,74 @@ drmInitialized = false;  // Same as above in your window event code
 			}
 		}
 		#elif defined(HX_LINUX)
-		// Read vblank counter from kernel DRM interface with monitor detection
-  
+		
+        #elif defined(__linux__)
+  // Linux VSync with simple runtime monitor detection
+  static bool drmInitialized = false;
   static std::string drmPath;
   static unsigned int lastVBlankCount = 0;
+  static int lastWindowX = -1, lastWindowY = -1;
 
-  if (!drmInitialized) {
-   // Get window position
-   int windowX = 0, windowY = 0;
-   if (SDLWindow::sdlWindow) {
-    SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
-   }
+  // Get current window position
+  int windowX = 0, windowY = 0;
+  if (!SDLWindow::sdlWindow) {
+	  return,
+  }
+SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
 
-   // Scan DRM devices and find which CRTC the window is on
-   for (int card = 0; card < 16; card++) {
-    std::string cardPath = "/sys/class/drm/card" + std::to_string(card);
-    
+  // Re-detect if window moved or first time
+  if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY) {
+   lastWindowX = windowX;
+   lastWindowY = windowY;
+   drmPath = "";
+
+   // Find best CRTC based on window position
+   int bestCRTC = -1;
+   int bestCard = -1;
+
+   for (int card = 0; card < 16 && bestCRTC == -1; card++) {
     for (int crtc = 0; crtc < 4; crtc++) {
-     std::string crtcStatePath = cardPath + "/crtc" + std::to_string(crtc) + "/state";
+     std::string crtcStatePath = "/sys/class/drm/card" + std::to_string(card) + 
+                                 "/crtc" + std::to_string(crtc) + "/state";
      std::ifstream stateFile(crtcStatePath);
-     
      if (!stateFile.good()) continue;
 
-     // Parse CRTC state to get position and dimensions
      std::string line;
-     int crtcX = -1, crtcY = -1, crtcWidth = 0, crtcHeight = 0;
-     bool crtcEnabled = false;
+     bool enabled = false;
+     int x = 0, y = 0, w = 0, h = 0;
 
      while (std::getline(stateFile, line)) {
-      // Look for "enable:" field
-      if (line.find("enable:") != std::string::npos) {
-       crtcEnabled = (line.find("1") != std::string::npos);
-      }
-      // Look for "src_x:", "src_y:", "crtc_w:", "crtc_h:"
-      if (line.find("crtc_x:") != std::string::npos) {
-       try {
-        size_t pos = line.find(':') + 1;
-        crtcX = std::stoi(line.substr(pos));
-       } catch (...) {}
-      }
-      if (line.find("crtc_y:") != std::string::npos) {
-       try {
-        size_t pos = line.find(':') + 1;
-        crtcY = std::stoi(line.substr(pos));
-       } catch (...) {}
-      }
-      if (line.find("crtc_w:") != std::string::npos) {
-       try {
-        size_t pos = line.find(':') + 1;
-        crtcWidth = std::stoi(line.substr(pos));
-       } catch (...) {}
-      }
-      if (line.find("crtc_h:") != std::string::npos) {
-       try {
-        size_t pos = line.find(':') + 1;
-        crtcHeight = std::stoi(line.substr(pos));
-       } catch (...) {}
-      }
+      if (line.find("enable: 1") != std::string::npos) enabled = true;
+      if (line.find("crtc_x:") != std::string::npos) x = std::stoi(line.substr(line.find(':') + 1));
+      if (line.find("crtc_y:") != std::string::npos) y = std::stoi(line.substr(line.find(':') + 1));
+      if (line.find("crtc_w:") != std::string::npos) w = std::stoi(line.substr(line.find(':') + 1));
+      if (line.find("crtc_h:") != std::string::npos) h = std::stoi(line.substr(line.find(':') + 1));
      }
      stateFile.close();
 
      // Check if window is on this CRTC
-     if (crtcEnabled && crtcWidth > 0 && crtcHeight > 0 &&
-         windowX >= crtcX && windowX < crtcX + crtcWidth &&
-         windowY >= crtcY && windowY < crtcY + crtcHeight) {
-      
-      drmPath = cardPath + "/crtc" + std::to_string(crtc) + "/state";
-      windowMonitorCRTC = crtc;
-      drmInitialized = true;
-      std::cout << "Window on card" << card << "/crtc" << crtc 
-                << " at (" << crtcX << "," << crtcY 
-                << ") res " << crtcWidth << "x" << crtcHeight << std::endl;
+     if (enabled && w > 0 && h > 0 && 
+         windowX >= x && windowX < x + w && 
+         windowY >= y && windowY < y + h) {
+      bestCRTC = crtc;
+      bestCard = card;
       break;
      }
     }
-    
-    if (drmInitialized) break;
    }
-   
-   if (!drmInitialized) {
-    std::cerr << "Warning: Could not find matching DRM CRTC for window, falling back to timer" << std::endl;
-    drmInitialized = true; // Don't retry
-    drmPath = "";
+
+   if (bestCRTC != -1) {
+    drmPath = "/sys/class/drm/card" + std::to_string(bestCard) + 
+              "/crtc" + std::to_string(bestCRTC) + "/state";
+    drmInitialized = true;
+   } else {
+    drmInitialized = true; // Mark as tried, even if failed
    }
   }
 
   shouldRender = false;
 
   if (!drmPath.empty()) {
-   // Try to read vblank info from sysfs
    std::ifstream drmFile(drmPath);
    if (drmFile.is_open()) {
     std::string line;
@@ -1305,16 +1284,12 @@ drmInitialized = false;  // Same as above in your window event code
     bool foundVBlank = false;
     
     while (std::getline(drmFile, line)) {
-     // Look for "vblank:" line in crtc state
      if (line.find("vblank:") != std::string::npos) {
       try {
-       size_t pos = line.find(':') + 1;
-       currentVBlank = std::stoul(line.substr(pos));
+       currentVBlank = std::stoul(line.substr(line.find(':') + 1));
        foundVBlank = true;
        break;
-      } catch (...) {
-       // Parse failed, continue
-      }
+      } catch (...) {}
      }
     }
     drmFile.close();
@@ -1328,7 +1303,7 @@ drmInitialized = false;  // Same as above in your window event code
    }
   }
 
-  // Fallback to timer-based if DRM read failed or no new vblank
+  // Fallback to timer-based if DRM unavailable
   if (!shouldRender) {
    shouldRender = (now10ns >= nextRenderTime10ns);
    if (shouldRender) {
