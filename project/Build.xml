@@ -432,8 +432,6 @@
 			<section if="linux">
 
 				<lib name="-lpthread" />
-				<lib name="-lX11" />
-				<lib name="-lGL" />
 				<lib name="-lrt" />
 
 				<lib name="-lgc" if="LIME_NEKO" />
