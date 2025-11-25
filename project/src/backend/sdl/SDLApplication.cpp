@@ -53,6 +53,11 @@ using namespace std;
 #else
 	#include <unistd.h>
 	#include <sched.h>
+	#if HX_LINUX
+	#include <xf86drm.h>
+	#include <xf86drmMode.h>
+	#include <fcntl.h>
+	#endif
 	#if HX_ANDROID
 	#include <android/choreographer.h>
 	#endif
@@ -777,7 +782,6 @@ namespace lime {
 
 #ifdef HX_LINUX
 static bool drmInitialized = false;
-  static int windowMonitorCRTC = -1;
 #endif
 	void SDLApplication::ProcessWindowEvent (SDL_Event* event) {
 
@@ -804,7 +808,6 @@ static bool drmInitialized = false;
 					
 #ifdef HX_LINUX
 					windowMonitorCRTC = -1;  // Reset to force re-detection
-drmInitialized = false;  // Same as above in your window event code
 					#endif
 					break;
 
@@ -1209,108 +1212,118 @@ drmInitialized = false;  // Same as above in your window event code
 			}
 		}
 		#elif defined(HX_LINUX)
-		
-        #elif defined(__linux__)
-  // Linux VSync with simple runtime monitor detection
-  static bool drmInitialized = false;
-  static std::string drmPath;
-  static unsigned int lastVBlankCount = 0;
+  // Linux VSync with DRM device enumeration
+  static int drmFd = -1;
+  static uint32_t drmCrtcId = 0;
+  static uint64_t lastVBlankSeq = 0;
   static int lastWindowX = -1, lastWindowY = -1;
 
   // Get current window position
   int windowX = 0, windowY = 0;
   if (!SDLWindow::sdlWindow) {
-	  return,
+    return;
   }
-SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
+  SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
 
   // Re-detect if window moved or first time
   if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY) {
-   lastWindowX = windowX;
-   lastWindowY = windowY;
-   drmPath = "";
+    lastWindowX = windowX;
+    lastWindowY = windowY;
 
-   // Find best CRTC based on window position
-   int bestCRTC = -1;
-   int bestCard = -1;
-
-   for (int card = 0; card < 16 && bestCRTC == -1; card++) {
-    for (int crtc = 0; crtc < 4; crtc++) {
-     std::string crtcStatePath = "/sys/class/drm/card" + std::to_string(card) + 
-                                 "/crtc" + std::to_string(crtc) + "/state";
-     std::ifstream stateFile(crtcStatePath);
-     if (!stateFile.good()) continue;
-
-     std::string line;
-     bool enabled = false;
-     int x = 0, y = 0, w = 0, h = 0;
-
-     while (std::getline(stateFile, line)) {
-      if (line.find("enable: 1") != std::string::npos) enabled = true;
-      if (line.find("crtc_x:") != std::string::npos) x = std::stoi(line.substr(line.find(':') + 1));
-      if (line.find("crtc_y:") != std::string::npos) y = std::stoi(line.substr(line.find(':') + 1));
-      if (line.find("crtc_w:") != std::string::npos) w = std::stoi(line.substr(line.find(':') + 1));
-      if (line.find("crtc_h:") != std::string::npos) h = std::stoi(line.substr(line.find(':') + 1));
-     }
-     stateFile.close();
-
-     // Check if window is on this CRTC
-     if (enabled && w > 0 && h > 0 && 
-         windowX >= x && windowX < x + w && 
-         windowY >= y && windowY < y + h) {
-      bestCRTC = crtc;
-      bestCard = card;
-      break;
-     }
+    // Close previous fd if open
+    if (drmFd >= 0) {
+      close(drmFd);
+      drmFd = -1;
     }
-   }
 
-   if (bestCRTC != -1) {
-    drmPath = "/sys/class/drm/card" + std::to_string(bestCard) + 
-              "/crtc" + std::to_string(bestCRTC) + "/state";
-    drmInitialized = true;
-   } else {
-    drmInitialized = true; // Mark as tried, even if failed
-   }
+    // Enumerate DRM devices
+    drmDevicePtr devices[16];
+    int deviceCount = drmGetDevices(devices, 16);
+
+    if (deviceCount > 0) {
+      // Try each device to find one with an active CRTC covering our window
+      bool foundDevice = false;
+
+      for (int i = 0; i < deviceCount && !foundDevice; i++) {
+        drmDevicePtr dev = devices[i];
+        if (!dev->nodes[DRM_NODE_PRIMARY]) continue;
+
+        int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR);
+        if (fd < 0) continue;
+
+        // Get mode resources
+        drmModeResPtr res = drmModeGetResources(fd);
+        if (!res) {
+          close(fd);
+          continue;
+        }
+
+        // Check each CRTC
+        for (int c = 0; c < res->count_crtcs && !foundDevice; c++) {
+          uint32_t crtcId = res->crtcs[c];
+          drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
+
+          if (!crtc) continue;
+
+          // Check if CRTC is enabled and covers window position
+          if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0) {
+            if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
+                windowY >= crtc->y && windowY < crtc->y + crtc->height) {
+              drmFd = fd;
+              drmCrtcId = crtcId;
+              drmInitialized = true;
+              foundDevice = true;
+            }
+          }
+
+          drmModeFreeCrtc(crtc);
+        }
+
+        drmModeFreeResources(res);
+
+        if (!foundDevice) {
+          close(fd);
+        }
+      }
+
+      drmFreeDevices(devices, deviceCount);
+    }
+
+    if (!foundDevice) {
+      drmInitialized = true; // Mark as tried, even if failed
+    }
   }
 
   shouldRender = false;
 
-  if (!drmPath.empty()) {
-   std::ifstream drmFile(drmPath);
-   if (drmFile.is_open()) {
-    std::string line;
-    unsigned int currentVBlank = 0;
-    bool foundVBlank = false;
-    
-    while (std::getline(drmFile, line)) {
-     if (line.find("vblank:") != std::string::npos) {
-      try {
-       currentVBlank = std::stoul(line.substr(line.find(':') + 1));
-       foundVBlank = true;
-       break;
-      } catch (...) {}
-     }
-    }
-    drmFile.close();
+  if (drmFd >= 0 && drmCrtcId != 0) {
+    // Wait for VBlank with non-blocking check
+    drmVBlank vbl = {0};
+    vbl.request.type = DRM_VBLANK_RELATIVE;
+    vbl.request.sequence = 0; // Check current, don't wait
+    vbl.request.signal = 0;
+    vbl.request.crtc_id = drmCrtcId;
 
-    if (foundVBlank && currentVBlank != lastVBlankCount) {
-     shouldRender = true;
-     render_timestamp = now10ns - lastRenderTime;
-     lastRenderTime = now10ns;
-     lastVBlankCount = currentVBlank;
+    if (drmWaitVBlank(fd, &vbl) == 0) {
+      uint64_t currentSeq = vbl.reply.sequence;
+
+      if (currentSeq != lastVBlankSeq) {
+        shouldRender = true;
+        render_timestamp = now10ns - lastRenderTime;
+        lastRenderTime = now10ns;
+        lastVBlankSeq = currentSeq;
+      }
     }
-   }
   }
 
   // Fallback to timer-based if DRM unavailable
   if (!shouldRender) {
-   shouldRender = (now10ns >= nextRenderTime10ns);
-   if (shouldRender) {
-    render_timestamp = now10ns - lastRenderTime;
-    lastRenderTime = now10ns;
-    nextRenderTime10ns += RENDER_PERIOD_10NS;
-   }
+    shouldRender = (now10ns >= nextRenderTime10ns);
+    if (shouldRender) {
+      render_timestamp = now10ns - lastRenderTime;
+      lastRenderTime = now10ns;
+      nextRenderTime10ns += RENDER_PERIOD_10NS;
+    }
   }
   #elif defined(HX_ANDROID)
 		// Android VSync detection

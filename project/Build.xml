@@ -432,6 +432,7 @@
 			<section if="linux">
 
 				<lib name="-lpthread" />
+				<lib name="-ldrm" />
 				<lib name="-lrt" />
 
 				<lib name="-lgc" if="LIME_NEKO" />
