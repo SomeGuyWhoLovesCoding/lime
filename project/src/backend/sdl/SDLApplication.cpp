@@ -775,7 +775,10 @@ namespace lime {
 
 	}
 
-
+#ifdef HX_LINUX
+static bool drmInitialized = false;
+  static int windowMonitorCRTC = -1;
+#endif
 	void SDLApplication::ProcessWindowEvent (SDL_Event* event) {
 
 		if (WindowEvent::callback) {
@@ -798,6 +801,11 @@ namespace lime {
 					windowEvent.type = WINDOW_MOVE;
 					windowEvent.x = event->window.data1;
 					windowEvent.y = event->window.data2;
+					
+#ifdef HX_LINUX
+					windowMonitorCRTC = -1;  // Reset to force re-detection
+drmInitialized = false;  // Same as above in your window event code
+					#endif
 					break;
 
 				case SDL_WINDOWEVENT_SIZE_CHANGED:
@@ -1201,26 +1209,86 @@ namespace lime {
 			}
 		}
 		#elif defined(HX_LINUX)
-  // Read vblank counter from kernel DRM interface (non-blocking, no libraries)
-  static bool drmInitialized = false;
+		// Read vblank counter from kernel DRM interface with monitor detection
+  
   static std::string drmPath;
   static unsigned int lastVBlankCount = 0;
 
   if (!drmInitialized) {
-   // Find active DRM device
-   for (int i = 0; i < 16; i++) {
-    std::string testPath = "/sys/class/drm/card" + std::to_string(i) + "/crtc0/state";
-    std::ifstream testFile(testPath);
-    if (testFile.good()) {
-     drmPath = "/sys/class/drm/card" + std::to_string(i) + "/crtc0/state";
-     drmInitialized = true;
-     std::cout << "Found DRM device at: " << drmPath << std::endl;
-     break;
+   // Get window position
+   int windowX = 0, windowY = 0;
+   if (SDLWindow::sdlWindow) {
+    SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
+   }
+
+   // Scan DRM devices and find which CRTC the window is on
+   for (int card = 0; card < 16; card++) {
+    std::string cardPath = "/sys/class/drm/card" + std::to_string(card);
+    
+    for (int crtc = 0; crtc < 4; crtc++) {
+     std::string crtcStatePath = cardPath + "/crtc" + std::to_string(crtc) + "/state";
+     std::ifstream stateFile(crtcStatePath);
+     
+     if (!stateFile.good()) continue;
+
+     // Parse CRTC state to get position and dimensions
+     std::string line;
+     int crtcX = -1, crtcY = -1, crtcWidth = 0, crtcHeight = 0;
+     bool crtcEnabled = false;
+
+     while (std::getline(stateFile, line)) {
+      // Look for "enable:" field
+      if (line.find("enable:") != std::string::npos) {
+       crtcEnabled = (line.find("1") != std::string::npos);
+      }
+      // Look for "src_x:", "src_y:", "crtc_w:", "crtc_h:"
+      if (line.find("crtc_x:") != std::string::npos) {
+       try {
+        size_t pos = line.find(':') + 1;
+        crtcX = std::stoi(line.substr(pos));
+       } catch (...) {}
+      }
+      if (line.find("crtc_y:") != std::string::npos) {
+       try {
+        size_t pos = line.find(':') + 1;
+        crtcY = std::stoi(line.substr(pos));
+       } catch (...) {}
+      }
+      if (line.find("crtc_w:") != std::string::npos) {
+       try {
+        size_t pos = line.find(':') + 1;
+        crtcWidth = std::stoi(line.substr(pos));
+       } catch (...) {}
+      }
+      if (line.find("crtc_h:") != std::string::npos) {
+       try {
+        size_t pos = line.find(':') + 1;
+        crtcHeight = std::stoi(line.substr(pos));
+       } catch (...) {}
+      }
+     }
+     stateFile.close();
+
+     // Check if window is on this CRTC
+     if (crtcEnabled && crtcWidth > 0 && crtcHeight > 0 &&
+         windowX >= crtcX && windowX < crtcX + crtcWidth &&
+         windowY >= crtcY && windowY < crtcY + crtcHeight) {
+      
+      drmPath = cardPath + "/crtc" + std::to_string(crtc) + "/state";
+      windowMonitorCRTC = crtc;
+      drmInitialized = true;
+      std::cout << "Window on card" << card << "/crtc" << crtc 
+                << " at (" << crtcX << "," << crtcY 
+                << ") res " << crtcWidth << "x" << crtcHeight << std::endl;
+      break;
+     }
     }
+    
+    if (drmInitialized) break;
    }
    
    if (!drmInitialized) {
-    std::cerr << "Warning: Could not find DRM device, falling back to timer" << std::endl;
+    std::cerr << "Warning: Could not find matching DRM CRTC for window, falling back to timer" << std::endl;
     drmInitialized = true; // Don't retry
     drmPath = "";
    }
@@ -1269,7 +1337,7 @@ namespace lime {
     nextRenderTime10ns += RENDER_PERIOD_10NS;
    }
   }
-		#elif defined(HX_ANDROID)
+  #elif defined(HX_ANDROID)
 		// Android VSync detection
 		if (choreographer) {
 			if (shouldRenderFromCallback) {
