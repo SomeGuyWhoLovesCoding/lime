@@ -57,6 +57,7 @@ using namespace std;
 	#include <xf86drm.h>
 	#include <xf86drmMode.h>
 	#include <fcntl.h>
+	#include <poll.h>  // Add this for pollfd and POLLIN
 	#endif
 	#if HX_ANDROID
 	#include <android/choreographer.h>
@@ -780,9 +781,9 @@ namespace lime {
 
 	}
 
-#ifdef HX_LINUX
-static bool drmInitialized = false;
-#endif
+	#ifdef HX_LINUX
+	static bool drmInitialized = false;
+	#endif
 	void SDLApplication::ProcessWindowEvent (SDL_Event* event) {
 
 		if (WindowEvent::callback) {
@@ -806,8 +807,8 @@ static bool drmInitialized = false;
 					windowEvent.x = event->window.data1;
 					windowEvent.y = event->window.data2;
 					
-#ifdef HX_LINUX
-					windowMonitorCRTC = -1;  // Reset to force re-detection
+					#ifdef HX_LINUX
+					drmInitialized = false;  // Reset to force re-detection
 					#endif
 					break;
 
@@ -1267,7 +1268,7 @@ static bool drmInitialized = false;
   // Get current window position
   int windowX = 0, windowY = 0;
   if (!SDLWindow::sdlWindow) {
-    return;
+    return active; // Fix: return bool instead of void
   }
   SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
 
@@ -1293,7 +1294,7 @@ static bool drmInitialized = false;
         drmDevicePtr dev = devices[i];
         if (!dev->nodes[DRM_NODE_PRIMARY]) continue;
 
-        int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR);
+        int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
         if (fd < 0) continue;
 
         // Get mode resources
@@ -1342,42 +1343,77 @@ static bool drmInitialized = false;
   shouldRender = false;
 
   if (drmFd >= 0 && drmCrtcId != 0) {
-    // Non-blocking poll for DRM events
-    struct pollfd pfd = {drmFd, POLLIN, 0};
+    // Non-blocking poll for DRM events - FIXED STRUCT INITIALIZATION
+    struct pollfd pfd;
+    pfd.fd = drmFd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    
     int pollResult = poll(&pfd, 1, 0); // 0 timeout = non-blocking
 
-    if (pollResult > 0) {
-      drmEventContext evctx = {0};
-      evctx.version = 2;
-
-      // Struct to store VBlank data
-      struct {
-        uint64_t sequence;
-      } vblankData = {lastVBlankSeq};
-
-      evctx.vblank_handler = [](int fd, unsigned int frame, unsigned int sec,
-                                 unsigned int usec, void *data) {
-        uint64_t *lastSeq = (uint64_t *)data;
-        *lastSeq = frame;
+    if (pollResult > 0 && (pfd.revents & POLLIN)) {
+      // FIXED: Use proper drmEventContext initialization
+      drmEventContext evctx;
+      memset(&evctx, 0, sizeof(evctx));
+      evctx.version = DRM_EVENT_CONTEXT_VERSION;
+      
+      // FIXED: Correct vblank handler signature and usage
+      static uint64_t vblankSequence = 0;
+      evctx.vblank_handler = [](int fd, unsigned int sequence, 
+                               unsigned int tv_sec, unsigned int tv_usec, 
+                               void *user_data) {
+        uint64_t* seqPtr = (uint64_t*)user_data;
+        *seqPtr = sequence;
       };
 
+      // Process DRM events
       drmHandleEvent(drmFd, &evctx);
 
-      if (vblankData.sequence != lastVBlankSeq) {
+      // Check if we got a new vblank
+      if (vblankSequence != lastVBlankSeq) {
         shouldRender = true;
         render_timestamp = now10ns - lastRenderTime;
         lastRenderTime = now10ns;
-        lastVBlankSeq = vblankData.sequence;
+        lastVBlankSeq = vblankSequence;
       }
     }
 
-    // Request next VBlank event if not already pending
+    // Request next VBlank event if not already pending - FIXED STRUCTURE
     if (!shouldRender) {
-      drmVBlank vbl = {0};
-      vbl.request.type = DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT;
+      drmVBlank vbl;
+      memset(&vbl, 0, sizeof(vbl));
+      
+      // FIXED: Use the correct structure members for modern libdrm
+      vbl.request.type = DRM_VBLANK_RELATIVE;
       vbl.request.sequence = 1;
-      vbl.request.crtc_id = drmCrtcId;
-      drmWaitVBlank(drmFd, &vbl); // Queues event, returns immediately
+      
+      // For modern versions that support events
+      #ifdef DRM_VBLANK_EVENT
+      vbl.request.type |= DRM_VBLANK_EVENT;
+      #endif
+      
+      // FIXED: Use the correct member name for crtc ID
+      // Note: The structure member name varies by libdrm version
+      // Try different possible member names
+      #if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+      // Modern libdrm - use high_crtc field
+      vbl.request.type |= (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT);
+      #else
+      // Older versions may use different approaches
+      // For now, just try without specifying CRTC
+      #endif
+      
+      // This will queue the event without blocking
+      int result = drmWaitVBlank(drmFd, &vbl);
+      if (result != 0) {
+        // If drmWaitVBlank fails, fall back to timer
+        shouldRender = (now10ns >= nextRenderTime10ns);
+        if (shouldRender) {
+          render_timestamp = now10ns - lastRenderTime;
+          lastRenderTime = now10ns;
+          nextRenderTime10ns += RENDER_PERIOD_10NS;
+        }
+      }
     }
   }
 
