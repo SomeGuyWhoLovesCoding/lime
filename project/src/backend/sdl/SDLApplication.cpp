@@ -842,7 +842,7 @@ static bool drmInitialized = false;
 	// And for cohesion sake it's 10 microseconds since linux has an accurate sleep implementation already
 	// and it's nuts that windows can even handle 10us of sleep at minimum without throttling the cpu so yeah that's that
 	// turned it if you do this every 10 microconds it would start throttling performance on linux and android so yeah I reduced the precision to 100 microseconds to be safe
-	static int64_t TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 10000LL; // 100us
+	static int64_t TILES_PER_TICK_10NS = (int64_t)(TICKS_PER_SECOND_10NS * 0.001563); // 156.3us - common true-hardware output shit type shit right there...
 
 	#if HX_WINDOWS
 	static HANDLE timer;
@@ -867,6 +867,43 @@ static bool drmInitialized = false;
 	#endif
 
 	static Uint32 initFlags;
+
+	
+	#if HX_WINDOWS
+	static HMODULE ntdll;
+	void adjustTimerResolutionDynamic() {
+		typedef NTSTATUS (NTAPI *NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
+		typedef NTSTATUS (NTAPI *NtQueryTimerResolution_t)(PULONG, PULONG, PULONG);
+
+		if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
+		if (!ntdll) return;
+
+		static NtSetTimerResolution_t NtSetTimerResolution =
+			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
+		static NtQueryTimerResolution_t NtQueryTimerResolution =
+			(NtQueryTimerResolution_t)GetProcAddress(ntdll, "NtQueryTimerResolution");
+
+		if (!NtSetTimerResolution || !NtQueryTimerResolution) return;
+
+		// Query current, min, and max timer resolutions
+		ULONG minRes = 0, maxRes = 0, curRes = 0;
+		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
+
+		printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
+			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
+
+		ULONG current = 0;
+		NTSTATUS status = NtSetTimerResolution(1563, TRUE, &current);
+
+		printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
+			(unsigned int)status, current / 10000.0);
+
+		// Re-query after setting
+		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
+		printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
+			minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
+	}
+	#endif
 
 	SDLApplication::SDLApplication () {
 		initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
@@ -914,6 +951,10 @@ static bool drmInitialized = false;
 		CFRelease (resourcesURL);
 		#endif
 
+		#if HX_WINDOWS
+		adjustTimerResolutionDynamic();
+		#endif
+
 	}
 
 
@@ -921,6 +962,7 @@ static bool drmInitialized = false;
 
 		#if HX_WINDOWS
 		if (timer) CloseHandle(timer);
+		if (ntdll) FreeLibrary(ntdll);
 		#endif
 
 	}
@@ -1058,19 +1100,25 @@ static bool drmInitialized = false;
 		if (sleepForTicks <= 0) return;
 
 	#if HX_WINDOWS
-		// SetWaitableTimer uses 100-ns units for LARGE_INTEGER; relative time is negative.
+
+		// SetWaitableTimer uses 100-ns units for LARGE_INTEGER
+		// Negative value indicates relative time
 		LARGE_INTEGER due = {};
-		// round to nearest 10ns
-		long long relative = - (long long) (sleepForTicks / 10); // already in 10ns ticks; negative => relative
-		due.QuadPart = relative;
+		due.QuadPart = -((LONGLONG)sleepForTicks / 10); // Note: NEGATIVE for relative time
 
 		BOOL ok = SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
 		if (!ok) {
-			// fallback coarse sleep in milliseconds (best-effort)
-			DWORD ms = (DWORD)((sleepForTicks * 10) / (int)TICKS_PER_SECOND_10NS + 1); // sleepForTicks *100 ns -> nanoseconds -> ms
+			// fallback coarse sleep in milliseconds
+			DWORD ms = (DWORD)((sleepForTicks + 99999) / 100000); // Convert 10ns to ms, rounding up
 			if (ms > 0) Sleep(ms);
 		} else {
 			WaitForSingleObject(timer, INFINITE);
+		}
+
+		// Final precision adjustment with reduced CPU usage
+		while (getTime10ns() < wakeTime10ns) {
+			// Add a small yield to reduce CPU usage during final spin
+			Sleep(0); // Yield to other threads
 		}
 	#elif defined(HX_LINUX)
 		struct timespec wake;
@@ -1078,6 +1126,13 @@ static bool drmInitialized = false;
 		wake.tv_sec = wakeTime10ns / TICKS_PER_SECOND_10NS;
 		long long remainder10ns = wakeTime10ns % TICKS_PER_SECOND_10NS;
 		wake.tv_nsec = (long)(remainder10ns * 10); // 10ns -> ns
+		
+		// Ensure nanosecond value is within valid range
+		if (wake.tv_nsec >= 1000000000L) {
+			wake.tv_sec += wake.tv_nsec / 1000000000L;
+			wake.tv_nsec %= 1000000000L;
+		}
+		
 		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
 	#else
 		auto target = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(wakeTime10ns * 10));
@@ -1165,25 +1220,15 @@ static bool drmInitialized = false;
 		}
 
 		// --- Fixed scheduling with drift correction ---
-		if (!vsyncEnabled) coolSleepUntil10ns(now10ns + TILES_PER_TICK_10NS);
+		auto targetTime = now10ns + TILES_PER_TICK_10NS;
+		bool useSpin = true;
+
+		coolSleepUntil10ns(targetTime);
+
 		now10ns = getTime10ns();
 
 		subLoopTickEvent.timestamp = getTime10ns();
 		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-
-		int64_t updateRefreshRate = UPDATE_PERIOD_10NS;
-
-		if (vsyncEnabled) {
-			SDL_DisplayMode currentMode;
-			if (SDL_GetCurrentDisplayMode(0, &currentMode) != 0) {
-				std::cerr << "Could not get display mode! SDL_Error: " << SDL_GetError() << std::endl;
-				active = false;
-				return active;
-			}
-			double refreshRate = currentMode.refresh_rate;
-			if (refreshRate == 0) refreshRate = 60;
-			updateRefreshRate = TICKS_PER_SECOND_10NS / refreshRate;
-		}
 
 		// --- Render scheduling ---
 		bool shouldRender = false;
@@ -1203,6 +1248,7 @@ static bool drmInitialized = false;
 				qpcVBlank = timingInfo.qpcVBlank;
 			}
 		} else {
+			printf("What a fucking waste");
 			// Fallback timer-based approach
 			shouldRender = (now10ns >= nextRenderTime10ns);
 			if (shouldRender) {
@@ -1212,7 +1258,7 @@ static bool drmInitialized = false;
 			}
 		}
 		#elif defined(HX_LINUX)
-  // Linux VSync with DRM device enumeration
+  // Linux VSync with DRM events (non-blocking)
   static int drmFd = -1;
   static uint32_t drmCrtcId = 0;
   static uint64_t lastVBlankSeq = 0;
@@ -1241,7 +1287,6 @@ static bool drmInitialized = false;
     int deviceCount = drmGetDevices(devices, 16);
 
     if (deviceCount > 0) {
-      // Try each device to find one with an active CRTC covering our window
       bool foundDevice = false;
 
       for (int i = 0; i < deviceCount && !foundDevice; i++) {
@@ -1297,22 +1342,42 @@ static bool drmInitialized = false;
   shouldRender = false;
 
   if (drmFd >= 0 && drmCrtcId != 0) {
-    // Wait for VBlank with non-blocking check
-    drmVBlank vbl = {0};
-    vbl.request.type = DRM_VBLANK_RELATIVE;
-    vbl.request.sequence = 0; // Check current, don't wait
-    vbl.request.signal = 0;
-    vbl.request.crtc_id = drmCrtcId;
+    // Non-blocking poll for DRM events
+    struct pollfd pfd = {drmFd, POLLIN, 0};
+    int pollResult = poll(&pfd, 1, 0); // 0 timeout = non-blocking
 
-    if (drmWaitVBlank(fd, &vbl) == 0) {
-      uint64_t currentSeq = vbl.reply.sequence;
+    if (pollResult > 0) {
+      drmEventContext evctx = {0};
+      evctx.version = 2;
 
-      if (currentSeq != lastVBlankSeq) {
+      // Struct to store VBlank data
+      struct {
+        uint64_t sequence;
+      } vblankData = {lastVBlankSeq};
+
+      evctx.vblank_handler = [](int fd, unsigned int frame, unsigned int sec,
+                                 unsigned int usec, void *data) {
+        uint64_t *lastSeq = (uint64_t *)data;
+        *lastSeq = frame;
+      };
+
+      drmHandleEvent(drmFd, &evctx);
+
+      if (vblankData.sequence != lastVBlankSeq) {
         shouldRender = true;
         render_timestamp = now10ns - lastRenderTime;
         lastRenderTime = now10ns;
-        lastVBlankSeq = currentSeq;
+        lastVBlankSeq = vblankData.sequence;
       }
+    }
+
+    // Request next VBlank event if not already pending
+    if (!shouldRender) {
+      drmVBlank vbl = {0};
+      vbl.request.type = DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT;
+      vbl.request.sequence = 1;
+      vbl.request.crtc_id = drmCrtcId;
+      drmWaitVBlank(drmFd, &vbl); // Queues event, returns immediately
     }
   }
 
@@ -1354,7 +1419,7 @@ static bool drmInitialized = false;
 		}
 		#endif
 
-		if (shouldRender || vsyncEnabled) {
+		if (shouldRender) {
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = render_timestamp;
 			ApplicationEvent::Dispatch(&applicationEvent);
