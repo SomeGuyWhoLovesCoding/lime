@@ -1334,10 +1334,6 @@ namespace lime {
 
       drmFreeDevices(devices, deviceCount);
     }
-
-    if (!foundDevice) {
-      drmInitialized = true; // Mark as tried, even if failed
-    }
   }
 
   shouldRender = false;
