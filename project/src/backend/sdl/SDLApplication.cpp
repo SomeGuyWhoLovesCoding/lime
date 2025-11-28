@@ -1235,24 +1235,60 @@ namespace lime {
 		bool shouldRender = false;
 
 		#ifdef HX_WINDOWS
-		static int64_t qpcVBlank = 0;
-		// Use DWM composition timing for precise VSync synchronization
+		static LARGE_INTEGER qpcFreq = {};
+		static int64_t lastRenderQPC = 0;
+		static int64_t refreshPeriodQPC = 0;
+
+		if (qpcFreq.QuadPart == 0)
+			QueryPerformanceFrequency(&qpcFreq);
+
 		static DWM_TIMING_INFO timingInfo = {};
 		timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
 
 		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
 
-		if (SUCCEEDED(hr)) {
-			if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank) {
+		if (SUCCEEDED(hr) && timingInfo.rateRefresh.uiDenominator != 0)
+		{
+			// Exact refresh period from DWM (works even on DisplayLink)
+			refreshPeriodQPC =
+				(int64_t)qpcFreq.QuadPart *
+				timingInfo.rateRefresh.uiDenominator /
+				timingInfo.rateRefresh.uiNumerator;
+
+			LARGE_INTEGER now;
+			QueryPerformanceCounter(&now);
+
+			// First run
+			if (lastRenderQPC == 0)
+			{
 				shouldRender = true;
-				render_timestamp = (timingInfo.qpcVBlank - qpcVBlank) * 10LL;
-				qpcVBlank = timingInfo.qpcVBlank;
+				render_timestamp = 0;
+				lastRenderQPC = now.QuadPart;
 			}
-		} else {
-			printf("What a fucking waste");
-			// Fallback timer-based approach
+			else
+			{
+				int64_t delta = now.QuadPart - lastRenderQPC;
+
+				if (delta > refreshPeriodQPC)
+				{
+					shouldRender = true;
+					render_timestamp = (delta * TICKS_PER_SECOND_10NS) / qpcFreq.QuadPart;
+					//printf("%lld\n", render_timestamp);
+					lastRenderQPC = now.QuadPart;
+				}
+				else
+				{
+					shouldRender = false;
+				}
+			}
+		}
+		else
+		{
+			// Your fallback
 			shouldRender = (now10ns >= nextRenderTime10ns);
-			if (shouldRender) {
+
+			if (shouldRender)
+			{
 				render_timestamp = now10ns - lastRenderTime;
 				lastRenderTime = now10ns;
 				nextRenderTime10ns += RENDER_PERIOD_10NS;
