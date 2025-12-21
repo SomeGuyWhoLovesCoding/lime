@@ -69,118 +69,6 @@ using namespace std;
 	#endif
 #endif
 
-class CPUAffinity {
-public:
-	static int getNumCores() {
-#ifdef _WIN32
-		SYSTEM_INFO sysinfo;
-		GetSystemInfo(&sysinfo);
-		return sysinfo.dwNumberOfProcessors;
-#elif __APPLE__
-		return std::thread::hardware_concurrency();
-#elif __ANDROID__
-		return sysconf(_SC_NPROCESSORS_ONLN);
-#else // Linux
-		return sysconf(_SC_NPROCESSORS_ONLN);
-#endif
-	}
-
-	static void pinToLastTwoCores() {
-		int numCores = getNumCores();
-		if (numCores < 3) {
-			printf("System has fewer than 3 cores. Cancelling by now.");
-			return;
-		}
-
-		int core1 = numCores - 2;
-		int core2 = numCores - 1;
-
-		pinToCore(core1, core2);
-	}
-
-	static void pinToCore(int core1, int core2) {
-#ifdef _WIN32
-		pinToCore_Windows(core1, core2);
-#elif __APPLE__
-		pinToCore_macOS(core1, core2);
-#elif __ANDROID__
-		pinToCore_Android(core1, core2);
-#else
-		pinToCore_Linux(core1, core2);
-#endif
-	}
-
-private:
-#ifdef _WIN32
-	static void pinToCore_Windows(int core1, int core2) {
-		DWORD mask = (1ULL << core1) | (1ULL << core2);
-		if (!SetThreadAffinityMask(GetCurrentThread(), mask)) {
-			throw std::runtime_error("Failed to set thread affinity on Windows");
-		}
-		std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1)
-				  << " on Windows" << std::endl;
-	}
-
-#elif __APPLE__
-	static void pinToCore_macOS(int core1, int core2) {
-		// macOS has limited CPU affinity support at the thread level
-		// This uses thread_policy_set, but macOS may not honor it strictly
-		thread_extended_policy_data_t policy;
-		policy.timeshare = 0;
-
-		thread_port_t thread = mach_thread_self();
-		kern_return_t kr = thread_policy_set(
-			thread,
-			THREAD_EXTENDED_POLICY,
-			(thread_policy_t)&policy,
-			THREAD_EXTENDED_POLICY_COUNT
-		);
-
-		mach_port_deallocate(mach_task_self(), thread);
-
-		if (kr != KERN_SUCCESS) {
-			throw std::runtime_error("Failed to set thread policy on macOS");
-		}
-		std::cout << "Attempted to optimize for cores " << (core1+1) << " and "
-				  << (core2+1) << " on macOS (limited support)" << std::endl;
-	}
-
-#elif __ANDROID__
-	static void pinToCore_Android(int core1, int core2) {
-		// Android uses the same Linux kernel, so sched_setaffinity works
-		// However, some devices may have restrictions
-		cpu_set_t set;
-		CPU_ZERO(&set);
-		CPU_SET(core1, &set);
-		CPU_SET(core2, &set);
-
-		if (sched_setaffinity(0, sizeof(set), &set) == -1) {
-			// On some Android devices, affinity may fail due to SELinux or permissions
-			// Log warning but don't fail completely
-			std::cerr << "Warning: Failed to set thread affinity on Android. "
-					  << "This may require special permissions or root access." << std::endl;
-			return;
-		}
-		std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1)
-				  << " on Android" << std::endl;
-	}
-
-#else
-	static void pinToCore_Linux(int core1, int core2) {
-		cpu_set_t set;
-		CPU_ZERO(&set);
-		CPU_SET(core1, &set);
-		CPU_SET(core2, &set);
-
-		if (sched_setaffinity(0, sizeof(set), &set) == -1) {
-			throw std::runtime_error("Failed to set thread affinity on Linux");
-		}
-		std::cout << "Pinned to cores " << (core1+1) << " and " << (core2+1)
-				  << " on Linux" << std::endl;
-	}
-#endif
-};
-
 namespace lime {
 
 	AutoGCRoot* Application::callback = 0;
@@ -995,19 +883,6 @@ namespace lime {
 	int SDLApplication::Exec () {
 
 		Init ();
-
-		try {
-			int numCores = CPUAffinity::getNumCores();
-			std::cout << "System has " << numCores << " cores" << std::endl;
-
-			CPUAffinity::pinToLastTwoCores();
-
-			// Your work here
-			std::cout << "Process affinity set successfully" << std::endl;
-		} catch (const std::exception& e) {
-			std::cerr << "Error: " << e.what() << std::endl;
-			return 1;
-		}
 
 		#ifdef EMSCRIPTEN
 		emscripten_cancel_main_loop ();
