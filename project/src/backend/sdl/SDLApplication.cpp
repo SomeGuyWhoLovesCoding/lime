@@ -1169,15 +1169,48 @@ namespace lime
 	static int64_t lag = 0;
 	static int64_t minimalSleepCalc = 0;
 
-	static void calculateMinimalSleepTime(int64_t refreshRate)
+	static void calculateMinimalSleepTime()
 	{
-		if (refreshRate == 0) {
+		SDL_DisplayMode mode;
+		SDL_GetWindowDisplayMode (SDLWindow::sdlWindow, &mode);
+
+		if ((int)mode.refresh_rate == 0) {
 			minimalSleepCalc = 50000;
 			return;
 		}
 
+		if ((int)mode.refresh_rate % 50 == 0) { // 40 frames inbetween (because yes)
+			minimalSleepCalc = 50000;
+			return;
+		}
+
+		if ((int)mode.refresh_rate % 60 == 0) { // 24 frames inbetween (because yes)
+			minimalSleepCalc = 66666;
+			return;
+		}
+
+		if ((int)mode.refresh_rate % 75 == 0) { // 20 frames inbetween
+			minimalSleepCalc = 66666;
+			return;
+		}
+
+		if ((int)mode.refresh_rate % 85 == 0) { // 23 frames inbetween
+			minimalSleepCalc = 51150;
+			return;
+		}
+
+		if ((int)mode.refresh_rate % 144 == 0) { // 10 frames inbetween
+			minimalSleepCalc = 69444;
+			return;
+		}
+
+		if ((int)mode.refresh_rate % 165 == 0) { // 12 frames
+			minimalSleepCalc = 50505;
+			return;
+		}
+
 		// Start with one frame period
-		int64_t framePeriod10ns = (TICKS_PER_SECOND_10NS / refreshRate);
+		int64_t framePeriod10ns = (TICKS_PER_SECOND_10NS / mode.refresh_rate);
 		int64_t divisor = 2;
 
 		const int64_t MIN_SLEEP_THRESHOLD_10NS = TILES_PER_TICK_10NS; // 0.5ms in 10ns units on windows, 50us literally everywhere else
@@ -1227,7 +1260,8 @@ namespace lime
 		}
 
 		// --- Fixed scheduling with drift correction ---
-		auto targetTime = now10ns + minimalSleepCalc;
+		calculateMinimalSleepTime();
+		int64_t targetTime = now10ns + minimalSleepCalc;
 		bool useSpin = true;
 
 		coolSleepUntil10ns(targetTime);
@@ -1250,18 +1284,14 @@ namespace lime
 
 		if (SUCCEEDED(hr))
 		{
-			int64_t refreshRate = 0;
 			if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank)
 			{
 				shouldRender = true;
 				int64_t oldTimestamp = render_timestamp;
 				render_timestamp = (timingInfo.qpcVBlank - qpcVBlank) * 10LL;
-				//printf("%lld\n", render_timestamp);
-				//refreshRate = TICKS_PER_SECOND_10NS / ((render_timestamp - oldTimestamp) / 10LL);
-				//printf("%lld\n", refreshRate);
 				qpcVBlank = timingInfo.qpcVBlank;
 
-				calculateMinimalSleepTime(render_timestamp);
+				//calculateMinimalSleepTime(TICKS_PER_SECOND_10NS / render_timestamp);
 			}
 		}
 		else
@@ -1463,7 +1493,7 @@ namespace lime
 			}
 		}
 
-		calculateMinimalSleepTime(2000);
+		//calculateMinimalSleepTime(2000);
 #elif defined(HX_ANDROID)
 		// Android VSync detection
 		if (choreographer)
@@ -1490,7 +1520,7 @@ namespace lime
 			}
 		}
 
-		calculateMinimalSleepTime(2000);
+		//calculateMinimalSleepTime(2000);
 #else
 		// Other platforms use the original logic
 		shouldRender = (now10ns >= (nextRenderTime10ns - (getTime10ns() - lag)));
@@ -1500,7 +1530,7 @@ namespace lime
 			nextRenderTime10ns += RENDER_PERIOD_10NS;
 		}
 
-		calculateMinimalSleepTime(2000);
+		//calculateMinimalSleepTime(2000);
 #endif
 
 		if (shouldRender)
