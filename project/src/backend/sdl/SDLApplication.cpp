@@ -806,7 +806,7 @@ namespace lime {
 					windowEvent.type = WINDOW_MOVE;
 					windowEvent.x = event->window.data1;
 					windowEvent.y = event->window.data2;
-					
+
 					#ifdef HX_LINUX
 					drmInitialized = false;  // Reset to force re-detection
 					#endif
@@ -869,7 +869,7 @@ namespace lime {
 
 	static Uint32 initFlags;
 
-	
+
 	#if HX_WINDOWS
 	static HMODULE ntdll;
 	void adjustTimerResolutionDynamic() {
@@ -1127,13 +1127,13 @@ namespace lime {
 		wake.tv_sec = wakeTime10ns / TICKS_PER_SECOND_10NS;
 		long long remainder10ns = wakeTime10ns % TICKS_PER_SECOND_10NS;
 		wake.tv_nsec = (long)(remainder10ns * 10); // 10ns -> ns
-		
+
 		// Ensure nanosecond value is within valid range
 		if (wake.tv_nsec >= 1000000000L) {
 			wake.tv_sec += wake.tv_nsec / 1000000000L;
 			wake.tv_nsec %= 1000000000L;
 		}
-		
+
 		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr);
 	#else
 		auto target = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(wakeTime10ns * 10));
@@ -1200,6 +1200,8 @@ namespace lime {
 		}
 	}
 
+	static int64_t lag = 0;
+
 	bool SDLApplication::Update() {
 		static int64_t nextUpdateTime10ns = 0;
 		static int64_t nextRenderTime10ns = 0;
@@ -1207,6 +1209,10 @@ namespace lime {
 		static int64_t renderCounter = 0;
 		static bool firstFrame = true;
 		static unsigned int lastVBlankCounter = 0; // ← ADD THIS for Linux
+
+		if (lag == 0) {
+			lag = getTime10ns();
+		}
 
 		bool vsyncEnabled = SDLWindow::vsync;
 
@@ -1251,7 +1257,7 @@ namespace lime {
 		} else {
 			printf("What a fucking waste");
 			// Fallback timer-based approach
-			shouldRender = (now10ns >= nextRenderTime10ns);
+			shouldRender = (now10ns >= (nextRenderTime10ns - (getTime10ns() - lag)));
 			if (shouldRender) {
 				render_timestamp = now10ns - lastRenderTime;
 				lastRenderTime = now10ns;
@@ -1268,159 +1274,159 @@ namespace lime {
   // Get current window position
   int windowX = 0, windowY = 0;
   if (!SDLWindow::sdlWindow) {
-    return active; // Fix: return bool instead of void
+	return active; // Fix: return bool instead of void
   }
   SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
 
   // Re-detect if window moved or first time
   if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY) {
-    lastWindowX = windowX;
-    lastWindowY = windowY;
+	lastWindowX = windowX;
+	lastWindowY = windowY;
 
-    // Close previous fd if open
-    if (drmFd >= 0) {
-      close(drmFd);
-      drmFd = -1;
-    }
+	// Close previous fd if open
+	if (drmFd >= 0) {
+	  close(drmFd);
+	  drmFd = -1;
+	}
 
-    // Enumerate DRM devices
-    drmDevicePtr devices[16];
-    int deviceCount = drmGetDevices(devices, 16);
+	// Enumerate DRM devices
+	drmDevicePtr devices[16];
+	int deviceCount = drmGetDevices(devices, 16);
 
-    if (deviceCount > 0) {
-      bool foundDevice = false;
+	if (deviceCount > 0) {
+	  bool foundDevice = false;
 
-      for (int i = 0; i < deviceCount && !foundDevice; i++) {
-        drmDevicePtr dev = devices[i];
-        if (!dev->nodes[DRM_NODE_PRIMARY]) continue;
+	  for (int i = 0; i < deviceCount && !foundDevice; i++) {
+		drmDevicePtr dev = devices[i];
+		if (!dev->nodes[DRM_NODE_PRIMARY]) continue;
 
-        int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
-        if (fd < 0) continue;
+		int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
+		if (fd < 0) continue;
 
-        // Get mode resources
-        drmModeResPtr res = drmModeGetResources(fd);
-        if (!res) {
-          close(fd);
-          continue;
-        }
+		// Get mode resources
+		drmModeResPtr res = drmModeGetResources(fd);
+		if (!res) {
+		  close(fd);
+		  continue;
+		}
 
-        // Check each CRTC
-        for (int c = 0; c < res->count_crtcs && !foundDevice; c++) {
-          uint32_t crtcId = res->crtcs[c];
-          drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
+		// Check each CRTC
+		for (int c = 0; c < res->count_crtcs && !foundDevice; c++) {
+		  uint32_t crtcId = res->crtcs[c];
+		  drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
 
-          if (!crtc) continue;
+		  if (!crtc) continue;
 
-          // Check if CRTC is enabled and covers window position
-          if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0) {
-            if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
-                windowY >= crtc->y && windowY < crtc->y + crtc->height) {
-              drmFd = fd;
-              drmCrtcId = crtcId;
-              drmInitialized = true;
-              foundDevice = true;
-            }
-          }
+		  // Check if CRTC is enabled and covers window position
+		  if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0) {
+			if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
+				windowY >= crtc->y && windowY < crtc->y + crtc->height) {
+			  drmFd = fd;
+			  drmCrtcId = crtcId;
+			  drmInitialized = true;
+			  foundDevice = true;
+			}
+		  }
 
-          drmModeFreeCrtc(crtc);
-        }
+		  drmModeFreeCrtc(crtc);
+		}
 
-        drmModeFreeResources(res);
+		drmModeFreeResources(res);
 
-        if (!foundDevice) {
-          close(fd);
-        }
-      }
+		if (!foundDevice) {
+		  close(fd);
+		}
+	  }
 
-      drmFreeDevices(devices, deviceCount);
-    }
+	  drmFreeDevices(devices, deviceCount);
+	}
   }
 
   shouldRender = false;
 
   if (drmFd >= 0 && drmCrtcId != 0) {
-    // Non-blocking poll for DRM events - FIXED STRUCT INITIALIZATION
-    struct pollfd pfd;
-    pfd.fd = drmFd;
-    pfd.events = POLLIN;
-    pfd.revents = 0;
-    
-    int pollResult = poll(&pfd, 1, 0); // 0 timeout = non-blocking
+	// Non-blocking poll for DRM events - FIXED STRUCT INITIALIZATION
+	struct pollfd pfd;
+	pfd.fd = drmFd;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
 
-    if (pollResult > 0 && (pfd.revents & POLLIN)) {
-      // FIXED: Use proper drmEventContext initialization
-      drmEventContext evctx;
-      memset(&evctx, 0, sizeof(evctx));
-      evctx.version = DRM_EVENT_CONTEXT_VERSION;
-      
-      // FIXED: Correct vblank handler signature and usage
-      static uint64_t vblankSequence = 0;
-      evctx.vblank_handler = [](int fd, unsigned int sequence, 
-                               unsigned int tv_sec, unsigned int tv_usec, 
-                               void *user_data) {
-        uint64_t* seqPtr = (uint64_t*)user_data;
-        *seqPtr = sequence;
-      };
+	int pollResult = poll(&pfd, 1, 0); // 0 timeout = non-blocking
 
-      // Process DRM events
-      drmHandleEvent(drmFd, &evctx);
+	if (pollResult > 0 && (pfd.revents & POLLIN)) {
+	  // FIXED: Use proper drmEventContext initialization
+	  drmEventContext evctx;
+	  memset(&evctx, 0, sizeof(evctx));
+	  evctx.version = DRM_EVENT_CONTEXT_VERSION;
 
-      // Check if we got a new vblank
-      if (vblankSequence != lastVBlankSeq) {
-        shouldRender = true;
-        render_timestamp = now10ns - lastRenderTime;
-        lastRenderTime = now10ns;
-        lastVBlankSeq = vblankSequence;
-      }
-    }
+	  // FIXED: Correct vblank handler signature and usage
+	  static uint64_t vblankSequence = 0;
+	  evctx.vblank_handler = [](int fd, unsigned int sequence,
+							   unsigned int tv_sec, unsigned int tv_usec,
+							   void *user_data) {
+		uint64_t* seqPtr = (uint64_t*)user_data;
+		*seqPtr = sequence;
+	  };
 
-    // Request next VBlank event if not already pending - FIXED STRUCTURE
-    if (!shouldRender) {
-      drmVBlank vbl;
-      memset(&vbl, 0, sizeof(vbl));
-      
-      // FIXED: Use the correct structure members for modern libdrm
-      vbl.request.type = DRM_VBLANK_RELATIVE;
-      vbl.request.sequence = 1;
-      
-      // For modern versions that support events
-      #ifdef DRM_VBLANK_EVENT
-      vbl.request.type |= DRM_VBLANK_EVENT;
-      #endif
-      
-      // FIXED: Use the correct member name for crtc ID
-      // Note: The structure member name varies by libdrm version
-      // Try different possible member names
-      #if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-      // Modern libdrm - use high_crtc field
-      vbl.request.type |= (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT);
-      #else
-      // Older versions may use different approaches
-      // For now, just try without specifying CRTC
-      #endif
-      
-      // This will queue the event without blocking
-      int result = drmWaitVBlank(drmFd, &vbl);
-      if (result != 0) {
-        // If drmWaitVBlank fails, fall back to timer
-        shouldRender = (now10ns >= nextRenderTime10ns);
-        if (shouldRender) {
-          render_timestamp = now10ns - lastRenderTime;
-          lastRenderTime = now10ns;
-          nextRenderTime10ns += RENDER_PERIOD_10NS;
-        }
-      }
-    }
+	  // Process DRM events
+	  drmHandleEvent(drmFd, &evctx);
+
+	  // Check if we got a new vblank
+	  if (vblankSequence != lastVBlankSeq) {
+		shouldRender = true;
+		render_timestamp = now10ns - lastRenderTime;
+		lastRenderTime = now10ns;
+		lastVBlankSeq = vblankSequence;
+	  }
+	}
+
+	// Request next VBlank event if not already pending - FIXED STRUCTURE
+	if (!shouldRender) {
+	  drmVBlank vbl;
+	  memset(&vbl, 0, sizeof(vbl));
+
+	  // FIXED: Use the correct structure members for modern libdrm
+	  vbl.request.type = DRM_VBLANK_RELATIVE;
+	  vbl.request.sequence = 1;
+
+	  // For modern versions that support events
+	  #ifdef DRM_VBLANK_EVENT
+	  vbl.request.type |= DRM_VBLANK_EVENT;
+	  #endif
+
+	  // FIXED: Use the correct member name for crtc ID
+	  // Note: The structure member name varies by libdrm version
+	  // Try different possible member names
+	  #if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+	  // Modern libdrm - use high_crtc field
+	  vbl.request.type |= (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT);
+	  #else
+	  // Older versions may use different approaches
+	  // For now, just try without specifying CRTC
+	  #endif
+
+	  // This will queue the event without blocking
+	  int result = drmWaitVBlank(drmFd, &vbl);
+	  if (result != 0) {
+		// If drmWaitVBlank fails, fall back to timer
+		shouldRender = (now10ns >= nextRenderTime10ns);
+		if (shouldRender) {
+		  render_timestamp = now10ns - lastRenderTime;
+		  lastRenderTime = now10ns;
+		  nextRenderTime10ns += RENDER_PERIOD_10NS;
+		}
+	  }
+	}
   }
 
   // Fallback to timer-based if DRM unavailable
   if (!shouldRender) {
-    shouldRender = (now10ns >= nextRenderTime10ns);
-    if (shouldRender) {
-      render_timestamp = now10ns - lastRenderTime;
-      lastRenderTime = now10ns;
-      nextRenderTime10ns += RENDER_PERIOD_10NS;
-    }
+	shouldRender = (now10ns >= (nextRenderTime10ns - (getTime10ns() - lag)));
+	if (shouldRender) {
+	  render_timestamp = now10ns - lastRenderTime;
+	  lastRenderTime = now10ns;
+	  nextRenderTime10ns += RENDER_PERIOD_10NS;
+	}
   }
   #elif defined(HX_ANDROID)
 		// Android VSync detection
@@ -1444,7 +1450,7 @@ namespace lime {
 		}
 		#else
 		// Other platforms use the original logic
-		shouldRender = (now10ns >= nextRenderTime10ns);
+		shouldRender = (now10ns >= (nextRenderTime10ns - (getTime10ns() - lag)));
 		if (shouldRender) {
 			render_timestamp = RENDER_PERIOD_10NS;
 			nextRenderTime10ns += RENDER_PERIOD_10NS;
@@ -1458,6 +1464,8 @@ namespace lime {
 
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
+
+			lag = getTime10ns();
 		}
 
 		PollInputs();

@@ -132,13 +132,13 @@ class NativeApplication
 
 		var eventLoop = function()
 		{
-			Sys.println("A!");
+			//Sys.println("A!");
 			var active = NativeCFFI.lime_application_update(handle);
 
 			if (!active)
 			{
 				untyped process.exitCode = NativeCFFI.lime_application_quit(handle);
-				Sys.println("AHAHA!");
+				//Sys.println("AHAHA!");
 				parent.onExit.dispatch(untyped process.exitCode);
 			}
 			else
