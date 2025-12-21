@@ -1458,6 +1458,8 @@ namespace lime {
 		#endif
 
 		if (shouldRender) {
+			PollInputs();  // Get freshest input RIGHT before processing
+
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = render_timestamp;
 			ApplicationEvent::Dispatch(&applicationEvent);
@@ -1466,9 +1468,9 @@ namespace lime {
 			RenderEvent::Dispatch(&renderEvent);
 
 			lag = getTime10ns();
+		} else {
+			PollInputs();
 		}
-
-		PollInputs();
 
 		return active;
 	}
