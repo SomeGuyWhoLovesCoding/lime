@@ -1298,7 +1298,7 @@ namespace lime
 		{
 			printf("What a fucking waste");
 			// Fallback timer-based approach
-			shouldRender = (now10ns >= (nextRenderTime10ns - (getTime10ns() - lag)));
+			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 			if (shouldRender)
 			{
 				render_timestamp = now10ns - lastRenderTime;
@@ -1484,7 +1484,7 @@ namespace lime
 		// Fallback to timer-based if DRM unavailable
 		if (!shouldRender)
 		{
-			shouldRender = (now10ns >= (nextRenderTime10ns - (getTime10ns() - lag)));
+			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 			if (shouldRender)
 			{
 				render_timestamp = now10ns - lastRenderTime;
@@ -1523,7 +1523,7 @@ namespace lime
 		//calculateMinimalSleepTime(2000);
 #else
 		// Other platforms use the original logic
-		shouldRender = (now10ns >= (nextRenderTime10ns - (getTime10ns() - lag)));
+		shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 		if (shouldRender)
 		{
 			render_timestamp = RENDER_PERIOD_10NS;
