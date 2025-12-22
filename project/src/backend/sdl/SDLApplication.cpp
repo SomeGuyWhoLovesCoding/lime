@@ -835,7 +835,7 @@ namespace lime
 			   minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
 
 		ULONG current = 0;
-		NTSTATUS status = NtSetTimerResolution(1563, TRUE, &current);
+		NTSTATUS status = NtSetTimerResolution(5000, TRUE, &current);
 
 		printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
 			   (unsigned int)status, current / 10000.0);
