@@ -1184,13 +1184,13 @@ namespace lime
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 60 == 0) { // 24 frames inbetween (because yes)
-			minimalSleepCalc = 66666;
+		if ((int)mode.refresh_rate % 60 == 0) { // 33 frames inbetween (because yes)
+			minimalSleepCalc = 50505;
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 75 == 0) { // 20 frames inbetween
-			minimalSleepCalc = 66666;
+		if ((int)mode.refresh_rate % 75 == 0) { // 26 frames inbetween
+			minimalSleepCalc = 51282;
 			return;
 		}
 
@@ -1199,8 +1199,8 @@ namespace lime
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 144 == 0) { // 10 frames inbetween
-			minimalSleepCalc = 69444;
+		if ((int)mode.refresh_rate % 144 == 0) { // 13 frames inbetween
+			minimalSleepCalc = 53418;
 			return;
 		}
 
