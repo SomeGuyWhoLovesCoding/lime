@@ -1239,7 +1239,7 @@ namespace lime
 
 		// --- Fixed scheduling with drift correction ---
 		calculateMinimalSleepTime();
-		int64_t targetTime = now10ns + minimalSleepCalc10ns 
+		int64_t targetTime = now10ns + minimalSleepCalc10ns;
 		bool useSpin = true;
 
 		coolSleepUntil10ns(targetTime);
