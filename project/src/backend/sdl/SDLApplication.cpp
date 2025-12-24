@@ -1167,7 +1167,7 @@ namespace lime
 	}
 
 	static int64_t lag = 0;
-	static int64_t minimalSleepCalc = 0;
+	static int64_t minimalSleepCalc10ns = 0;
 
 	static void calculateMinimalSleepTime()
 	{
@@ -1175,60 +1175,38 @@ namespace lime
 		SDL_GetWindowDisplayMode (SDLWindow::sdlWindow, &mode);
 
 		if ((int)mode.refresh_rate == 0) {
-			minimalSleepCalc = 50000;
+			minimalSleepCalc10ns = 50000;
 			return;
 		}
 
 		if ((int)mode.refresh_rate % 50 == 0) { // 40 frames inbetween (because yes)
-			minimalSleepCalc = 50000;
+			minimalSleepCalc10ns = 50000;
 			return;
 		}
 
 		if ((int)mode.refresh_rate % 60 == 0) { // 33 frames inbetween (because yes)
-			minimalSleepCalc = 50505;
+			minimalSleepCalc10ns = 50505;
 			return;
 		}
 
 		if ((int)mode.refresh_rate % 75 == 0) { // 26 frames inbetween
-			minimalSleepCalc = 51282;
+			minimalSleepCalc10ns = 51282;
 			return;
 		}
 
 		if ((int)mode.refresh_rate % 85 == 0) { // 23 frames inbetween
-			minimalSleepCalc = 51150;
+			minimalSleepCalc10ns = 51150;
 			return;
 		}
 
 		if ((int)mode.refresh_rate % 144 == 0) { // 13 frames inbetween
-			minimalSleepCalc = 53418;
+			minimalSleepCalc10ns = 53418;
 			return;
 		}
 
 		if ((int)mode.refresh_rate % 165 == 0) { // 12 frames
-			minimalSleepCalc = 50505;
+			minimalSleepCalc10ns = 50505;
 			return;
-		}
-
-		// Start with one frame period
-		int64_t framePeriod10ns = (TICKS_PER_SECOND_10NS / mode.refresh_rate);
-		int64_t divisor = 2;
-
-		const int64_t MIN_SLEEP_THRESHOLD_10NS = TILES_PER_TICK_10NS; // 0.5ms in 10ns units on windows, 50us literally everywhere else
-
-		// Find the largest divisor of framePeriod that keeps sleep time > 0.5ms
-		while (true)
-		{
-			int64_t candidateSleepTime = framePeriod10ns / divisor;
-
-			if (candidateSleepTime >= MIN_SLEEP_THRESHOLD_10NS)
-			{
-				minimalSleepCalc = candidateSleepTime;
-				divisor++;
-			}
-			else
-			{
-				break; // Can't divide further without going below 0.5ms
-			}
 		}
 	}
 
@@ -1261,7 +1239,7 @@ namespace lime
 
 		// --- Fixed scheduling with drift correction ---
 		calculateMinimalSleepTime();
-		int64_t targetTime = now10ns + minimalSleepCalc;
+		int64_t targetTime = now10ns + minimalSleepCalc10ns 
 		bool useSpin = true;
 
 		coolSleepUntil10ns(targetTime);
