@@ -771,16 +771,7 @@ namespace lime
 	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
 	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
 
-// For cross-platform best sleep implementations (SDL3's SDL_DelayPrecise uses the same thing
-// except it does spinlock but this uses a high-precision waitable timer which has basically 10us of granularity)
-// And for cohesion sake it's 10 microseconds since linux has an accurate sleep implementation already
-// and it's nuts that windows can even handle 10us of sleep at minimum without throttling the cpu so yeah that's that
-// turned it if you do this every 10 microconds it would start throttling performance on linux and android so yeah I reduced the precision to 100 microseconds to be safe
-#if HX_WINDOWS
-	static int64_t TILES_PER_TICK_10NS = (int64_t)(TICKS_PER_SECOND_10NS * 0.005);
-#else
-	static int64_t TILES_PER_TICK_10NS = (int64_t)(TICKS_PER_SECOND_10NS * 0.0005);
-#endif
+	static int64_t TILES_PER_TICK_10NS = TICKS_PER_SECOND_10NS / 1000LL; // 1ms to be safe for every target. Yes, really.
 
 #if HX_WINDOWS
 	static HANDLE timer;
@@ -1174,48 +1165,20 @@ namespace lime
 		SDL_DisplayMode mode;
 		SDL_GetWindowDisplayMode (SDLWindow::sdlWindow, &mode);
 
-		if ((int)mode.refresh_rate == 0) {
-			minimalSleepCalc = 50000;
-			return;
-		}
+		int refreshRate = (int)mode.refresh_rate;
 
-		if ((int)mode.refresh_rate % 50 == 0) { // 40 frames inbetween (because yes)
-			minimalSleepCalc = 50000;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 60 == 0) { // 33 frames inbetween (because yes)
-			minimalSleepCalc = 50505;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 75 == 0) { // 26 frames inbetween
-			minimalSleepCalc = 51282;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 85 == 0) { // 23 frames inbetween
-			minimalSleepCalc = 51150;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 144 == 0) { // 13 frames inbetween
-			minimalSleepCalc = 53418;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 165 == 0) { // 12 frames
-			minimalSleepCalc = 50505;
-			return;
+		if (refreshRate == 0) {
+			refreshRate = 1000;
 		}
 
 		// Start with one frame period
-		int64_t framePeriod10ns = (TICKS_PER_SECOND_10NS / mode.refresh_rate);
+		int64_t framePeriod10ns = (TICKS_PER_SECOND_10NS / refreshRate);
 		int64_t divisor = 2;
 
-		const int64_t MIN_SLEEP_THRESHOLD_10NS = TILES_PER_TICK_10NS; // 0.5ms in 10ns units on windows, 50us literally everywhere else
+		const int64_t MIN_SLEEP_THRESHOLD_10NS = (int64_t)TILES_PER_TICK_10NS; // 1ms in 10ns units on windows
+		minimalSleepCalc = MIN_SLEEP_THRESHOLD_10NS;
 
-		// Find the largest divisor of framePeriod that keeps sleep time > 0.5ms
+		// Find the largest divisor of framePeriod that keeps sleep time > 1ms
 		while (true)
 		{
 			int64_t candidateSleepTime = framePeriod10ns / divisor;
@@ -1223,13 +1186,16 @@ namespace lime
 			if (candidateSleepTime >= MIN_SLEEP_THRESHOLD_10NS)
 			{
 				minimalSleepCalc = candidateSleepTime;
+				//printf("%lld\n", minimalSleepCalc);
 				divisor++;
 			}
 			else
 			{
-				break; // Can't divide further without going below 0.5ms
+				minimalSleepCalc = framePeriod10ns / (divisor - 1);
+				break; // Can't divide further without going below 1ms
 			}
 		}
+		//printf("%lld\n", minimalSleepCalc);
 	}
 
 	bool SDLApplication::Update()
@@ -1245,8 +1211,6 @@ namespace lime
 		{
 			lag = getTime10ns();
 		}
-
-		bool vsyncEnabled = SDLWindow::vsync;
 
 		int64_t now10ns = getTime10ns();
 
