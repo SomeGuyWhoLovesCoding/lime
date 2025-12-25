@@ -63,6 +63,7 @@ namespace lime {
 			SDL_Texture* sdlTexture;
 			static SDL_Window* sdlWindow;
 			static bool vsync;
+			static bool uncappedFramerate;
 
 		private:
 

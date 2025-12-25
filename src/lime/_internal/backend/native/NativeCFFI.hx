@@ -69,6 +69,8 @@ class NativeCFFI
 
 	@:cffi private static function lime_application_set_render_frame_rate(handle:Dynamic, value:Float):Void;
 
+	@:cffi private static function lime_application_set_uncapped_frame_rate(value:Bool):Void;
+
 	@:cffi private static function lime_application_update(handle:Dynamic):Bool;
 
 	@:cffi private static function lime_audio_load(data:Dynamic, buffer:Dynamic):Dynamic;
@@ -377,6 +379,8 @@ class NativeCFFI
 		"lime_application_set_frame_rate", "odv", false));
 	private static var lime_application_set_render_frame_rate = new cpp.Callable<cpp.Object->Float->cpp.Void>(cpp.Prime._loadPrime("lime",
 		"lime_application_set_render_frame_rate", "odv", false));
+	private static var lime_application_set_uncapped_frame_rate = new cpp.Callable<cpp.Object->Bool->cpp.Void>(cpp.Prime._loadPrime("lime",
+		"lime_application_set_uncapped_frame_rate", "obv", false));
 	private static var lime_application_update = new cpp.Callable<cpp.Object->Bool>(cpp.Prime._loadPrime("lime", "lime_application_update", "ob", false));
 	private static var lime_audio_load = new cpp.Callable<cpp.Object->cpp.Object->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_audio_load", "ooo", false));
 	private static var lime_audio_load_bytes = new cpp.Callable<cpp.Object->cpp.Object->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_audio_load_bytes",
@@ -646,6 +650,7 @@ class NativeCFFI
 	private static var lime_application_quit = CFFI.load("lime", "lime_application_quit", 1);
 	private static var lime_application_set_frame_rate = CFFI.load("lime", "lime_application_set_frame_rate", 2);
 	private static var lime_application_set_render_frame_rate = CFFI.load("lime", "lime_application_set_render_frame_rate", 2);
+	private static var lime_application_set_uncapped_frame_rate = CFFI.load("lime", "lime_application_set_uncapped_frame_rate", 2);
 	private static var lime_application_update = CFFI.load("lime", "lime_application_update", 1);
 	private static var lime_audio_load = CFFI.load("lime", "lime_audio_load", 2);
 	private static var lime_audio_load_bytes = CFFI.load("lime", "lime_audio_load_bytes", 2);
@@ -821,6 +826,8 @@ class NativeCFFI
 	@:hlNative("lime", "hl_application_set_frame_rate") private static function lime_application_set_frame_rate(handle:CFFIPointer, value:Float):Void {}
 
 	@:hlNative("lime", "hl_application_set_render_frame_rate") private static function lime_application_set_render_frame_rate(handle:CFFIPointer, value:Float):Void {}
+
+	@:hlNative("lime", "hl_application_set_uncapped_frame_rate") private static function lime_application_set_uncapped_frame_rate(handle:CFFIPointer, value:Bool):Void {}
 
 	@:hlNative("lime", "hl_application_update") private static function lime_application_update(handle:CFFIPointer):Bool
 	{

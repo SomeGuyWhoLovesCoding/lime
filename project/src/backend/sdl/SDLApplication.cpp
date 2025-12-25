@@ -988,6 +988,11 @@ namespace lime
 #endif
 	}
 
+	void SDLApplication::SetUncappedFrameRate(bool value)
+	{
+		SDLWindow::uncappedFramerate = value;
+	}
+
 	void SDLApplication::SetFrameRate(double frameRate)
 	{
 
@@ -1240,9 +1245,10 @@ namespace lime
 		// --- Fixed scheduling with drift correction ---
 		calculateMinimalSleepTime();
 		int64_t targetTime = now10ns + minimalSleepCalc10ns;
-		bool useSpin = true;
 
-		coolSleepUntil10ns(targetTime);
+		if (!SDLWindow::uncappedFramerate) {
+			coolSleepUntil10ns(targetTime);
+		}
 
 		now10ns = getTime10ns();
 
@@ -1252,271 +1258,274 @@ namespace lime
 		// --- Render scheduling ---
 		bool shouldRender = false;
 
-#ifdef HX_WINDOWS
-		static int64_t qpcVBlank = 0;
-		// Use DWM composition timing for precise VSync synchronization
-		static DWM_TIMING_INFO timingInfo = {};
-		timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+		if (!SDLWindow::uncappedFramerate) {
+	#ifdef HX_WINDOWS
+			static int64_t qpcVBlank = 0;
+			// Use DWM composition timing for precise VSync synchronization
+			static DWM_TIMING_INFO timingInfo = {};
+			timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
 
-		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
+			HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
 
-		if (SUCCEEDED(hr))
-		{
-			if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank)
+			if (SUCCEEDED(hr))
 			{
-				shouldRender = true;
-				int64_t oldTimestamp = render_timestamp;
-				render_timestamp = (timingInfo.qpcVBlank - qpcVBlank) * 10LL;
-				qpcVBlank = timingInfo.qpcVBlank;
-
-				//calculateMinimalSleepTime(TICKS_PER_SECOND_10NS / render_timestamp);
-			}
-		}
-		else
-		{
-			printf("What a fucking waste");
-			// Fallback timer-based approach
-			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-			if (shouldRender)
-			{
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
-			}
-		}
-#elif defined(HX_LINUX)
-		// Linux VSync with DRM events (non-blocking)
-		static int drmFd = -1;
-		static uint32_t drmCrtcId = 0;
-		static uint64_t lastVBlankSeq = 0;
-		static int lastWindowX = -1, lastWindowY = -1;
-
-		// Get current window position
-		int windowX = 0, windowY = 0;
-		if (!SDLWindow::sdlWindow)
-		{
-			return active; // Fix: return bool instead of void
-		}
-		SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
-
-		// Re-detect if window moved or first time
-		if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
-		{
-			lastWindowX = windowX;
-			lastWindowY = windowY;
-
-			// Close previous fd if open
-			if (drmFd >= 0)
-			{
-				close(drmFd);
-				drmFd = -1;
-			}
-
-			// Enumerate DRM devices
-			drmDevicePtr devices[16];
-			int deviceCount = drmGetDevices(devices, 16);
-
-			if (deviceCount > 0)
-			{
-				bool foundDevice = false;
-
-				for (int i = 0; i < deviceCount && !foundDevice; i++)
-				{
-					drmDevicePtr dev = devices[i];
-					if (!dev->nodes[DRM_NODE_PRIMARY])
-						continue;
-
-					int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
-					if (fd < 0)
-						continue;
-
-					// Get mode resources
-					drmModeResPtr res = drmModeGetResources(fd);
-					if (!res)
-					{
-						close(fd);
-						continue;
-					}
-
-					// Check each CRTC
-					for (int c = 0; c < res->count_crtcs && !foundDevice; c++)
-					{
-						uint32_t crtcId = res->crtcs[c];
-						drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
-
-						if (!crtc)
-							continue;
-
-						// Check if CRTC is enabled and covers window position
-						if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0)
-						{
-							if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
-								windowY >= crtc->y && windowY < crtc->y + crtc->height)
-							{
-								drmFd = fd;
-								drmCrtcId = crtcId;
-								drmInitialized = true;
-								foundDevice = true;
-							}
-						}
-
-						drmModeFreeCrtc(crtc);
-					}
-
-					drmModeFreeResources(res);
-
-					if (!foundDevice)
-					{
-						close(fd);
-					}
-				}
-
-				drmFreeDevices(devices, deviceCount);
-			}
-		}
-
-		shouldRender = false;
-
-		if (drmFd >= 0 && drmCrtcId != 0)
-		{
-			// Non-blocking poll for DRM events - FIXED STRUCT INITIALIZATION
-			struct pollfd pfd;
-			pfd.fd = drmFd;
-			pfd.events = POLLIN;
-			pfd.revents = 0;
-
-			int pollResult = poll(&pfd, 1, 0); // 0 timeout = non-blocking
-
-			if (pollResult > 0 && (pfd.revents & POLLIN))
-			{
-				// FIXED: Use proper drmEventContext initialization
-				drmEventContext evctx;
-				memset(&evctx, 0, sizeof(evctx));
-				evctx.version = DRM_EVENT_CONTEXT_VERSION;
-
-				// FIXED: Correct vblank handler signature and usage
-				static uint64_t vblankSequence = 0;
-				evctx.vblank_handler = [](int fd, unsigned int sequence,
-										  unsigned int tv_sec, unsigned int tv_usec,
-										  void *user_data)
-				{
-					uint64_t *seqPtr = (uint64_t *)user_data;
-					*seqPtr = sequence;
-				};
-
-				// Process DRM events
-				drmHandleEvent(drmFd, &evctx);
-
-				// Check if we got a new vblank
-				if (vblankSequence != lastVBlankSeq)
+				if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank)
 				{
 					shouldRender = true;
+					int64_t oldTimestamp = render_timestamp;
+					render_timestamp = (timingInfo.qpcVBlank - qpcVBlank) * 10LL;
+					qpcVBlank = timingInfo.qpcVBlank;
+
+					//calculateMinimalSleepTime(TICKS_PER_SECOND_10NS / render_timestamp);
+				}
+			}
+			else
+			{
+				printf("What a fucking waste");
+				// Fallback timer-based approach
+				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+				if (shouldRender)
+				{
 					render_timestamp = now10ns - lastRenderTime;
 					lastRenderTime = now10ns;
-					lastVBlankSeq = vblankSequence;
+					nextRenderTime10ns += RENDER_PERIOD_10NS;
+				}
+			}
+	#elif defined(HX_LINUX)
+			// Linux VSync with DRM events (non-blocking)
+			static int drmFd = -1;
+			static uint32_t drmCrtcId = 0;
+			static uint64_t lastVBlankSeq = 0;
+			static int lastWindowX = -1, lastWindowY = -1;
+
+			// Get current window position
+			int windowX = 0, windowY = 0;
+			if (!SDLWindow::sdlWindow)
+			{
+				return active; // Fix: return bool instead of void
+			}
+			SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
+
+			// Re-detect if window moved or first time
+			if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
+			{
+				lastWindowX = windowX;
+				lastWindowY = windowY;
+
+				// Close previous fd if open
+				if (drmFd >= 0)
+				{
+					close(drmFd);
+					drmFd = -1;
+				}
+
+				// Enumerate DRM devices
+				drmDevicePtr devices[16];
+				int deviceCount = drmGetDevices(devices, 16);
+
+				if (deviceCount > 0)
+				{
+					bool foundDevice = false;
+
+					for (int i = 0; i < deviceCount && !foundDevice; i++)
+					{
+						drmDevicePtr dev = devices[i];
+						if (!dev->nodes[DRM_NODE_PRIMARY])
+							continue;
+
+						int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
+						if (fd < 0)
+							continue;
+
+						// Get mode resources
+						drmModeResPtr res = drmModeGetResources(fd);
+						if (!res)
+						{
+							close(fd);
+							continue;
+						}
+
+						// Check each CRTC
+						for (int c = 0; c < res->count_crtcs && !foundDevice; c++)
+						{
+							uint32_t crtcId = res->crtcs[c];
+							drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
+
+							if (!crtc)
+								continue;
+
+							// Check if CRTC is enabled and covers window position
+							if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0)
+							{
+								if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
+									windowY >= crtc->y && windowY < crtc->y + crtc->height)
+								{
+									drmFd = fd;
+									drmCrtcId = crtcId;
+									drmInitialized = true;
+									foundDevice = true;
+								}
+							}
+
+							drmModeFreeCrtc(crtc);
+						}
+
+						drmModeFreeResources(res);
+
+						if (!foundDevice)
+						{
+							close(fd);
+						}
+					}
+
+					drmFreeDevices(devices, deviceCount);
 				}
 			}
 
-			// Request next VBlank event if not already pending - FIXED STRUCTURE
-			if (!shouldRender)
+			shouldRender = false;
+
+			if (drmFd >= 0 && drmCrtcId != 0)
 			{
-				drmVBlank vbl;
-				memset(&vbl, 0, sizeof(vbl));
+				// Non-blocking poll for DRM events - FIXED STRUCT INITIALIZATION
+				struct pollfd pfd;
+				pfd.fd = drmFd;
+				pfd.events = POLLIN;
+				pfd.revents = 0;
 
-				// FIXED: Use the correct structure members for modern libdrm
-				vbl.request.type = DRM_VBLANK_RELATIVE;
-				vbl.request.sequence = 1;
+				int pollResult = poll(&pfd, 1, 0); // 0 timeout = non-blocking
 
-// For modern versions that support events
-#ifdef DRM_VBLANK_EVENT
-				vbl.request.type |= DRM_VBLANK_EVENT;
-#endif
-
-// FIXED: Use the correct member name for crtc ID
-// Note: The structure member name varies by libdrm version
-// Try different possible member names
-#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-				// Modern libdrm - use high_crtc field
-				vbl.request.type |= (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT);
-#else
-// Older versions may use different approaches
-// For now, just try without specifying CRTC
-#endif
-
-				// This will queue the event without blocking
-				int result = drmWaitVBlank(drmFd, &vbl);
-				if (result != 0)
+				if (pollResult > 0 && (pfd.revents & POLLIN))
 				{
-					// If drmWaitVBlank fails, fall back to timer
-					shouldRender = (now10ns >= nextRenderTime10ns);
-					if (shouldRender)
+					// FIXED: Use proper drmEventContext initialization
+					drmEventContext evctx;
+					memset(&evctx, 0, sizeof(evctx));
+					evctx.version = DRM_EVENT_CONTEXT_VERSION;
+
+					// FIXED: Correct vblank handler signature and usage
+					static uint64_t vblankSequence = 0;
+					evctx.vblank_handler = [](int fd, unsigned int sequence,
+											unsigned int tv_sec, unsigned int tv_usec,
+											void *user_data)
 					{
+						uint64_t *seqPtr = (uint64_t *)user_data;
+						*seqPtr = sequence;
+					};
+
+					// Process DRM events
+					drmHandleEvent(drmFd, &evctx);
+
+					// Check if we got a new vblank
+					if (vblankSequence != lastVBlankSeq)
+					{
+						shouldRender = true;
 						render_timestamp = now10ns - lastRenderTime;
 						lastRenderTime = now10ns;
-						nextRenderTime10ns += RENDER_PERIOD_10NS;
+						lastVBlankSeq = vblankSequence;
+					}
+				}
+
+				// Request next VBlank event if not already pending - FIXED STRUCTURE
+				if (!shouldRender)
+				{
+					drmVBlank vbl;
+					memset(&vbl, 0, sizeof(vbl));
+
+					// FIXED: Use the correct structure members for modern libdrm
+					vbl.request.type = DRM_VBLANK_RELATIVE;
+					vbl.request.sequence = 1;
+
+	// For modern versions that support events
+	#ifdef DRM_VBLANK_EVENT
+					vbl.request.type |= DRM_VBLANK_EVENT;
+	#endif
+
+	// FIXED: Use the correct member name for crtc ID
+	// Note: The structure member name varies by libdrm version
+	// Try different possible member names
+	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+					// Modern libdrm - use high_crtc field
+					vbl.request.type |= (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT);
+	#else
+	// Older versions may use different approaches
+	// For now, just try without specifying CRTC
+	#endif
+
+					// This will queue the event without blocking
+					int result = drmWaitVBlank(drmFd, &vbl);
+					if (result != 0)
+					{
+						// If drmWaitVBlank fails, fall back to timer
+						shouldRender = (now10ns >= nextRenderTime10ns);
+						if (shouldRender)
+						{
+							render_timestamp = now10ns - lastRenderTime;
+							lastRenderTime = now10ns;
+							nextRenderTime10ns += RENDER_PERIOD_10NS;
+						}
 					}
 				}
 			}
-		}
 
-		// Fallback to timer-based if DRM unavailable
-		if (!shouldRender)
-		{
+			// Fallback to timer-based if DRM unavailable
+			if (!shouldRender)
+			{
+				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+				if (shouldRender)
+				{
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns += RENDER_PERIOD_10NS;
+				}
+			}
+
+			//calculateMinimalSleepTime(2000);
+	#elif defined(HX_ANDROID)
+			// Android VSync detection
+			if (choreographer)
+			{
+				if (shouldRenderFromCallback)
+				{
+					shouldRender = true;
+					shouldRenderFromCallback = false;
+					// Re-register for next frame
+					AChoreographer_postFrameCallback(choreographer,
+													choreographer_callback,
+													nullptr);
+				}
+			}
+			else
+			{
+				// Fallback timer-based approach
+				shouldRender = (now10ns >= nextRenderTime10ns);
+				if (shouldRender)
+				{
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns += RENDER_PERIOD_10NS;
+				}
+			}
+
+			//calculateMinimalSleepTime(2000);
+	#else
+			// Other platforms use the original logic
 			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 			if (shouldRender)
 			{
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
+				render_timestamp = RENDER_PERIOD_10NS;
 				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
+
+			//calculateMinimalSleepTime(2000);
+	#endif
 		}
 
-		//calculateMinimalSleepTime(2000);
-#elif defined(HX_ANDROID)
-		// Android VSync detection
-		if (choreographer)
-		{
-			if (shouldRenderFromCallback)
-			{
-				shouldRender = true;
-				shouldRenderFromCallback = false;
-				// Re-register for next frame
-				AChoreographer_postFrameCallback(choreographer,
-												 choreographer_callback,
-												 nullptr);
-			}
-		}
-		else
-		{
-			// Fallback timer-based approach
-			shouldRender = (now10ns >= nextRenderTime10ns);
-			if (shouldRender)
-			{
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
-			}
-		}
-
-		//calculateMinimalSleepTime(2000);
-#else
-		// Other platforms use the original logic
-		shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-		if (shouldRender)
-		{
-			render_timestamp = RENDER_PERIOD_10NS;
-			nextRenderTime10ns += RENDER_PERIOD_10NS;
-		}
-
-		//calculateMinimalSleepTime(2000);
-#endif
-
+		if (SDLWindow::uncappedFramerate) shouldRender = true;
 		if (shouldRender)
 		{
 			PollInputs(); // Get freshest input RIGHT before processing
 
 			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = render_timestamp;
+			applicationEvent.deltaTime = SDLWindow::uncappedFramerate ? getTime10ns() - lag : render_timestamp;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;

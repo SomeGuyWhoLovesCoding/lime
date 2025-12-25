@@ -46,6 +46,7 @@ class Window
 	**/
 	public var frameRate(get, set):Float;
 	public var renderFrameRate(get, set):Float;
+	public var uncappedFrameRate(get, set):Bool;
 
 	public var fullscreen(get, set):Bool;
 	public var height(get, set):Int;
@@ -532,6 +533,16 @@ class Window
 	@:noCompletion private inline function set_renderFrameRate(value:Float):Float
 	{
 		return __backend.setRenderFrameRate(value);
+	}
+
+	@:noCompletion private inline function get_uncappedFrameRate():Bool
+	{
+		return __backend.getUncappedFrameRate();
+	}
+
+	@:noCompletion private inline function set_uncappedFrameRate(value:Bool):Bool
+	{
+		return __backend.setUncappedFrameRate(value);
 	}
 
 	@:noCompletion private inline function get_fullscreen():Bool

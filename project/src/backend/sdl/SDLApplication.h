@@ -35,6 +35,7 @@ namespace lime {
 			int Quit ();
 			void SetFrameRate (double frameRate);
 			void SetRenderFrameRate (double renderFrameRate);
+			void SetUncappedFrameRate (bool value);
 			void PollInputs ();
 			bool Update ();
 

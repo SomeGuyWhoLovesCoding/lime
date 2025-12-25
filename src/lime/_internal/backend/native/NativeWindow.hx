@@ -45,6 +45,7 @@ class NativeWindow
 	private var displayMode:DisplayMode;
 	private var frameRate:Float;
 	private var renderFrameRate:Float;
+	private var uncappedFrameRate:Bool;
 	private var mouseLock:Bool;
 	private var parent:Window;
 	private var useHardware:Bool;
@@ -292,6 +293,11 @@ class NativeWindow
 	public function getRenderFrameRate():Float
 	{
 		return renderFrameRate;
+	}
+
+	public function getUncappedFrameRate():Bool
+	{
+		return uncappedFrameRate;
 	}
 
 	public function getMouseLock():Bool
@@ -619,6 +625,18 @@ class NativeWindow
 		}
 
 		return renderFrameRate = value;
+	}
+
+	public function setUncappedFrameRate(value:Bool):Bool
+	{
+		if (handle != null)
+		{
+			#if (!macro && lime_cffi)
+			NativeCFFI.lime_application_set_uncapped_frame_rate(parent.application.__backend.handle, value);
+			#end
+		}
+
+		return uncappedFrameRate = value;
 	}
 
 	public function setFullscreen(value:Bool):Bool
