@@ -304,6 +304,7 @@
 	<files id="uv">
 		<compilerflag value="-I${HASHLINK_PATH}/src" />
 		<compilerflag value="-I/usr/local/include" if="mac"/>
+		<compilerflag avlue="-I/usr/include/libdrm" if="linux" />
 
 		<file name="${HASHLINK_PATH}/libs/uv/uv.c"/>
 

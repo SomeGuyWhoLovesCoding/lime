@@ -237,6 +237,7 @@
 				<compilerflag value="-lbrcmGLESv2" />
 				<compilerflag value="-lbrcmEGL" />
 				<compilerflag value="-Wl,--no-undefined -lm -L/opt/vc/lib -lbcm_host -ldl -lpthread -lrt" />
+				<compilerflag avlue="-I/usr/include/libdrm" />
 
 			</section>
 
