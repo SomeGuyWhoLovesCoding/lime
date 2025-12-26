@@ -8,6 +8,7 @@
 	<set name="tvos" value="1" if="appletv" />
 
 	<set name="HASHLINK_PATH" value="lib/hashlink" unless="HASHLINK_PATH" />
+	<compilerflag value="-I/usr/include/libdrm" if="linux" />
 
 	<files id="hl">
 		<compilerflag value="-I${HASHLINK_PATH}/src" />
@@ -304,7 +305,6 @@
 	<files id="uv">
 		<compilerflag value="-I${HASHLINK_PATH}/src" />
 		<compilerflag value="-I/usr/local/include" if="mac"/>
-		<compilerflag avlue="-I/usr/include/libdrm" if="linux" />
 
 		<file name="${HASHLINK_PATH}/libs/uv/uv.c"/>
 
