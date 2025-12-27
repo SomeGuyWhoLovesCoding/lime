@@ -1850,7 +1850,7 @@ class GL
 	}
 
 	#if (lime_opengl || lime_opengles)
-	public static inline function mapBufferRange(target:Int, offset:DataPointer, length:Int, access:Int):DataPointer
+	public static inline function mapBufferRange(target:Int, offset:DataPointer, length:Int, access:Int):Int
 	{
 		return context.mapBufferRange(target, offset, length, access);
 	}

@@ -3743,24 +3743,32 @@ namespace lime {
 
 	double lime_gl_map_buffer_range (int target, double offset, int length, int access) {
 
-		#ifdef LIME_GLES3_API
 		uintptr_t result = (uintptr_t)glMapBufferRange (target, (GLintptr)(uintptr_t)offset, length, access);
 		return (double)result;
-		#else
-		return 0;
-		#endif
 
 	}
 
 
 	HL_PRIM double HL_NAME(hl_gl_map_buffer_range) (int target, double offset, int length, int access) {
 
-		#ifdef LIME_GLES3_API
 		uintptr_t result = (uintptr_t)glMapBufferRange (target, (GLintptr)(uintptr_t)offset, length, access);
 		return (double)result;
-		#else
-		return 0;
-		#endif
+
+	}
+
+
+	uintptr_t lime_gl_map_buffer_range_uintptrt (int target, double offset, int length, int access) {
+
+		uintptr_t result = (uintptr_t)glMapBufferRange (target, (GLintptr)(uintptr_t)offset, length, access);
+		return result;
+
+	}
+
+
+	HL_PRIM uintptr_t HL_NAME(hl_gl_map_buffer_range_uintptrt) (int target, double offset, int length, int access) {
+
+		uintptr_t result = (uintptr_t)glMapBufferRange (target, (GLintptr)(uintptr_t)offset, length, access);
+		return result;
 
 	}
 
@@ -5526,6 +5534,7 @@ namespace lime {
 	DEFINE_PRIME1v (lime_gl_line_width);
 	DEFINE_PRIME1v (lime_gl_link_program);
 	DEFINE_PRIME4 (lime_gl_map_buffer_range);
+	DEFINE_PRIME4 (lime_gl_map_buffer_range_uintptrt);
 	DEFINE_PRIME1v (lime_gl_object_deregister);
 	DEFINE_PRIME2 (lime_gl_object_from_id);
 	DEFINE_PRIME3 (lime_gl_object_register);
@@ -5803,6 +5812,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_VOID, hl_gl_line_width, _F32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_link_program, _I32);
 	DEFINE_HL_PRIM (_F64, hl_gl_map_buffer_range, _I32 _F64 _I32 _I32);
+	DEFINE_HL_PRIM (_I32, hl_gl_map_buffer_range_uintptrt, _I32 _F64 _I32 _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_object_deregister, _TGLOBJECT);
 	DEFINE_HL_PRIM (_TGLOBJECT, hl_gl_object_from_id, _I32 _I32);
 	DEFINE_HL_PRIM (_TCFFIPOINTER, hl_gl_object_register, _I32 _I32 _TGLOBJECT);

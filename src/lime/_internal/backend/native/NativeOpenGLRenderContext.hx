@@ -2636,10 +2636,10 @@ class NativeOpenGLRenderContext
 		#end
 	}
 
-	public function mapBufferRange(target:Int, offset:DataPointer, length:Int, access:Int):DataPointer
+	public function mapBufferRange(target:Int, offset:DataPointer, length:Int, access:Int):Int
 	{
 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
-		return NativeCFFI.lime_gl_map_buffer_range(target, offset, length, access);
+		return NativeCFFI.lime_gl_map_buffer_range_uintptrt(target, offset, length, access);
 		#else
 		return 0;
 		#end

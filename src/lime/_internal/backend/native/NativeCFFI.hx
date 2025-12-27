@@ -3988,6 +3988,8 @@ class NativeCFFI
 
 	@:cffi private static function lime_gl_map_buffer_range(target:Int, offset:DataPointer, length:Int, access:Int):DataPointer;
 
+	@:cffi private static function lime_gl_map_buffer_range_uintptrt(target:Int, offset:DataPointer, length:Int, access:Int):Int;
+
 	@:cffi private static function lime_gl_object_deregister(object:Dynamic):Void;
 
 	@:cffi private static function lime_gl_object_from_id(id:Int, type:Int):Dynamic;
@@ -4451,6 +4453,8 @@ class NativeCFFI
 	private static var lime_gl_link_program = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_link_program", "iv", false));
 	private static var lime_gl_map_buffer_range = new cpp.Callable<Int->lime.utils.DataPointer->Int->Int->lime.utils.DataPointer>(cpp.Prime._loadPrime("lime",
 		"lime_gl_map_buffer_range", "idiid", false));
+	private static var lime_gl_map_buffer_range_uintptrt = new cpp.Callable<Int->lime.utils.DataPointer->Int->Int->Int>(cpp.Prime._loadPrime("lime",
+		"lime_gl_map_buffer_range_uintptrt", "idiii", false));
 	private static var lime_gl_object_deregister = new cpp.Callable<cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_object_deregister", "ov",
 		false));
 	private static var lime_gl_object_from_id = new cpp.Callable<Int->Int->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_gl_object_from_id", "iio", false));
@@ -4793,6 +4797,7 @@ class NativeCFFI
 	private static var lime_gl_line_width = CFFI.load("lime", "lime_gl_line_width", 1);
 	private static var lime_gl_link_program = CFFI.load("lime", "lime_gl_link_program", 1);
 	private static var lime_gl_map_buffer_range = CFFI.load("lime", "lime_gl_map_buffer_range", 4);
+	private static var lime_gl_map_buffer_range_uintptrt = CFFI.load("lime", "lime_gl_map_buffer_range_uintptrt", 4);
 	private static var lime_gl_object_deregister:Dynamic->Void = CFFI.load("lime", "lime_gl_object_deregister", 1);
 	private static var lime_gl_object_from_id = CFFI.load("lime", "lime_gl_object_from_id", 2);
 	private static var lime_gl_object_register = CFFI.load("lime", "lime_gl_object_register", 3);
@@ -5485,6 +5490,12 @@ class NativeCFFI
 
 	@:hlNative("lime", "hl_gl_map_buffer_range") private static function lime_gl_map_buffer_range(target:Int, offset:DataPointer, length:Int,
 			access:Int):DataPointer
+	{
+		return 0;
+	}
+
+	@:hlNative("lime", "hl_gl_map_buffer_range_uintptrt") private static function lime_gl_map_buffer_range_uintptrt(target:Int, offset:DataPointer, length:Int,
+			access:Int):Int
 	{
 		return 0;
 	}
