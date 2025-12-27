@@ -4416,7 +4416,7 @@ public inline function linkProgram(program:GLProgram):Void
 	this.linkProgram(program);
 }
 
-public inline function mapBufferRange(target:Int, offset:DataPointer, length:Int, access:Int):Int
+public inline function mapBufferRange(target:Int, offset:DataPointer, length:Int, access:Int):DataPointer
 {
 	return this.mapBufferRange(target, offset, length, access);
 }
