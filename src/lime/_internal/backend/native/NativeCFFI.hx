@@ -4171,8 +4171,6 @@ class NativeCFFI
 	@:cffi private static function lime_gl_viewport(x:Int, y:Int, width:Int, height:Int):Void;
 
 	@:cffi private static function lime_gl_wait_sync(sync:CFFIPointer, flags:Int, timeoutA:Int, timeoutB:Int):Void;
-
-	@:cffi private static function lime_gl_memory_barrier(flags:Int):Void;
 	#else
 	private static var lime_gl_active_texture = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_active_texture", "iv", false));
 	private static var lime_gl_attach_shader = new cpp.Callable<Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_attach_shader", "iiv", false));
@@ -4616,8 +4614,6 @@ class NativeCFFI
 	private static var lime_gl_viewport = new cpp.Callable<Int->Int->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_viewport", "iiiiv", false));
 	private static var lime_gl_wait_sync = new cpp.Callable<cpp.Object->Int->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_wait_sync", "oiiiv",
 		false));
-	private static var lime_gl_memory_barrier = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_memory_barrier", "iv",
-		false));
 	#end
 	#end
 	#if (neko || cppia)
@@ -4891,7 +4887,6 @@ class NativeCFFI
 	private static var lime_gl_vertex_attrib_pointer = CFFI.load("lime", "lime_gl_vertex_attrib_pointer", -1);
 	private static var lime_gl_viewport = CFFI.load("lime", "lime_gl_viewport", 4);
 	private static var lime_gl_wait_sync = CFFI.load("lime", "lime_gl_wait_sync", 4);
-	private static var lime_gl_memory_barrier = CFFI.load("lime", "lime_gl_memory_barrier", 1);
 	#end
 
 	#if hl
@@ -5712,8 +5707,6 @@ class NativeCFFI
 	@:hlNative("lime", "hl_gl_viewport") private static function lime_gl_viewport(x:Int, y:Int, width:Int, height:Int):Void {}
 
 	@:hlNative("lime", "hl_gl_wait_sync") private static function lime_gl_wait_sync(sync:CFFIPointer, flags:Int, timeoutA:Int, timeoutB:Int):Void {}
-
-	@:hlNative("lime", "hl_gl_memory_barrier") private static function lime_gl_memory_barrier(flags:Int):Void {}
 	#end
 	#end
 	#if (lime_cffi && !macro && lime_harfbuzz)

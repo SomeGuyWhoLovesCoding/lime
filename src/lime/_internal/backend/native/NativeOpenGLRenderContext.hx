@@ -3281,13 +3281,6 @@ class NativeOpenGLRenderContext
 		#end
 	}
 
-	public function memoryBarrier(flags:Int):Void
-	{
-		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
-		NativeCFFI.lime_gl_memory_barrier(flags);
-		#end
-	}
-
 	private function __contextLost():Void
 	{
 		__isContextLost = true;

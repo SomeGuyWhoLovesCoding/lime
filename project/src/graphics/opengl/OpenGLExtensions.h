@@ -120,7 +120,7 @@ OGL_EXT(glBindRenderbuffer,void,(GLenum, GLuint));
 OGL_EXT(glFramebufferRenderbuffer,void,(GLenum, GLenum, GLenum, GLuint));
 OGL_EXT(glFramebufferTexture2D,void,(GLenum, GLenum, GLenum, GLuint, GLint));
 OGL_EXT(glRenderbufferStorage,void,(GLenum, GLenum, GLsizei, GLsizei));
-OGL_EXT(glBufferStorage,void,(GLenum,GLsizeiptr,const void *,GLbitfield flags));
+OGL_EXT(glBufferStorage,void,(GLenum,GLsizeiptr,const void *,GLbitfield));
 OGL_EXT(glCheckFramebufferStatus,GLenum,(GLenum));
 OGL_EXT(glSampleCoverage,void,(GLclampf, GLboolean));
 OGL_EXT(glCompressedTexSubImage2D,void,(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLsizei, const GLvoid *));

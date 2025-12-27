@@ -7,7 +7,6 @@
 #include <map>
 #include <string>
 #include <vector>
-#include <GL/gl.h>
 
 #ifdef NEED_EXTENSIONS
 #define DEFINE_EXTENSION
@@ -25,15 +24,6 @@
 
 #ifdef LIME_SDL
 #include <SDL.h>
-#endif
-
-// At the VERY top of OpenGLBindings.cpp, add:
-#ifndef PFNGLBUFFERSTORAGEPROC
-typedef void (*PFNGLBUFFERSTORAGEPROC)(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags);
-#endif
-
-#ifndef PFNGLEMORYBARRIERPROC  
-typedef void (*PFNGLEMORYBARRIERPROC)(GLbitfield barriers);
 #endif
 
 
@@ -4049,28 +4039,31 @@ namespace lime {
 
 	}
 
+
+	typedef void (APIENTRY *PFNGLBUFFERSTORAGEPROC) (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags);
+
 	// Global function pointer
-	static PFNGLBUFFERSTORAGEPROC glMemoryBarrierPtr = NULL;
+	static PFNGLBUFFERSTORAGEPROC glBufferStoragePtr = NULL;
 
 	void lime_gl_buffer_storage (int target, int size, double data, int flags) {
 		// Load the function pointer if not already loaded
-		if (glMemoryBarrierPtr == NULL) {
+		if (glBufferStoragePtr == NULL) {
 			#if defined(LIME_GLES) || defined(EMSCRIPTEN)
 				// Not available in GLES or WebGL
 				return;
 			#elif defined(_WIN32)
-				glMemoryBarrierPtr = (PFNGLBUFFERSTORAGEPROC)wglGetProcAddress("glBufferStorage");
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)wglGetProcAddress("glBufferStorage");
 			#elif defined(__APPLE__)
 				// macOS uses NSGL
-				glMemoryBarrierPtr = (PFNGLBUFFERSTORAGEPROC)NSGLGetProcAddress("glBufferStorage");
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)NSGLGetProcAddress("glBufferStorage");
 			#else
 				// Linux and others
-				glMemoryBarrierPtr = (PFNGLBUFFERSTORAGEPROC)glXGetProcAddress((const GLubyte*)"glBufferStorage");
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)glXGetProcAddress((const GLubyte*)"glBufferStorage");
 			#endif
 		}
 		
-		if (glMemoryBarrierPtr != NULL) {
-			glMemoryBarrierPtr(target, size, (void*)(uintptr_t)data, flags);
+		if (glBufferStoragePtr != NULL) {
+			glBufferStoragePtr(target, size, (void*)(uintptr_t)data, flags);
 		} else {
 			// Function not available - you might want to fall back to glBufferData
 			// or set an error flag
@@ -4079,20 +4072,20 @@ namespace lime {
 
 	HL_PRIM void HL_NAME(hl_gl_buffer_storage) (int target, int size, double data, int flags) {
 		// Same implementation
-		if (glMemoryBarrierPtr == NULL) {
+		if (glBufferStoragePtr == NULL) {
 			#if defined(LIME_GLES) || defined(EMSCRIPTEN)
 				return;
 			#elif defined(_WIN32)
-				glMemoryBarrierPtr = (PFNGLBUFFERSTORAGEPROC)wglGetProcAddress("glBufferStorage");
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)wglGetProcAddress("glBufferStorage");
 			#elif defined(__APPLE__)
-				glMemoryBarrierPtr = (PFNGLBUFFERSTORAGEPROC)NSGLGetProcAddress("glBufferStorage");
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)NSGLGetProcAddress("glBufferStorage");
 			#else
-				glMemoryBarrierPtr = (PFNGLBUFFERSTORAGEPROC)glXGetProcAddress((const GLubyte*)"glBufferStorage");
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)glXGetProcAddress((const GLubyte*)"glBufferStorage");
 			#endif
 		}
 		
-		if (glMemoryBarrierPtr != NULL) {
-			glMemoryBarrierPtr(target, size, (void*)(uintptr_t)data, flags);
+		if (glBufferStoragePtr != NULL) {
+			glBufferStoragePtr(target, size, (void*)(uintptr_t)data, flags);
 		}
 	}
 
@@ -5337,59 +5330,6 @@ namespace lime {
 
 	}
 
-	// Global function pointer
-	static PFNGLEMORYBARRIERPROC glMemoryBarrierPtr = NULL;
-
-	void lime_gl_memory_barrier(int barriers) {
-		// Load the function pointer if not already loaded
-		if (glMemoryBarrierPtr == NULL) {
-			#if defined(LIME_GLES) || defined(EMSCRIPTEN)
-				// Not available in GLES or WebGL
-				return;
-			#elif defined(_WIN32)
-				glMemoryBarrierPtr = (PFNGLEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
-			#elif defined(__APPLE__)
-				// macOS uses NSGL
-				glMemoryBarrierPtr = (PFNGLEMORYBARRIERPROC)NSGLGetProcAddress("glMemoryBarrier");
-			#else
-				// Linux and others
-				glMemoryBarrierPtr = (PFNGLEMORYBARRIERPROC)glXGetProcAddress((const GLubyte*)"glMemoryBarrier");
-			#endif
-		}
-		
-		if (glMemoryBarrierPtr != NULL) {
-			glMemoryBarrierPtr(barriers);
-		} else {
-			// Function not available - you might want to fall back to glBufferData
-			// or set an error flag
-		}
-	}
-
-	HL_PRIM void HL_NAME(hl_gl_memory_barrier)(int barriers) {
-		// Load the function pointer if not already loaded
-		if (glMemoryBarrierPtr == NULL) {
-			#if defined(LIME_GLES) || defined(EMSCRIPTEN)
-				// Not available in GLES or WebGL
-				return;
-			#elif defined(_WIN32)
-				glMemoryBarrierPtr = (PFNGLEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
-			#elif defined(__APPLE__)
-				// macOS uses NSGL
-				glMemoryBarrierPtr = (PFNGLEMORYBARRIERPROC)NSGLGetProcAddress("glMemoryBarrier");
-			#else
-				// Linux and others
-				glMemoryBarrierPtr = (PFNGLEMORYBARRIERPROC)glXGetProcAddress((const GLubyte*)"glMemoryBarrier");
-			#endif
-		}
-		
-		if (glMemoryBarrierPtr != NULL) {
-			glMemoryBarrierPtr(barriers);
-		} else {
-			// Function not available - you might want to fall back to glBufferData
-			// or set an error flag
-		}
-	}
-
 
 	bool OpenGLBindings::Init () {
 
@@ -5718,7 +5658,6 @@ namespace lime {
 	DEFINE_PRIME2v (lime_gl_vertex_attrib4fv);
 	DEFINE_PRIME4v (lime_gl_viewport);
 	DEFINE_PRIME4v (lime_gl_wait_sync);
-	DEFINE_PRIME1v (lime_gl_memory_barrier);
 
 
 	#define _TBYTES _OBJ (_I32 _BYTES)
@@ -5997,7 +5936,6 @@ namespace lime {
 	DEFINE_HL_PRIM (_VOID, hl_gl_vertex_attrib4fv, _I32 _F64);
 	DEFINE_HL_PRIM (_VOID, hl_gl_viewport, _I32 _I32 _I32 _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_wait_sync, _TCFFIPOINTER _I32 _I32 _I32);
-	DEFINE_HL_PRIM (_VOID, hl_gl_memory_barrier, _I32);
 
 
 }
