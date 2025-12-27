@@ -3743,24 +3743,16 @@ namespace lime {
 
 	double lime_gl_map_buffer_range (int target, double offset, int length, int access) {
 
-		#ifdef LIME_GLES3_API
 		uintptr_t result = (uintptr_t)glMapBufferRange (target, (GLintptr)(uintptr_t)offset, length, access);
 		return (double)result;
-		#else
-		return 0;
-		#endif
 
 	}
 
 
 	HL_PRIM double HL_NAME(hl_gl_map_buffer_range) (int target, double offset, int length, int access) {
 
-		#ifdef LIME_GLES3_API
 		uintptr_t result = (uintptr_t)glMapBufferRange (target, (GLintptr)(uintptr_t)offset, length, access);
 		return (double)result;
-		#else
-		return 0;
-		#endif
 
 	}
 
