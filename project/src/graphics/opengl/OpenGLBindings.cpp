@@ -5330,6 +5330,14 @@ namespace lime {
 
 	}
 
+	void lime_gl_memory_barrier(int flags) {
+		glMemoryBarrier(flags);
+	}
+
+	HL_PRIM void HL_NAME(hl_gl_memory_barrier)(int flags) {
+		glMemoryBarrier(flags);
+	}
+
 
 	bool OpenGLBindings::Init () {
 
@@ -5658,6 +5666,7 @@ namespace lime {
 	DEFINE_PRIME2v (lime_gl_vertex_attrib4fv);
 	DEFINE_PRIME4v (lime_gl_viewport);
 	DEFINE_PRIME4v (lime_gl_wait_sync);
+	DEFINE_PRIME1v (lime_gl_memory_barrier);
 
 
 	#define _TBYTES _OBJ (_I32 _BYTES)
@@ -5936,6 +5945,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_VOID, hl_gl_vertex_attrib4fv, _I32 _F64);
 	DEFINE_HL_PRIM (_VOID, hl_gl_viewport, _I32 _I32 _I32 _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_wait_sync, _TCFFIPOINTER _I32 _I32 _I32);
+	DEFINE_HL_PRIM (_VOID, hl_gl_memory_barrier, _I32);
 
 
 }

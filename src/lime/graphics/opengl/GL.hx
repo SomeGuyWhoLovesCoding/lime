@@ -2597,6 +2597,11 @@ class GL
 		context.waitSync(sync, flags, timeout);
 	}
 
+	public static inline function memoryBarrier(flags:Int):Void
+	{
+		context.memoryBarrier(flags);
+	}
+
 	private static inline function __getObjectID(object:#if (!js || !html5 || doc_gen) GLObject #else Dynamic #end):Int
 	{
 		return (object == null) ? 0 : @:privateAccess object.id;

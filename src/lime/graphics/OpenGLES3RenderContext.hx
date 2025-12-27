@@ -4858,6 +4858,11 @@ public inline function waitSync(sync:GLSync, flags:Int, timeout:Int64):Void
 	this.waitSync(sync, flags, timeout);
 }
 
+public inline function memoryBarrier(flags:Int):Void
+{
+	this.memoryBarrier(flags);
+}
+
 @:from private static function fromGL(gl:Class<GL>):OpenGLES3RenderContext
 {
 	return cast GL.context;
