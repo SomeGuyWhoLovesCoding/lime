@@ -4466,6 +4466,11 @@ public inline function renderbufferStorage(target:Int, internalformat:Int, width
 	this.renderbufferStorage(target, internalformat, width, height);
 }
 
+public inline function bufferStorage(target:Int, size:Int, data:DataPointer, flags:Int):Void
+{
+	this.bufferStorage(target, size, data, flags);
+}
+
 public inline function renderbufferStorageMultisample(target:Int, samples:Int, internalformat:Int, width:Int, height:Int):Void
 {
 	this.renderbufferStorageMultisample(target, samples, internalformat, width, height);

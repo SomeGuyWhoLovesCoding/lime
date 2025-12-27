@@ -2708,6 +2708,13 @@ class NativeOpenGLRenderContext
 		#end
 	}
 
+	public function bufferStorage(target:Int, size:Int, data:DataPointer, flags:Int):Void
+	{
+		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
+		NativeCFFI.lime_gl_buffer_storage(target, size, data, flags);
+		#end
+	}
+
 	public function renderbufferStorageMultisample(target:Int, samples:Int, internalformat:Int, width:Int, height:Int):Void
 	{
 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)

@@ -4040,6 +4040,56 @@ namespace lime {
 	}
 
 
+	typedef void (APIENTRY *PFNGLBUFFERSTORAGEPROC) (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags);
+
+	// Global function pointer
+	static PFNGLBUFFERSTORAGEPROC glBufferStoragePtr = NULL;
+
+	void lime_gl_buffer_storage (int target, int size, double data, int flags) {
+		// Load the function pointer if not already loaded
+		if (glBufferStoragePtr == NULL) {
+			#if defined(LIME_GLES) || defined(EMSCRIPTEN)
+				// Not available in GLES or WebGL
+				return;
+			#elif defined(_WIN32)
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)wglGetProcAddress("glBufferStorage");
+			#elif defined(__APPLE__)
+				// macOS uses NSGL
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)NSGLGetProcAddress("glBufferStorage");
+			#else
+				// Linux and others
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)glXGetProcAddress((const GLubyte*)"glBufferStorage");
+			#endif
+		}
+		
+		if (glBufferStoragePtr != NULL) {
+			glBufferStoragePtr(target, size, (void*)(uintptr_t)data, flags);
+		} else {
+			// Function not available - you might want to fall back to glBufferData
+			// or set an error flag
+		}
+	}
+
+	HL_PRIM void HL_NAME(hl_gl_buffer_storage) (int target, int size, double data, int flags) {
+		// Same implementation
+		if (glBufferStoragePtr == NULL) {
+			#if defined(LIME_GLES) || defined(EMSCRIPTEN)
+				return;
+			#elif defined(_WIN32)
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)wglGetProcAddress("glBufferStorage");
+			#elif defined(__APPLE__)
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)NSGLGetProcAddress("glBufferStorage");
+			#else
+				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)glXGetProcAddress((const GLubyte*)"glBufferStorage");
+			#endif
+		}
+		
+		if (glBufferStoragePtr != NULL) {
+			glBufferStoragePtr(target, size, (void*)(uintptr_t)data, flags);
+		}
+	}
+
+
 	void lime_gl_renderbuffer_storage_multisample (int target, int samples, int internalformat, int width, int height) {
 
 		#ifdef LIME_GLES3_API
@@ -5530,6 +5580,7 @@ namespace lime {
 	DEFINE_PRIME7v (lime_gl_read_pixels);
 	DEFINE_PRIME0v (lime_gl_release_shader_compiler);
 	DEFINE_PRIME4v (lime_gl_renderbuffer_storage);
+	DEFINE_PRIME4v (lime_gl_buffer_storage);
 	DEFINE_PRIME5v (lime_gl_renderbuffer_storage_multisample);
 	DEFINE_PRIME0v (lime_gl_resume_transform_feedback);
 	DEFINE_PRIME2v (lime_gl_sample_coverage);
@@ -5807,6 +5858,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_VOID, hl_gl_read_pixels, _I32 _I32 _I32 _I32 _I32 _I32 _F64);
 	DEFINE_HL_PRIM (_VOID, hl_gl_release_shader_compiler, _NO_ARG);
 	DEFINE_HL_PRIM (_VOID, hl_gl_renderbuffer_storage, _I32 _I32 _I32 _I32);
+	DEFINE_HL_PRIM (_VOID, hl_gl_buffer_storage, _I32 _I32 _F64 _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_renderbuffer_storage_multisample, _I32 _I32 _I32 _I32 _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_resume_transform_feedback, _NO_ARG);
 	DEFINE_HL_PRIM (_VOID, hl_gl_sample_coverage, _F32 _BOOL);

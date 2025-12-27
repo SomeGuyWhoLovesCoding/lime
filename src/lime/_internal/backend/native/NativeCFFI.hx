@@ -4012,6 +4012,8 @@ class NativeCFFI
 
 	@:cffi private static function lime_gl_renderbuffer_storage(target:Int, internalformat:Int, width:Int, height:Int):Void;
 
+	@:cffi private static function lime_gl_buffer_storage(target:Int, size:Int, data:DataPointer, flags:Int):Void;
+
 	@:cffi private static function lime_gl_renderbuffer_storage_multisample(target:Int, samples:Int, internalformat:Int, width:Int, height:Int):Void;
 
 	@:cffi private static function lime_gl_resume_transform_feedback():Void;
@@ -4472,6 +4474,8 @@ class NativeCFFI
 		false));
 	private static var lime_gl_renderbuffer_storage = new cpp.Callable<Int->Int->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime",
 		"lime_gl_renderbuffer_storage", "iiiiv", false));
+	private static var lime_gl_buffer_storage = new cpp.Callable<Int->Int->DataPointer->Int->cpp.Void>(cpp.Prime._loadPrime("lime",
+		"lime_gl_buffer_storage", "iidiv", false));
 	private static var lime_gl_renderbuffer_storage_multisample = new cpp.Callable<Int->Int->Int->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime",
 		"lime_gl_renderbuffer_storage_multisample", "iiiiiv", false));
 	private static var lime_gl_resume_transform_feedback = new cpp.Callable<Void->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_resume_transform_feedback",
@@ -4805,6 +4809,7 @@ class NativeCFFI
 	private static var lime_gl_read_pixels = CFFI.load("lime", "lime_gl_read_pixels", -1);
 	private static var lime_gl_release_shader_compiler = CFFI.load("lime", "lime_gl_release_shader_compiler", 0);
 	private static var lime_gl_renderbuffer_storage = CFFI.load("lime", "lime_gl_renderbuffer_storage", 4);
+	private static var lime_gl_buffer_storage = CFFI.load("lime", "lime_gl_buffer_storage", 4);
 	private static var lime_gl_renderbuffer_storage_multisample = CFFI.load("lime", "lime_gl_renderbuffer_storage_multisample", 5);
 	private static var lime_gl_resume_transform_feedback = CFFI.load("lime", "lime_gl_resume_transform_feedback", 0);
 	private static var lime_gl_sample_coverage = CFFI.load("lime", "lime_gl_sample_coverage", 2);
@@ -5521,6 +5526,9 @@ class NativeCFFI
 
 	@:hlNative("lime", "hl_gl_renderbuffer_storage") private static function lime_gl_renderbuffer_storage(target:Int, internalformat:Int, width:Int,
 		height:Int):Void {}
+
+	@:hlNative("lime", "hl_gl_buffer_storage") private static function lime_gl_buffer_storage(target:Int, size:Int, data:DataPointer,
+		flags:Int):Void {}
 
 	@:hlNative("lime", "hl_gl_renderbuffer_storage_multisample") private static function lime_gl_renderbuffer_storage_multisample(target:Int, samples:Int,
 		internalformat:Int, width:Int, height:Int):Void {}
