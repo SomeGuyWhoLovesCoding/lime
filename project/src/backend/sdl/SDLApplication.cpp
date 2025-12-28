@@ -1247,7 +1247,7 @@ namespace lime
 			RenderEvent::Dispatch(&renderEvent);
 
 			lag = getTime10ns();
-			return;
+			return active;
 		}
 
 		// Initialize timing on FIRST frame only
