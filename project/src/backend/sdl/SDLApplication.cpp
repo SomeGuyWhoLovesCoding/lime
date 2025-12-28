@@ -1231,11 +1231,9 @@ void SDLApplication::HandleEvent(SDL_Event *event)
 			lag = getTime10ns();
 		}
 
-		bool vsyncEnabled = SDLWindow::vsync;
-
 		int64_t now10ns = getTime10ns();
 
-		if (SDLWindow::uncappedFramerate) {
+		if (uncappedFramerate) {
 			PollInputs(); // Get freshest input RIGHT before processing
 
 			subLoopTickEvent.timestamp = getTime10ns();
