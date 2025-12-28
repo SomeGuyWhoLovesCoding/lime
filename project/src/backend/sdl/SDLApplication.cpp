@@ -996,33 +996,8 @@ namespace lime
     
 		// Reset timing when switching modes
 		if (value) {
-			lag = 0;
 			render_timestamp = 0;
 		}
-
-		#ifdef HX_LINUX
-		if (value) {
-			// Try to optimize for Linux uncapped rendering
-			SDL_Window* window = SDLWindow::sdlWindow;
-			if (window) {
-				// Try to disable compositor bypass if supported
-				const char* hint = SDL_GetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR);
-				if (!hint || strcmp(hint, "0") != 0) {
-					SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "1");
-					printf("Bypassing compositor for uncapped framerate\n");
-					bypassCompositor = true;
-				}
-				
-				// Try to use immediate updates if available
-				SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
-				
-				// Use fullscreen desktop for best performance
-				SDL_DisplayMode current;
-				SDL_GetCurrentDisplayMode(0, &current);
-				SDL_SetWindowDisplayMode(window, &current);
-			}
-		}
-		#endif
 
 		printf("Uncapped framerate set to %i\n", (int)uncappedFramerate);
 	}
@@ -1157,6 +1132,30 @@ namespace lime
 			}
 		}
 #endif
+
+		#ifdef HX_LINUX
+		if (value) {
+			// Try to optimize for Linux uncapped rendering
+			SDL_Window* window = SDLWindow::sdlWindow;
+			if (window) {
+				// Try to disable compositor bypass if supported
+				const char* hint = SDL_GetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR);
+				if (!hint || strcmp(hint, "0") != 0) {
+					SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "1");
+					printf("Bypassing compositor for uncapped framerate\n");
+					bypassCompositor = true;
+				}
+				
+				// Try to use immediate updates if available
+				SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
+				
+				// Use fullscreen desktop for best performance
+				SDL_DisplayMode current;
+				SDL_GetCurrentDisplayMode(0, &current);
+				SDL_SetWindowDisplayMode(window, &current);
+			}
+		}
+		#endif
 	}
 
 	void SDLApplication::PollInputs()
