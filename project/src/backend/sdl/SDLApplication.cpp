@@ -1143,7 +1143,6 @@ namespace lime
 				if (!hint || strcmp(hint, "0") != 0) {
 					SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "1");
 					printf("Bypassing compositor for uncapped framerate\n");
-					bypassCompositor = true;
 				}
 				
 				// Try to use immediate updates if available
