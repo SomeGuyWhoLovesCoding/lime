@@ -80,8 +80,7 @@ namespace lime
 	bool inBackground = false;
     static bool uncappedFramerate = false;
 
-
-void SDLApplication::HandleEvent(SDL_Event *event)
+	void SDLApplication::HandleEvent(SDL_Event *event)
 	{
 
 #if defined(IPHONE) || defined(EMSCRIPTEN)
@@ -992,7 +991,9 @@ void SDLApplication::HandleEvent(SDL_Event *event)
 
 	void SDLApplication::SetUncappedFrameRate(bool value)
 	{
+		printf("Setting uncapped framerate to %i\n", (int)value);
 		uncappedFramerate = value;
+		printf("Uncapped framerate set to %i\n", (int)uncappedFramerate);
 	}
 
 	void SDLApplication::SetFrameRate(double frameRate)
