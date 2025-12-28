@@ -1233,6 +1233,23 @@ namespace lime
 
 		int64_t now10ns = getTime10ns();
 
+		if (SDLWindow::uncappedFramerate) {
+			PollInputs(); // Get freshest input RIGHT before processing
+
+			subLoopTickEvent.timestamp = getTime10ns();
+			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+			
+			applicationEvent.type = UPDATE;
+			applicationEvent.deltaTime = getTime10ns() - lag;
+			ApplicationEvent::Dispatch(&applicationEvent);
+
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+
+			lag = getTime10ns();
+			return;
+		}
+
 		// Initialize timing on FIRST frame only
 		if (firstFrame)
 		{
@@ -1246,9 +1263,7 @@ namespace lime
 		calculateMinimalSleepTime();
 		int64_t targetTime = now10ns + minimalSleepCalc10ns;
 
-		if (!SDLWindow::uncappedFramerate) {
-			coolSleepUntil10ns(targetTime);
-		}
+		coolSleepUntil10ns(targetTime);
 
 		now10ns = getTime10ns();
 
@@ -1257,8 +1272,6 @@ namespace lime
 
 		// --- Render scheduling ---
 		bool shouldRender = false;
-
-		if (!SDLWindow::uncappedFramerate) {
 	#ifdef HX_WINDOWS
 			static int64_t qpcVBlank = 0;
 			// Use DWM composition timing for precise VSync synchronization
@@ -1517,15 +1530,13 @@ namespace lime
 
 			//calculateMinimalSleepTime(2000);
 	#endif
-		}
 
-		if (SDLWindow::uncappedFramerate) shouldRender = true;
 		if (shouldRender)
 		{
 			PollInputs(); // Get freshest input RIGHT before processing
 
 			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = SDLWindow::uncappedFramerate ? getTime10ns() - lag : render_timestamp;
+			applicationEvent.deltaTime = render_timestamp;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;
