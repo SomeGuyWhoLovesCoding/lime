@@ -1148,11 +1148,6 @@ namespace lime
 				
 				// Try to use immediate updates if available
 				SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
-				
-				// Use fullscreen desktop for best performance
-				SDL_DisplayMode current;
-				SDL_GetCurrentDisplayMode(0, &current);
-				SDL_SetWindowDisplayMode(window, &current);
 			}
 		}
 		#endif
