@@ -78,8 +78,10 @@ namespace lime
 	const int analogAxisDeadZone = 1000;
 	std::map<int, std::map<int, int>> gamepadsAxisMap;
 	bool inBackground = false;
+    static bool uncappedFramerate = false;
 
-	void SDLApplication::HandleEvent(SDL_Event *event)
+
+void SDLApplication::HandleEvent(SDL_Event *event)
 	{
 
 #if defined(IPHONE) || defined(EMSCRIPTEN)
@@ -990,7 +992,7 @@ namespace lime
 
 	void SDLApplication::SetUncappedFrameRate(bool value)
 	{
-		SDLWindow::uncappedFramerate = value;
+		uncappedFramerate = value;
 	}
 
 	void SDLApplication::SetFrameRate(double frameRate)
