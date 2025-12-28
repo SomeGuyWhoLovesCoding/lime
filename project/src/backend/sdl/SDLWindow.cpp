@@ -14,7 +14,6 @@
 namespace lime {
 
 	static bool vsync = false;
-	static bool uncappedFramerate = false;
 
 	static Cursor currentCursor = DEFAULT;
 
@@ -34,7 +33,6 @@ namespace lime {
 
 	SDL_Window* SDLWindow::sdlWindow = nullptr;
 	bool SDLWindow::vsync = false;
-	bool SDLWindow::uncappedFramerate = false;
 
 	SDLWindow::SDLWindow (Application* application, int width, int height, int flags, const char* title) {
 
