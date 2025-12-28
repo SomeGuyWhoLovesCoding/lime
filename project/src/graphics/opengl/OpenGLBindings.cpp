@@ -4039,54 +4039,12 @@ namespace lime {
 
 	}
 
-
-	typedef void (APIENTRY *PFNGLBUFFERSTORAGEPROC) (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags);
-
-	// Global function pointer
-	static PFNGLBUFFERSTORAGEPROC glBufferStoragePtr = NULL;
-
 	void lime_gl_buffer_storage (int target, int size, double data, int flags) {
-		// Load the function pointer if not already loaded
-		if (glBufferStoragePtr == NULL) {
-			#if defined(LIME_GLES) || defined(EMSCRIPTEN)
-				// Not available in GLES or WebGL
-				return;
-			#elif defined(_WIN32)
-				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)wglGetProcAddress("glBufferStorage");
-			#elif defined(__APPLE__)
-				// macOS uses NSGL
-				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)NSGLGetProcAddress("glBufferStorage");
-			#else
-				// Linux and others
-				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)glXGetProcAddress((const GLubyte*)"glBufferStorage");
-			#endif
-		}
-		
-		if (glBufferStoragePtr != NULL) {
-			glBufferStoragePtr(target, size, (void*)(uintptr_t)data, flags);
-		} else {
-			// Function not available - you might want to fall back to glBufferData
-			// or set an error flag
-		}
+		// this function would've made render mode slower anyway
 	}
 
 	HL_PRIM void HL_NAME(hl_gl_buffer_storage) (int target, int size, double data, int flags) {
-		// Same implementation
-		if (glBufferStoragePtr == NULL) {
-			#if defined(LIME_GLES) || defined(EMSCRIPTEN)
-				return;
-			#elif defined(_WIN32)
-				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)wglGetProcAddress("glBufferStorage");
-			#elif defined(__APPLE__)
-				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)NSGLGetProcAddress("glBufferStorage");
-			#else
-				glBufferStoragePtr = (PFNGLBUFFERSTORAGEPROC)glXGetProcAddress((const GLubyte*)"glBufferStorage");
-			#endif
-		}
-		
-		if (glBufferStoragePtr != NULL) {
-			glBufferStoragePtr(target, size, (void*)(uintptr_t)data, flags);
-		}
+		// Same with this
 	}
 
 
