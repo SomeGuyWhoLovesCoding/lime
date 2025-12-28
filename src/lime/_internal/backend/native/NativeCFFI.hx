@@ -3988,6 +3988,8 @@ class NativeCFFI
 
 	@:cffi private static function lime_gl_map_buffer_range(target:Int, offset:DataPointer, length:Int, access:Int):DataPointer;
 
+	//@:cffi private static function fv_gl_map_buffer_range_pbo(length:Int):Dynamic;
+
 	@:cffi private static function lime_gl_object_deregister(object:Dynamic):Void;
 
 	@:cffi private static function lime_gl_object_from_id(id:Int, type:Int):Dynamic;
@@ -4453,6 +4455,8 @@ class NativeCFFI
 	private static var lime_gl_link_program = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_link_program", "iv", false));
 	private static var lime_gl_map_buffer_range = new cpp.Callable<Int->lime.utils.DataPointer->Int->Int->lime.utils.DataPointer>(cpp.Prime._loadPrime("lime",
 		"lime_gl_map_buffer_range", "idiid", false));
+	/*private static var fv_gl_map_buffer_range_pbo = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime",
+		"fv_gl_map_buffer_range_pbo", "iv", false));*/
 	private static var lime_gl_object_deregister = new cpp.Callable<cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_gl_object_deregister", "ov",
 		false));
 	private static var lime_gl_object_from_id = new cpp.Callable<Int->Int->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_gl_object_from_id", "iio", false));
@@ -5493,6 +5497,11 @@ class NativeCFFI
 	{
 		return 0;
 	}
+
+	/*@:hlNative("lime", "hl_gl_map_buffer_range_pbo") private static function fv_gl_map_buffer_range_pbo(length:Int):hl.NativeArray<hl.UI8>
+	{
+		return null;
+	}*/
 
 	@:hlNative("lime", "hl_gl_object_deregister") private static function lime_gl_object_deregister(object:GLObject):Void {}
 

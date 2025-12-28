@@ -3756,6 +3756,25 @@ namespace lime {
 
 	}
 
+	/*void* fv_gl_map_buffer_range_pbo(int length) {
+		// Cast the void* returned by glMapBufferRange directly to unsigned char*
+		unsigned char* result = static_cast<unsigned char*>(glMapBufferRange(0x88EB, (GLintptr)0, length, 0x0001));
+    
+		// IMPORTANT: Unmap the buffer after copying
+		glUnmapBuffer(0x88EB);
+		return (void*)result;
+	}
+
+	HL_PRIM varray* HL_NAME(hl_gl_map_buffer_range_pbo)(int length) {
+		varray* data = hl_alloc_array (&hlt_bytes, length);
+		// Cast the void* returned by glMapBufferRange directly to unsigned char*
+		unsigned char* result = static_cast<unsigned char*>(glMapBufferRange(0x88EB, (GLintptr)hl_aptr(data, unsigned char*), length, 0x0001));
+    
+		// IMPORTANT: Unmap the buffer after copying
+		glUnmapBuffer(0x88EB);
+		return data;
+	}*/
+
 
 	void lime_gl_object_deregister (value object) {
 
@@ -5526,6 +5545,7 @@ namespace lime {
 	DEFINE_PRIME1v (lime_gl_line_width);
 	DEFINE_PRIME1v (lime_gl_link_program);
 	DEFINE_PRIME4 (lime_gl_map_buffer_range);
+	//DEFINE_PRIME1 (fv_gl_map_buffer_range_pbo);
 	DEFINE_PRIME1v (lime_gl_object_deregister);
 	DEFINE_PRIME2 (lime_gl_object_from_id);
 	DEFINE_PRIME3 (lime_gl_object_register);
@@ -5622,6 +5642,7 @@ namespace lime {
 	#define _TCFFIPOINTER _DYN
 
 	#define _TGLOBJECT _OBJ (_I32 _TCFFIPOINTER _OBJ (_I32 _ARR))
+	//#define _UI8ARRAY _OBJ (_I8 _ARR)
 
 
 	DEFINE_HL_PRIM (_VOID, hl_gl_active_texture, _I32);
@@ -5804,6 +5825,7 @@ namespace lime {
 	DEFINE_HL_PRIM (_VOID, hl_gl_line_width, _F32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_link_program, _I32);
 	DEFINE_HL_PRIM (_F64, hl_gl_map_buffer_range, _I32 _F64 _I32 _I32);
+	//DEFINE_HL_PRIM (_ARR, hl_gl_map_buffer_range_pbo, _I32);
 	DEFINE_HL_PRIM (_VOID, hl_gl_object_deregister, _TGLOBJECT);
 	DEFINE_HL_PRIM (_TGLOBJECT, hl_gl_object_from_id, _I32 _I32);
 	DEFINE_HL_PRIM (_TCFFIPOINTER, hl_gl_object_register, _I32 _I32 _TGLOBJECT);
