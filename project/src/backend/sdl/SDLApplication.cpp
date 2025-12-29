@@ -915,19 +915,23 @@ namespace lime
 	// Returns monotonic timestamp in 10-ns ticks
 	int64_t getTime10ns()
 	{
-#ifdef HX_WINDOWS
+	#ifdef HX_WINDOWS
 		static LARGE_INTEGER freq = {};
 		static LARGE_INTEGER start = {};
-
+		static bool initialized = false;
+		
+		if (!initialized) {
+			QueryPerformanceFrequency(&freq);
+			QueryPerformanceCounter(&start);
+			initialized = true;
+		}
+		
 		LARGE_INTEGER now;
-
-		QueryPerformanceFrequency(&freq);
 		QueryPerformanceCounter(&now);
-
+		
 		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
 		return (int64_t)(delta / freq.QuadPart);
-
-#else
+	#else
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 
@@ -1055,16 +1059,15 @@ namespace lime
 		due.QuadPart = -((LONGLONG)sleepForTicks / 10); // Note: NEGATIVE for relative time
 
 		BOOL ok = SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-		if (!ok)
+		if (timer && ok)
 		{
-			// fallback coarse sleep in milliseconds
-			DWORD ms = (DWORD)((sleepForTicks + 99999) / 100000); // Convert 10ns to ms, rounding up
-			if (ms > 0)
-				Sleep(ms);
+			WaitForSingleObject(timer, INFINITE);
 		}
 		else
 		{
-			WaitForSingleObject(timer, INFINITE);
+			// fallback coarse sleep
+			DWORD ms = (DWORD)((sleepForTicks + 99999) / 100000);
+			if (ms > 0) Sleep(ms);
 		}
 
 		// Final precision adjustment with reduced CPU usage
