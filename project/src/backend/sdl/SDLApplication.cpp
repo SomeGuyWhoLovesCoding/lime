@@ -2,7 +2,7 @@
 /**
  * This class is where the main loop goes. For one, windows 10;
  * The said main loop uses:
-   - A combination of high res waitable timer and the DWM timing info method to create a surreal rhythm game experience!
+   - A combination of vsync counter and ntdll (sets global timer resolution to .5ms on windows) to create a surreal rhythm game experience!
  * On the other hand, I wanted to create a fun crispy smooth experience for literally everyone who are on windows,
  so that meant doing it in the first place to compensate. How about I make a literal main loop library out of this?
 **/
@@ -770,18 +770,6 @@ namespace lime
 	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
 	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
 
-// For cross-platform best sleep implementations (SDL3's SDL_DelayPrecise uses the same thing
-// except it does spinlock but this uses a high-precision waitable timer which has basically 10us of granularity)
-// And for cohesion sake it's 10 microseconds since linux has an accurate sleep implementation already
-// and it's nuts that windows can even handle 10us of sleep at minimum without throttling the cpu so yeah that's that
-// turned it if you do this every 10 microconds it would start throttling performance on linux and android so yeah I reduced the precision to 100 microseconds to be safe
-#if HX_WINDOWS
-	static int64_t TILES_PER_TICK_10NS = (int64_t)(TICKS_PER_SECOND_10NS * 0.005);
-#else
-	static int64_t TILES_PER_TICK_10NS = (int64_t)(TICKS_PER_SECOND_10NS * 0.0005);
-#endif
-
-
 	// Add these near the top of your file with other static variables
 	static int64_t lastRenderTime = 0;
 	static int64_t render_timestamp = 0;
@@ -802,6 +790,46 @@ namespace lime
 #endif
 
 	static Uint32 initFlags;
+
+#if HX_WINDOWS
+	static HMODULE ntdll;
+	void adjustTimerResolutionDynamic()
+	{
+		typedef NTSTATUS(NTAPI * NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
+		typedef NTSTATUS(NTAPI * NtQueryTimerResolution_t)(PULONG, PULONG, PULONG);
+
+		if (!ntdll)
+			ntdll = LoadLibraryA("ntdll.dll");
+		if (!ntdll)
+			return;
+
+		static NtSetTimerResolution_t NtSetTimerResolution =
+			(NtSetTimerResolution_t)GetProcAddress(ntdll, "NtSetTimerResolution");
+		static NtQueryTimerResolution_t NtQueryTimerResolution =
+			(NtQueryTimerResolution_t)GetProcAddress(ntdll, "NtQueryTimerResolution");
+
+		if (!NtSetTimerResolution || !NtQueryTimerResolution)
+			return;
+
+		// Query current, min, and max timer resolutions
+		ULONG minRes = 0, maxRes = 0, curRes = 0;
+		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
+
+		printf("Timer Resolution Range: min=%.3f ms, max=%.3f ms, current=%.3f ms\n",
+			   minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
+
+		ULONG current = 0;
+		NTSTATUS status = NtSetTimerResolution(5000, TRUE, &current);
+
+		printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
+			   (unsigned int)status, current / 10000.0);
+
+		// Re-query after setting
+		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
+		printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
+			   minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
+	}
+#endif
 
 	SDLApplication::SDLApplication()
 	{
@@ -849,11 +877,19 @@ namespace lime
 
 		CFRelease(resourcesURL);
 #endif
+
+#if HX_WINDOWS
+		adjustTimerResolutionDynamic();
+#endif
 	}
 
 	SDLApplication::~SDLApplication()
 	{
-		// put some extra code here incase you got some bullshit goin on that relies on sleep accuracy or smthn idk
+
+#if HX_WINDOWS
+		if (ntdll)
+			FreeLibrary(ntdll);
+#endif
 	}
 
 	// ----------------- 10ns timestamp helpers -----------------
@@ -990,6 +1026,7 @@ namespace lime
 
 	// SDL3-style precise delay implementation
 	// as seen here: https://github.com/libsdl-org/SDL/blob/370e9407b585466b5ac54cb5240d5eb1e11fc80b/src/timer/SDL_timer.c#L664
+	// SDL3-style precise delay implementation with tighter overshoot protection
 	void coolSleepUntil10ns(int64_t wakeTime10ns)
 	{
 		int64_t current_value = getTime10ns();
@@ -999,24 +1036,64 @@ namespace lime
 			return;
 		}
 
-		const int64_t ns_to_wait = (target_value - current_value) * 10; // Convert 10ns ticks to nanoseconds
+	#if HX_WINDOWS
+		// Try to create high-resolution waitable timer for this function
+		static HANDLE localTimer = nullptr;
+		static bool triedHighRes = false;
+		static bool hasHighRes = false;
+		
+		if (!triedHighRes) {
+			localTimer = CreateWaitableTimerEx(nullptr, nullptr,
+				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+			hasHighRes = (localTimer != nullptr);
+			triedHighRes = true;
+			
+			if (!hasHighRes) {
+				printf("High-res waitable timer unavailable, falling back to Sleep()\n");
+			}
+		}
+	#endif
 
-		// Sleep for a short number of cycles when real sleeps are desired.
-		// We'll use 1 ms, it's the minimum guaranteed to produce real sleeps across
-		// all platforms.
-		const int64_t SHORT_SLEEP_NS = 1000000; // 1 ms in nanoseconds
+		// Use shorter sleep quantum for tighter precision
+		int64_t SHORT_SLEEP_NS;
+	#if HX_WINDOWS
+		SHORT_SLEEP_NS = hasHighRes ? 100000 : 1000000; // 0.1ms with high-res timer, 1ms fallback
+	#else
+		SHORT_SLEEP_NS = 500000; // 0.5ms on other platforms
+	#endif
 
-		// Try to sleep short of target_value. If for some crazy reason
-		// a particular platform sleeps for less than 1 ms when 1 ms was requested,
-		// that's fine, the code below can cope with that, but in practice no
-		// platforms behave that way.
+		// Add safety margin to prevent overshooting deadlines
+		// For 1.0101ms precision (101010 in 10ns ticks), we need ~100us margin
+		const int64_t SAFETY_MARGIN_10NS = 10000; // 100 microseconds in 10ns ticks
+		const int64_t safe_target = target_value - SAFETY_MARGIN_10NS;
+
+		// Track maximum overshoot to adaptively avoid it
 		int64_t max_sleep_ns = SHORT_SLEEP_NS;
 		current_value = getTime10ns();
 		
-		while ((current_value * 10) + max_sleep_ns < (target_value * 10)) {
-			// Sleep for a short time
+		// First pass: Short sleeps to get close, but stay well under target
+		while ((current_value * 10) + max_sleep_ns + (SAFETY_MARGIN_10NS * 10) < (safe_target * 10)) {
 	#if HX_WINDOWS
-			Sleep(1); // 1 ms
+			if (hasHighRes) {
+				// Use high-resolution waitable timer
+				int64_t remaining_10ns = safe_target - current_value;
+				int64_t sleep_100ns = (remaining_10ns * 10) / 100; // Convert to 100ns units
+				
+				if (sleep_100ns > 1000) { // Only use timer for >100us waits
+					LARGE_INTEGER due;
+					due.QuadPart = -(LONGLONG)(sleep_100ns / 10); // Negative = relative time, in 100ns units
+					
+					if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
+						WaitForSingleObject(localTimer, INFINITE);
+					} else {
+						Sleep(0); // Fallback if SetWaitableTimer fails
+					}
+				} else {
+					Sleep(0);
+				}
+			} else {
+				Sleep(1); // 1ms fallback
+			}
 	#else
 			struct timespec ts;
 			ts.tv_sec = 0;
@@ -1025,48 +1102,77 @@ namespace lime
 	#endif
 
 			const int64_t now = getTime10ns();
-			const int64_t next_sleep_ns = (now - current_value) * 10;
-			if (next_sleep_ns > max_sleep_ns) {
-				max_sleep_ns = next_sleep_ns;
+			const int64_t actual_sleep_ns = (now - current_value) * 10;
+			if (actual_sleep_ns > max_sleep_ns) {
+				max_sleep_ns = actual_sleep_ns;
 			}
 			current_value = now;
 		}
 
-		// Do a shorter sleep of the remaining time here, less the max overshoot in
-		// the first loop.
+		// Second pass: Calculated shorter sleep, accounting for observed overshoot
 		current_value = getTime10ns();
 		int64_t current_ns = current_value * 10;
-		int64_t target_ns = target_value * 10;
+		int64_t target_ns = safe_target * 10;
 		
-		if (current_ns < target_ns && (target_ns - current_ns) > (max_sleep_ns - SHORT_SLEEP_NS)) {
-			const int64_t delay_ns = (target_ns - current_ns) - (max_sleep_ns - SHORT_SLEEP_NS);
+		if (current_ns < target_ns) {
+			int64_t remaining_ns = target_ns - current_ns;
+			// Only sleep if we have enough time left after accounting for max overshoot
+			if (remaining_ns > (max_sleep_ns * 2)) {
+				const int64_t delay_ns = remaining_ns - max_sleep_ns;
 	#if HX_WINDOWS
-			DWORD ms = (DWORD)((delay_ns + 999999) / 1000000);
-			if (ms > 0) Sleep(ms);
+				if (hasHighRes && delay_ns < 10000000) { // Use high-res timer for <10ms
+					LARGE_INTEGER due;
+					due.QuadPart = -(LONGLONG)(delay_ns / 100); // Convert ns to 100ns units, negative = relative
+					
+					if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
+						WaitForSingleObject(localTimer, INFINITE);
+					} else {
+						Sleep(0);
+					}
+				} else if (!hasHighRes) {
+					DWORD ms = (DWORD)(delay_ns / 1000000);
+					if (ms > 0) {
+						Sleep(ms);
+					} else {
+						Sleep(0);
+					}
+				}
 	#else
-			struct timespec ts;
-			ts.tv_sec = delay_ns / 1000000000;
-			ts.tv_nsec = delay_ns % 1000000000;
-			nanosleep(&ts, nullptr);
+				struct timespec ts;
+				ts.tv_sec = delay_ns / 1000000000;
+				ts.tv_nsec = delay_ns % 1000000000;
+				nanosleep(&ts, nullptr);
 	#endif
-			current_value = getTime10ns();
+				current_value = getTime10ns();
+			}
 		}
 
-		// Accept possibility of overshooting to not spin much
+		// Third pass: Very short sleeps if still some distance from target
 		current_value = getTime10ns();
-		while ((current_value * 10) + SHORT_SLEEP_NS < (target_value * 10)) {
+		const int64_t MICRO_SLEEP_NS = 100000; // 100 microseconds
+		while ((current_value * 10) + MICRO_SLEEP_NS < (safe_target * 10)) {
 	#if HX_WINDOWS
-			Sleep(1);
+			if (hasHighRes) {
+				LARGE_INTEGER due;
+				due.QuadPart = -1000; // 100us in 100ns units
+				if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
+					WaitForSingleObject(localTimer, INFINITE);
+				} else {
+					Sleep(0);
+				}
+			} else {
+				Sleep(0);
+			}
 	#else
 			struct timespec ts;
 			ts.tv_sec = 0;
-			ts.tv_nsec = SHORT_SLEEP_NS;
+			ts.tv_nsec = MICRO_SLEEP_NS;
 			nanosleep(&ts, nullptr);
 	#endif
 			current_value = getTime10ns();
 		}
 
-		// Spin for any remaining time
+		// Final spin to hit exact target (no safety margin now)
 		current_value = getTime10ns();
 		while (current_value < target_value) {
 	#if defined(_MSC_VER)
@@ -1175,37 +1281,37 @@ namespace lime
 		SDL_GetWindowDisplayMode (SDLWindow::sdlWindow, &mode);
 
 		if ((int)mode.refresh_rate == 0) {
-			minimalSleepCalc10ns = 50000;
+			minimalSleepCalc10ns = 100000;
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 50 == 0) { // 40 frames inbetween (because yes)
-			minimalSleepCalc10ns = 50000;
+		if ((int)mode.refresh_rate % 50 == 0) { // 20 frames inbetween (because yes)
+			minimalSleepCalc10ns = 100000;
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 60 == 0) { // 33 frames inbetween (because yes)
-			minimalSleepCalc10ns = 50505;
+		if ((int)mode.refresh_rate % 60 == 0) { // 16 frames inbetween (because yes)
+			minimalSleepCalc10ns = 104167;
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 75 == 0) { // 26 frames inbetween
-			minimalSleepCalc10ns = 51282;
+		if ((int)mode.refresh_rate % 75 == 0) { // 13 frames inbetween
+			minimalSleepCalc10ns = 102564;
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 85 == 0) { // 23 frames inbetween
-			minimalSleepCalc10ns = 51150;
+		if ((int)mode.refresh_rate % 85 == 0) { // 11 frames inbetween
+			minimalSleepCalc10ns = 106951;
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 144 == 0) { // 13 frames inbetween
-			minimalSleepCalc10ns = 53418;
+		if ((int)mode.refresh_rate % 144 == 0) { // 7 frames inbetween
+			minimalSleepCalc10ns = 115741;
 			return;
 		}
 
-		if ((int)mode.refresh_rate % 165 == 0) { // 12 frames
-			minimalSleepCalc10ns = 50505;
+		if ((int)mode.refresh_rate % 165 == 0) { // 6 frames
+			minimalSleepCalc10ns = 101010;
 			return;
 		}
 	}
@@ -1217,13 +1323,14 @@ namespace lime
 		static int64_t lastRenderTime = getTime10ns();
 		static int64_t renderCounter = 0;
 		static bool firstFrame = true;
+		static unsigned int lastVBlankCounter = 0; // ← ADD THIS for Linux
 
 		if (lag == 0)
 		{
 			lag = getTime10ns();
 		}
 
-		int64_t now10ns = getTime10ns();
+		int64_t now10ns = 0;
 
 		if (uncappedFramerate) {
 			PollInputs(); // Get freshest input RIGHT before processing
@@ -1250,6 +1357,8 @@ namespace lime
 			return active;
 		}
 
+		now10ns = getTime10ns();
+
 		// Initialize timing on FIRST frame only
 		if (firstFrame)
 		{
@@ -1264,6 +1373,8 @@ namespace lime
 		int64_t targetTime = now10ns + minimalSleepCalc10ns;
 
 		coolSleepUntil10ns(targetTime);
+
+		now10ns = getTime10ns();
 
 		subLoopTickEvent.timestamp = getTime10ns();
 		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
