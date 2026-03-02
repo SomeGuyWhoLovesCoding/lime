@@ -1637,15 +1637,7 @@ namespace lime
 
 			renderEvent.type = RENDER;
 
-			uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
-			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-			
-			if (focusedWindow) {
-				// Make its context current
-				SDL_GL_MakeCurrent(focusedWindow->sdlWindow, focusedWindow->context);
-
-				RenderEvent::Dispatch(&renderEvent);
-			}
+			RenderEvent::Dispatch(&renderEvent);
 
 			lag = getTime10ns();
 		}
