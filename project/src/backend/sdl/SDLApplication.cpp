@@ -54,7 +54,7 @@ using namespace std;
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <fcntl.h>
-#include <poll.h> // Add this for pollfd and POLLIN
+#include <poll.h>
 #include <x86intrin.h>
 #endif
 #if HX_ANDROID
@@ -643,7 +643,6 @@ namespace lime
 				break;
 			}
 
-			// Use static buffer instead of malloc/free
 			static char textBuffer[SDL_TEXTINPUTEVENT_TEXT_SIZE];
 			strncpy(textBuffer, event->text.text, SDL_TEXTINPUTEVENT_TEXT_SIZE - 1);
 			textBuffer[SDL_TEXTINPUTEVENT_TEXT_SIZE - 1] = '\0';
@@ -741,7 +740,7 @@ namespace lime
 				windowEvent.y = event->window.data2;
 
 #ifdef HX_LINUX
-				drmInitialized = false; // Reset to force re-detection
+				drmInitialized = false;
 #endif
 				break;
 
@@ -944,12 +943,8 @@ namespace lime
 		if (alreadyQuit)
 			return 0;
 
-		// You can call this quit function twice here, so that's why I implemented this static boolean variable here to check. And yes, I've tested the print here.
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch(&applicationEvent);
-
-		// windowEvent.type = WINDOW_CLOSE;
-		// WindowEvent::Dispatch (&windowEvent);
 
 		SDL_Event event;
 		while (SDL_PollEvent(&event))
@@ -970,7 +965,10 @@ namespace lime
 	{
 
 #ifdef IPHONE
-		SDL_iPhoneSetAnimationCallback(SDLWindow::sdlWindow, 1, Update, NULL);
+		uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
+		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+
+		SDL_iPhoneSetAnimationCallback(focusedWindow->sdlWindow, 1, Update, NULL);
 #endif
 	}
 
@@ -979,7 +977,6 @@ namespace lime
 		printf("Setting uncapped framerate to %i\n", (int)value);
 		uncappedFramerate = value;
     
-		// Reset timing when switching modes
 		if (value) {
 			render_timestamp = 0;
 		}
@@ -1037,7 +1034,6 @@ namespace lime
 		}
 
 	#if HX_WINDOWS
-		// Try to create high-resolution waitable timer for this function
 		static HANDLE localTimer = nullptr;
 		static bool triedHighRes = false;
 		static bool hasHighRes = false;
@@ -1057,9 +1053,9 @@ namespace lime
 		// Use shorter sleep quantum for tighter precision
 		int64_t SHORT_SLEEP_NS;
 	#if HX_WINDOWS
-		SHORT_SLEEP_NS = hasHighRes ? 100000 : 1000000; // 0.1ms with high-res timer, 1ms fallback
+		SHORT_SLEEP_NS = hasHighRes ? 500000 : 1000000; // 0.1ms with high-res timer, 1ms fallback
 	#else
-		SHORT_SLEEP_NS = 500000; // 0.5ms on other platforms
+		SHORT_SLEEP_NS = 100000; // 0.1ms on other platforms
 	#endif
 
 		// Add safety margin to prevent overshooting deadlines
@@ -1208,22 +1204,6 @@ namespace lime
 			}
 		}
 #endif
-
-		#ifdef HX_LINUX
-		// Try to optimize for Linux uncapped rendering
-		SDL_Window* window = SDLWindow::sdlWindow;
-		if (window) {
-			// Try to disable compositor bypass if supported
-			const char* hint = SDL_GetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR);
-			if (!hint || strcmp(hint, "0") != 0) {
-				SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "1");
-				printf("Bypassing compositor for uncapped framerate\n");
-			}
-			
-			// Try to use immediate updates if available
-			SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
-		}
-		#endif
 	}
 
 	void SDLApplication::PollInputs()
@@ -1277,8 +1257,16 @@ namespace lime
 
 	static void calculateMinimalSleepTime()
 	{
+		uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
+		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+		
+		if (!focusedWindow || !focusedWindow->sdlWindow) {
+			minimalSleepCalc10ns = 100000;
+			return;
+		}
+		
 		SDL_DisplayMode mode;
-		SDL_GetWindowDisplayMode (SDLWindow::sdlWindow, &mode);
+		SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode);
 
 		if ((int)mode.refresh_rate == 0) {
 			minimalSleepCalc10ns = 100000;
@@ -1316,14 +1304,21 @@ namespace lime
 		}
 	}
 
+	int sleeptimeclocktimer = 0;
 	bool SDLApplication::Update()
 	{
+		if (sleeptimeclocktimer > 100) {
+			sleeptimeclocktimer = 0;
+			calculateMinimalSleepTime();
+		}
+		sleeptimeclocktimer++;
+
 		static int64_t nextUpdateTime10ns = 0;
 		static int64_t nextRenderTime10ns = 0;
 		static int64_t lastRenderTime = getTime10ns();
 		static int64_t renderCounter = 0;
 		static bool firstFrame = true;
-		static unsigned int lastVBlankCounter = 0; // ← ADD THIS for Linux
+		static unsigned int lastVBlankCounter = 0;
 
 		if (lag == 0)
 		{
@@ -1347,6 +1342,7 @@ namespace lime
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;
+
 			RenderEvent::Dispatch(&renderEvent);
 
 			startTimestamp10ns = now10ns;
@@ -1359,7 +1355,6 @@ namespace lime
 
 		now10ns = getTime10ns();
 
-		// Initialize timing on FIRST frame only
 		if (firstFrame)
 		{
 			startTimestamp10ns = now10ns;
@@ -1368,8 +1363,6 @@ namespace lime
 			firstFrame = false;
 		}
 
-		// --- Fixed scheduling with drift correction ---
-		calculateMinimalSleepTime();
 		int64_t targetTime = now10ns + minimalSleepCalc10ns;
 
 		coolSleepUntil10ns(targetTime);
@@ -1397,13 +1390,10 @@ namespace lime
 					int64_t oldTimestamp = render_timestamp;
 					render_timestamp = (timingInfo.qpcVBlank - qpcVBlank) * 10LL;
 					qpcVBlank = timingInfo.qpcVBlank;
-
-					//calculateMinimalSleepTime(TICKS_PER_SECOND_10NS / render_timestamp);
 				}
 			}
 			else
 			{
-				printf("What a fucking waste");
 				// Fallback timer-based approach
 				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 				if (shouldRender)
@@ -1421,12 +1411,15 @@ namespace lime
 			static int lastWindowX = -1, lastWindowY = -1;
 
 			// Get current window position
-			int windowX = 0, windowY = 0;
-			if (!SDLWindow::sdlWindow)
-			{
-				return active; // Fix: return bool instead of void
+			uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
+			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+			
+			if (!focusedWindow || !focusedWindow->sdlWindow) {
+				return active;
 			}
-			SDL_GetWindowPosition(SDLWindow::sdlWindow, &windowX, &windowY);
+			
+			int windowX = 0, windowY = 0;
+			SDL_GetWindowPosition(focusedWindow->sdlWindow, &windowX, &windowY);
 
 			// Re-detect if window moved or first time
 			if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
@@ -1599,8 +1592,6 @@ namespace lime
 					nextRenderTime10ns += RENDER_PERIOD_10NS;
 				}
 			}
-
-			//calculateMinimalSleepTime(2000);
 	#elif defined(HX_ANDROID)
 			// Android VSync detection
 			if (choreographer)
@@ -1626,8 +1617,6 @@ namespace lime
 					nextRenderTime10ns += RENDER_PERIOD_10NS;
 				}
 			}
-
-			//calculateMinimalSleepTime(2000);
 	#else
 			// Other platforms use the original logic
 			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
@@ -1636,8 +1625,6 @@ namespace lime
 				render_timestamp = RENDER_PERIOD_10NS;
 				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
-
-			//calculateMinimalSleepTime(2000);
 	#endif
 
 		if (shouldRender)
@@ -1649,7 +1636,16 @@ namespace lime
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
+
+			uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
+			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+			
+			if (focusedWindow) {
+				// Make its context current
+				SDL_GL_MakeCurrent(focusedWindow->sdlWindow, focusedWindow->context);
+
+				RenderEvent::Dispatch(&renderEvent);
+			}
 
 			lag = getTime10ns();
 		}

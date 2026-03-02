@@ -6,6 +6,7 @@
 #include <graphics/ImageBuffer.h>
 #include <ui/Cursor.h>
 #include <ui/Window.h>
+#include <map>
 
 
 namespace lime {
@@ -61,12 +62,14 @@ namespace lime {
 			virtual void WarpMouse (int x, int y);
 			SDL_Renderer* sdlRenderer;
 			SDL_Texture* sdlTexture;
-			static SDL_Window* sdlWindow;
+			static std::map<uint32_t, SDLWindow*> windows;
+			SDL_Window* sdlWindow;
 			static bool vsync;
+
+			SDL_GLContext context;
 
 		private:
 
-			SDL_GLContext context;
 			int contextHeight;
 			int contextWidth;
 

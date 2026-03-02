@@ -3,6 +3,7 @@
 #include "SDLApplication.h"
 #include "../../graphics/opengl/OpenGL.h"
 #include "../../graphics/opengl/OpenGLBindings.h"
+#include <map>
 
 #ifdef HX_WINDOWS
 #include <SDL_syswm.h>
@@ -31,7 +32,7 @@ namespace lime {
 
 	static bool displayModeSet = false;
 
-	SDL_Window* SDLWindow::sdlWindow = nullptr;
+	std::map<uint32_t, SDLWindow*> SDLWindow::windows;
 	bool SDLWindow::vsync = false;
 
 	SDLWindow::SDLWindow (Application* application, int width, int height, int flags, const char* title) {
@@ -169,6 +170,11 @@ namespace lime {
 
 			printf ("Could not create SDL window: %s.\n", SDL_GetError ());
 			return;
+
+		} else {
+
+			uint32_t windowID = SDL_GetWindowID(sdlWindow);
+			windows[windowID] = this;  // Store in the map
 
 		}
 
