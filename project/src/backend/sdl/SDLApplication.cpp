@@ -1204,6 +1204,18 @@ void coolSleepUntil10ns(int64_t wakeTime10ns)
 		SDL_DisplayMode mode;
 		SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode);
 
+		// We sleep in sub-frame chunks sized so that N chunks fit cleanly
+        // into one frame period, with each chunk just over 1ms so the
+        // high-res waitable timer stays in its sweet spot.
+        // The spin at the end of coolSleepUntil10ns then catches the vblank.
+        //
+        // 50Hz:  TICKS_PER_SECOND / (50  * 20) = 100000  (20 chunks, 1.0ms each)
+        // 60Hz:  TICKS_PER_SECOND / (60  * 16) = 104167  (16 chunks, ~1.0417ms)
+        // 75Hz:  TICKS_PER_SECOND / (75  * 13) = 102564  (13 chunks, ~1.0256ms)
+        // 85Hz:  TICKS_PER_SECOND / (85  * 11) = 106951  (11 chunks, ~1.0695ms)
+        // 144Hz: TICKS_PER_SECOND / (144 *  7) = 115741  ( 7 chunks, ~1.1574ms)
+        // 165Hz: TICKS_PER_SECOND / (165 *  6) = 101010  ( 6 chunks, ~1.0101ms)
+		
 		if ((int)mode.refresh_rate == 0) {
 			minimalSleepCalc10ns = 100000;
 			return;
