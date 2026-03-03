@@ -1026,95 +1026,93 @@ namespace lime
 	// SDL3-style precise delay implementation with tighter overshoot protection
 	static int64_t smoothedOvershootNs = 500000LL; // ~0.5ms initial estimate, persists across calls
 
-void coolSleepUntil10ns(int64_t wakeTime10ns)
-{
-    int64_t current_value = getTime10ns();
-    const int64_t target_value = wakeTime10ns;
+	void coolSleepUntil10ns(int64_t wakeTime10ns)
+	{
+		int64_t current_value = getTime10ns();
+		const int64_t target_value = wakeTime10ns;
 
-    if (current_value >= target_value) {
-        return;
-    }
+		if (current_value >= target_value)
+			return;
 
-#if HX_WINDOWS
-    static HANDLE localTimer = nullptr;
-    static bool triedHighRes = false;
-    static bool hasHighRes = false;
+	#if HX_WINDOWS
+		static HANDLE localTimer = nullptr;
+		static bool triedHighRes = false;
+		static bool hasHighRes = false;
 
-    if (!triedHighRes) {
-        localTimer = CreateWaitableTimerEx(nullptr, nullptr,
-            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
-        hasHighRes = (localTimer != nullptr);
-        triedHighRes = true;
-
-        if (!hasHighRes) {
-            printf("High-res waitable timer unavailable, falling back to Sleep()\n");
-        }
-    }
-#endif
-
-    // Safety margin: stay this far from target before switching to spin
-    const int64_t SAFETY_MARGIN_10NS = 10000LL; // 100µs in 10ns ticks
-    const int64_t safe_target = target_value - SAFETY_MARGIN_10NS;
-
-    // --- Coarse sleep pass ---
-    // Sleep in chunks while we're far enough from safe_target that
-    // one more sleep won't overshoot it, using smoothed overshoot as guard.
-    current_value = getTime10ns();
-    while (true) {
-        int64_t remaining_ns = (safe_target - current_value) * 10LL;
-        if (remaining_ns <= smoothedOvershootNs)
-            break;
-
-        int64_t sleep_ns = remaining_ns - smoothedOvershootNs;
-
-#if HX_WINDOWS
-        if (hasHighRes) {
-            // High-res waitable timer: units are 100ns, negative = relative
-            LARGE_INTEGER due;
-            due.QuadPart = -(LONGLONG)(sleep_ns / 100LL);
-            if (due.QuadPart == 0) due.QuadPart = -1;
-            if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
-                WaitForSingleObject(localTimer, INFINITE);
-            } else {
-                Sleep(0);
-            }
-        } else {
-            DWORD ms = (DWORD)(sleep_ns / 1000000LL);
-            if (ms > 0) Sleep(ms); else Sleep(0);
-        }
-#else
-        struct timespec ts;
-        ts.tv_sec  = sleep_ns / 1000000000LL;
-        ts.tv_nsec = sleep_ns % 1000000000LL;
-        nanosleep(&ts, nullptr);
-#endif
-
-        int64_t now = getTime10ns();
-        int64_t actual_ns = (now - current_value) * 10LL;
-
-        // EMA update — only learn from sleeps that were meant to be non-trivial
-        if (actual_ns > 50000LL) { // ignore sub-50µs noise
-            smoothedOvershootNs = (int64_t)(smoothedOvershootNs * 0.9 + actual_ns * 0.1);
-            smoothedOvershootNs = std::clamp(smoothedOvershootNs, 100000LL, 5000000LL); // 0.1ms – 5ms
-        }
-
-        current_value = now;
-    }
-
-    	// --- Final spin to exact target ---
-    	// At this point we're within smoothedOvershoot of safe_target,
-    	// so just burn cycles until we hit the real target.
-    	current_value = getTime10ns();
-    	while (current_value < target_value) {
-	#if defined(_MSC_VER)
-        	_mm_pause();
-	#elif defined(__x86_64__) || defined(__i386__)
-        	__builtin_ia32_pause();
-	#elif defined(__aarch64__) || defined(__arm__)
-        	__asm__ __volatile__("yield" ::: "memory");
+		if (!triedHighRes) {
+			localTimer = CreateWaitableTimerEx(nullptr, nullptr,
+				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+			hasHighRes = (localTimer != nullptr);
+			triedHighRes = true;
+			if (!hasHighRes)
+				printf("High-res waitable timer unavailable, falling back to Sleep()\n");
+		}
 	#endif
-        	current_value = getTime10ns();
-    	}
+
+		// How close to target we dare sleep to (in 10ns ticks)
+		// Keep spin window very small — just enough to cover timer fire jitter
+		const int64_t SPIN_WINDOW_10NS = 1000LL; // 10µs spin window only
+
+		// --- Coarse sleep pass ---
+		while (true) {
+			current_value = getTime10ns();
+			int64_t remaining_10ns = target_value - current_value;
+
+			// If within spin window, break out to spin
+			if (remaining_10ns <= SPIN_WINDOW_10NS)
+				break;
+
+			int64_t sleep_10ns = remaining_10ns - SPIN_WINDOW_10NS;
+			int64_t sleep_ns   = sleep_10ns * 10LL;
+			int64_t before_sleep = current_value;
+
+	#if HX_WINDOWS
+			if (hasHighRes) {
+				LARGE_INTEGER due;
+				due.QuadPart = -(LONGLONG)(sleep_ns / 100LL);
+				if (due.QuadPart == 0) due.QuadPart = -1;
+				if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
+					WaitForSingleObject(localTimer, INFINITE);
+				} else {
+					Sleep(0);
+				}
+			} else {
+				DWORD ms = (DWORD)(sleep_ns / 1000000LL);
+				if (ms > 0) Sleep(ms); else Sleep(0);
+			}
+	#else
+			struct timespec ts;
+			ts.tv_sec  = sleep_ns / 1000000000LL;
+			ts.tv_nsec = sleep_ns % 1000000000LL;
+			nanosleep(&ts, nullptr);
+	#endif
+
+			int64_t now = getTime10ns();
+			int64_t actual_ns    = (now - before_sleep) * 10LL;
+			int64_t overshoot_ns = actual_ns - sleep_ns;
+
+			if (overshoot_ns > 50000LL) {
+				smoothedOvershootNs = (int64_t)(smoothedOvershootNs * 0.8 + overshoot_ns * 0.2);
+				if (smoothedOvershootNs <= 100000LL) smoothedOvershootNs = 100000LL;
+				if (smoothedOvershootNs >= 5000000LL) smoothedOvershootNs = 5000000LL;
+
+				// If overshoot exceeded our spin window, we already passed target — bail
+				if (now >= target_value)
+					return;
+			}
+		}
+
+		// --- Final spin: only covers SPIN_WINDOW_10NS = 10µs ---
+		// This is intentionally tiny so it burns negligible CPU
+		while (getTime10ns() < target_value) {
+	#if defined(_MSC_VER)
+			_mm_pause();
+	#elif defined(__x86_64__) || defined(__i386__)
+			__builtin_ia32_pause();
+	#elif defined(__aarch64__) || defined(__arm__)
+			__asm__ __volatile__("yield" ::: "memory");
+	#endif
+		}
 	}
 			
 
