@@ -1024,163 +1024,99 @@ namespace lime
 	// SDL3-style precise delay implementation
 	// as seen here: https://github.com/libsdl-org/SDL/blob/370e9407b585466b5ac54cb5240d5eb1e11fc80b/src/timer/SDL_timer.c#L664
 	// SDL3-style precise delay implementation with tighter overshoot protection
-	void coolSleepUntil10ns(int64_t wakeTime10ns)
-	{
-		int64_t current_value = getTime10ns();
-		const int64_t target_value = wakeTime10ns;
+	static int64_t smoothedOvershootNs = 500000LL; // ~0.5ms initial estimate, persists across calls
 
-		if (current_value >= target_value) {
-			return;
-		}
+void coolSleepUntil10ns(int64_t wakeTime10ns)
+{
+    int64_t current_value = getTime10ns();
+    const int64_t target_value = wakeTime10ns;
 
-	#if HX_WINDOWS
-		static HANDLE localTimer = nullptr;
-		static bool triedHighRes = false;
-		static bool hasHighRes = false;
-		
-		if (!triedHighRes) {
-			localTimer = CreateWaitableTimerEx(nullptr, nullptr,
-				CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
-			hasHighRes = (localTimer != nullptr);
-			triedHighRes = true;
-			
-			if (!hasHighRes) {
-				printf("High-res waitable timer unavailable, falling back to Sleep()\n");
-			}
-		}
-	#endif
+    if (current_value >= target_value) {
+        return;
+    }
 
-		// Use shorter sleep quantum for tighter precision
-		int64_t SHORT_SLEEP_NS;
-	#if HX_WINDOWS
-		SHORT_SLEEP_NS = hasHighRes ? 500000 : 1000000; // 0.1ms with high-res timer, 1ms fallback
-	#else
-		SHORT_SLEEP_NS = 100000; // 0.1ms on other platforms
-	#endif
+#if HX_WINDOWS
+    static HANDLE localTimer = nullptr;
+    static bool triedHighRes = false;
+    static bool hasHighRes = false;
 
-		// Add safety margin to prevent overshooting deadlines
-		// For 1.0101ms precision (101010 in 10ns ticks), we need ~100us margin
-		const int64_t SAFETY_MARGIN_10NS = 10000; // 100 microseconds in 10ns ticks
-		const int64_t safe_target = target_value - SAFETY_MARGIN_10NS;
+    if (!triedHighRes) {
+        localTimer = CreateWaitableTimerEx(nullptr, nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+        hasHighRes = (localTimer != nullptr);
+        triedHighRes = true;
 
-		// Track maximum overshoot to adaptively avoid it
-		int64_t max_sleep_ns = SHORT_SLEEP_NS;
-		current_value = getTime10ns();
-		
-		// First pass: Short sleeps to get close, but stay well under target
-		while ((current_value * 10) + max_sleep_ns + (SAFETY_MARGIN_10NS * 10) < (safe_target * 10)) {
-	#if HX_WINDOWS
-			if (hasHighRes) {
-				// Use high-resolution waitable timer
-				int64_t remaining_10ns = safe_target - current_value;
-				int64_t sleep_100ns = (remaining_10ns * 10) / 100; // Convert to 100ns units
-				
-				if (sleep_100ns > 1000) { // Only use timer for >100us waits
-					LARGE_INTEGER due;
-					due.QuadPart = -(LONGLONG)(sleep_100ns / 10); // Negative = relative time, in 100ns units
-					
-					if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
-						WaitForSingleObject(localTimer, INFINITE);
-					} else {
-						Sleep(0); // Fallback if SetWaitableTimer fails
-					}
-				} else {
-					Sleep(0);
-				}
-			} else {
-				Sleep(1); // 1ms fallback
-			}
-	#else
-			struct timespec ts;
-			ts.tv_sec = 0;
-			ts.tv_nsec = SHORT_SLEEP_NS;
-			nanosleep(&ts, nullptr);
-	#endif
+        if (!hasHighRes) {
+            printf("High-res waitable timer unavailable, falling back to Sleep()\n");
+        }
+    }
+#endif
 
-			const int64_t now = getTime10ns();
-			const int64_t actual_sleep_ns = (now - current_value) * 10;
-			if (actual_sleep_ns > max_sleep_ns) {
-				max_sleep_ns = actual_sleep_ns;
-			}
-			current_value = now;
-		}
+    // Safety margin: stay this far from target before switching to spin
+    const int64_t SAFETY_MARGIN_10NS = 10000LL; // 100µs in 10ns ticks
+    const int64_t safe_target = target_value - SAFETY_MARGIN_10NS;
 
-		// Second pass: Calculated shorter sleep, accounting for observed overshoot
-		current_value = getTime10ns();
-		int64_t current_ns = current_value * 10;
-		int64_t target_ns = safe_target * 10;
-		
-		if (current_ns < target_ns) {
-			int64_t remaining_ns = target_ns - current_ns;
-			// Only sleep if we have enough time left after accounting for max overshoot
-			if (remaining_ns > (max_sleep_ns * 2)) {
-				const int64_t delay_ns = remaining_ns - max_sleep_ns;
-	#if HX_WINDOWS
-				if (hasHighRes && delay_ns < 10000000) { // Use high-res timer for <10ms
-					LARGE_INTEGER due;
-					due.QuadPart = -(LONGLONG)(delay_ns / 100); // Convert ns to 100ns units, negative = relative
-					
-					if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
-						WaitForSingleObject(localTimer, INFINITE);
-					} else {
-						Sleep(0);
-					}
-				} else if (!hasHighRes) {
-					DWORD ms = (DWORD)(delay_ns / 1000000);
-					if (ms > 0) {
-						Sleep(ms);
-					} else {
-						Sleep(0);
-					}
-				}
-	#else
-				struct timespec ts;
-				ts.tv_sec = delay_ns / 1000000000;
-				ts.tv_nsec = delay_ns % 1000000000;
-				nanosleep(&ts, nullptr);
-	#endif
-				current_value = getTime10ns();
-			}
-		}
+    // --- Coarse sleep pass ---
+    // Sleep in chunks while we're far enough from safe_target that
+    // one more sleep won't overshoot it, using smoothed overshoot as guard.
+    current_value = getTime10ns();
+    while (true) {
+        int64_t remaining_ns = (safe_target - current_value) * 10LL;
+        if (remaining_ns <= smoothedOvershootNs)
+            break;
 
-		// Third pass: Very short sleeps if still some distance from target
-		current_value = getTime10ns();
-		const int64_t MICRO_SLEEP_NS = 100000; // 100 microseconds
-		while ((current_value * 10) + MICRO_SLEEP_NS < (safe_target * 10)) {
-	#if HX_WINDOWS
-			if (hasHighRes) {
-				LARGE_INTEGER due;
-				due.QuadPart = -1000; // 100us in 100ns units
-				if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
-					WaitForSingleObject(localTimer, INFINITE);
-				} else {
-					Sleep(0);
-				}
-			} else {
-				Sleep(0);
-			}
-	#else
-			struct timespec ts;
-			ts.tv_sec = 0;
-			ts.tv_nsec = MICRO_SLEEP_NS;
-			nanosleep(&ts, nullptr);
-	#endif
-			current_value = getTime10ns();
-		}
+        int64_t sleep_ns = remaining_ns - smoothedOvershootNs;
 
-		// Final spin to hit exact target (no safety margin now)
-		current_value = getTime10ns();
-		while (current_value < target_value) {
+#if HX_WINDOWS
+        if (hasHighRes) {
+            // High-res waitable timer: units are 100ns, negative = relative
+            LARGE_INTEGER due;
+            due.QuadPart = -(LONGLONG)(sleep_ns / 100LL);
+            if (due.QuadPart == 0) due.QuadPart = -1;
+            if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
+                WaitForSingleObject(localTimer, INFINITE);
+            } else {
+                Sleep(0);
+            }
+        } else {
+            DWORD ms = (DWORD)(sleep_ns / 1000000LL);
+            if (ms > 0) Sleep(ms); else Sleep(0);
+        }
+#else
+        struct timespec ts;
+        ts.tv_sec  = sleep_ns / 1000000000LL;
+        ts.tv_nsec = sleep_ns % 1000000000LL;
+        nanosleep(&ts, nullptr);
+#endif
+
+        int64_t now = getTime10ns();
+        int64_t actual_ns = (now - current_value) * 10LL;
+
+        // EMA update — only learn from sleeps that were meant to be non-trivial
+        if (actual_ns > 50000LL) { // ignore sub-50µs noise
+            smoothedOvershootNs = (int64_t)(smoothedOvershootNs * 0.9 + actual_ns * 0.1);
+            smoothedOvershootNs = std::clamp(smoothedOvershootNs, 100000LL, 5000000LL); // 0.1ms – 5ms
+        }
+
+        current_value = now;
+    }
+
+    	// --- Final spin to exact target ---
+    	// At this point we're within smoothedOvershoot of safe_target,
+    	// so just burn cycles until we hit the real target.
+    	current_value = getTime10ns();
+    	while (current_value < target_value) {
 	#if defined(_MSC_VER)
-			_mm_pause();
+        	_mm_pause();
 	#elif defined(__x86_64__) || defined(__i386__)
-			__builtin_ia32_pause();
+        	__builtin_ia32_pause();
 	#elif defined(__aarch64__) || defined(__arm__)
-			__asm__ __volatile__("yield" ::: "memory");
+        	__asm__ __volatile__("yield" ::: "memory");
 	#endif
-			current_value = getTime10ns();
-		}
+        	current_value = getTime10ns();
+    	}
 	}
+			
 
 	int64_t startTimestamp10ns = 0;
 
