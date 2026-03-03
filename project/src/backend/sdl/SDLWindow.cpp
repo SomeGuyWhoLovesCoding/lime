@@ -110,30 +110,36 @@ namespace lime {
 			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 			#endif
 
-			bool isES3Supported = true;
+			bool isES3Supported = false;
+			int es3Minor = 2;
 
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
+			while (!isES3Supported) {
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, es3Minor);
 
-			SDL_Window* testWindow = SDL_CreateWindow("", 0, 0, 1, 1, SDL_WINDOW_HIDDEN | SDL_WINDOW_OPENGL);
-			if (testWindow) {
-				SDL_GLContext testContext = SDL_GL_CreateContext(testWindow);
-				if (testContext) {
-					// ES 3.0 is supported!
-					SDL_GL_DeleteContext(testContext);
-				} else {
-					// ES 3.0 NOT supported
-					isES3Supported = false;
+				SDL_Window* testWindow = SDL_CreateWindow("", 0, 0, 1, 1, SDL_WINDOW_HIDDEN | SDL_WINDOW_OPENGL);
+				if (testWindow) {
+					SDL_GLContext testContext = SDL_GL_CreateContext(testWindow);
+					if (testContext) {
+						// ES 3.0 is supported!
+						SDL_GL_DeleteContext(testContext);
+						isES3Supported = true;
+					} else {
+						// ES 3.0 NOT supported
+						isES3Supported = false;
+					}
+					SDL_DestroyWindow(testWindow);
 				}
-				SDL_DestroyWindow(testWindow);
+				--es3Minor;
 			}
 
 			if (!isES3Supported) {	
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
 			}
+
 
 			//SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
