@@ -2,7 +2,7 @@
 /**
  * This class is where the main loop goes. For one, windows 10;
  * The said main loop uses:
-   - A combination of vsync counter and ntdll (sets global timer resolution to .5ms on windows) to create a surreal rhythm game experience!
+   - A combination of vsync counter and SDL3 sleep with EMA to create a surreal rhythm game experience!
  * On the other hand, I wanted to create a fun crispy smooth experience for literally everyone who are on windows,
  so that meant doing it in the first place to compensate. How about I make a literal main loop library out of this?
 **/
