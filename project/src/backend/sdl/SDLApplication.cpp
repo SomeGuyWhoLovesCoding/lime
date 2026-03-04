@@ -1,4 +1,3 @@
-
 /**
  * This class is where the main loop goes. For one, windows 10;
  * The said main loop uses:
@@ -76,7 +75,7 @@ namespace lime
 	const int analogAxisDeadZone = 1000;
 	std::map<int, std::map<int, int>> gamepadsAxisMap;
 	bool inBackground = false;
-    static bool uncappedFramerate = false;
+	static bool uncappedFramerate = false;
 
 	void SDLApplication::HandleEvent(SDL_Event *event)
 	{
@@ -693,6 +692,7 @@ namespace lime
 #ifdef HX_LINUX
 	static bool drmInitialized = false;
 #endif
+
 	void SDLApplication::ProcessWindowEvent(SDL_Event *event)
 	{
 
@@ -769,7 +769,6 @@ namespace lime
 	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
 	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
 
-	// Add these near the top of your file with other static variables
 	static int64_t lastRenderTime = 0;
 	static int64_t render_timestamp = 0;
 
@@ -792,6 +791,10 @@ namespace lime
 
 #if HX_WINDOWS
 	static HMODULE ntdll;
+
+	// QPC frequency, queried once at startup
+	static LARGE_INTEGER qpcFrequency = {};
+
 	void adjustTimerResolutionDynamic()
 	{
 		typedef NTSTATUS(NTAPI * NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
@@ -810,7 +813,6 @@ namespace lime
 		if (!NtSetTimerResolution || !NtQueryTimerResolution)
 			return;
 
-		// Query current, min, and max timer resolutions
 		ULONG minRes = 0, maxRes = 0, curRes = 0;
 		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
 
@@ -823,7 +825,6 @@ namespace lime
 		printf("NtSetTimerResolution -> Status: 0x%08X, Current: %.3f ms\n",
 			   (unsigned int)status, current / 10000.0);
 
-		// Re-query after setting
 		NtQueryTimerResolution(&minRes, &maxRes, &curRes);
 		printf("Updated Timer Resolution: min=%.3f ms, max=%.3f ms, current=%.3f ms\n\n",
 			   minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
@@ -878,6 +879,8 @@ namespace lime
 #endif
 
 #if HX_WINDOWS
+		// Query QPC frequency once here so getTime10ns() has no per-call branch
+		QueryPerformanceFrequency(&qpcFrequency);
 		adjustTimerResolutionDynamic();
 #endif
 	}
@@ -895,26 +898,15 @@ namespace lime
 	// Returns monotonic timestamp in 10-ns ticks
 	int64_t getTime10ns()
 	{
-	#ifdef HX_WINDOWS
-		static LARGE_INTEGER freq = {};
-		static LARGE_INTEGER start = {};
-		static bool initialized = false;
-		
-		if (!initialized) {
-			QueryPerformanceFrequency(&freq);
-			QueryPerformanceCounter(&start);
-			initialized = true;
-		}
-		
+#ifdef HX_WINDOWS
+		// qpcFrequency is initialized in SDLApplication() — no per-call branch needed
 		LARGE_INTEGER now;
 		QueryPerformanceCounter(&now);
-		
-		int64_t delta = (now.QuadPart - start.QuadPart) * TICKS_PER_SECOND_10NS;
-		return (int64_t)(delta / freq.QuadPart);
-	#else
+		// Multiply first to preserve precision; frequency is known non-zero
+		return (now.QuadPart * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+#else
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
-
 		return ts.tv_sec * TICKS_PER_SECOND_10NS + (ts.tv_nsec / 10LL);
 #endif
 	}
@@ -976,7 +968,7 @@ namespace lime
 	{
 		printf("Setting uncapped framerate to %i\n", (int)value);
 		uncappedFramerate = value;
-    
+
 		if (value) {
 			render_timestamp = 0;
 		}
@@ -1023,7 +1015,6 @@ namespace lime
 
 	// SDL3-style precise delay implementation
 	// as seen here: https://github.com/libsdl-org/SDL/blob/370e9407b585466b5ac54cb5240d5eb1e11fc80b/src/timer/SDL_timer.c#L664
-	// SDL3-style precise delay implementation with tighter overshoot protection
 	static int64_t smoothedOvershootNs = 500000LL; // ~0.5ms initial estimate, persists across calls
 
 	void coolSleepUntil10ns(int64_t wakeTime10ns)
@@ -1034,7 +1025,7 @@ namespace lime
 		if (current_value >= target_value)
 			return;
 
-	#if HX_WINDOWS
+#if HX_WINDOWS
 		static HANDLE localTimer = nullptr;
 		static bool triedHighRes = false;
 		static bool hasHighRes = false;
@@ -1047,10 +1038,8 @@ namespace lime
 			if (!hasHighRes)
 				printf("High-res waitable timer unavailable, falling back to Sleep()\n");
 		}
-	#endif
+#endif
 
-		// How close to target we dare sleep to (in 10ns ticks)
-		// Keep spin window very small — just enough to cover timer fire jitter
 		const int64_t SPIN_WINDOW_10NS = 1000LL; // 10µs spin window only
 
 		// --- Coarse sleep pass ---
@@ -1058,7 +1047,6 @@ namespace lime
 			current_value = getTime10ns();
 			int64_t remaining_10ns = target_value - current_value;
 
-			// If within spin window, break out to spin
 			if (remaining_10ns <= SPIN_WINDOW_10NS)
 				break;
 
@@ -1066,7 +1054,7 @@ namespace lime
 			int64_t sleep_ns   = sleep_10ns * 10LL;
 			int64_t before_sleep = current_value;
 
-	#if HX_WINDOWS
+#if HX_WINDOWS
 			if (hasHighRes) {
 				LARGE_INTEGER due;
 				due.QuadPart = -(LONGLONG)(sleep_ns / 100LL);
@@ -1080,47 +1068,48 @@ namespace lime
 				DWORD ms = (DWORD)(sleep_ns / 1000000LL);
 				if (ms > 0) Sleep(ms); else Sleep(0);
 			}
-	#else
+#else
 			struct timespec ts;
 			ts.tv_sec  = sleep_ns / 1000000000LL;
 			ts.tv_nsec = sleep_ns % 1000000000LL;
 			nanosleep(&ts, nullptr);
-	#endif
+#endif
 
 			int64_t now = getTime10ns();
 			int64_t actual_ns    = (now - before_sleep) * 10LL;
 			int64_t overshoot_ns = actual_ns - sleep_ns;
 
 			if (overshoot_ns > 50000LL) {
-				smoothedOvershootNs = (int64_t)(smoothedOvershootNs * 0.8 + overshoot_ns * 0.2);
-				if (smoothedOvershootNs <= 100000LL) smoothedOvershootNs = 100000LL;
+				// EMA alpha 0.5/0.5 for faster adaptation to sudden jitter spikes
+				smoothedOvershootNs = (int64_t)(smoothedOvershootNs * 0.5 + overshoot_ns * 0.5);
+				if (smoothedOvershootNs <= 100000LL)  smoothedOvershootNs = 100000LL;
 				if (smoothedOvershootNs >= 5000000LL) smoothedOvershootNs = 5000000LL;
 
-				// If overshoot exceeded our spin window, we already passed target — bail
 				if (now >= target_value)
 					return;
 			}
 		}
 
 		// --- Final spin: only covers SPIN_WINDOW_10NS = 10µs ---
-		// This is intentionally tiny so it burns negligible CPU
 		while (getTime10ns() < target_value) {
-	#if defined(_MSC_VER)
+#if defined(_MSC_VER)
 			_mm_pause();
-	#elif defined(__x86_64__) || defined(__i386__)
+#elif defined(__x86_64__) || defined(__i386__)
 			__builtin_ia32_pause();
-	#elif defined(__aarch64__) || defined(__arm__)
+#elif defined(__aarch64__) || defined(__arm__)
 			__asm__ __volatile__("yield" ::: "memory");
-	#endif
+#endif
 		}
 	}
-			
 
 	int64_t startTimestamp10ns = 0;
 
 	void SDLApplication::Init()
 	{
 		active = true;
+
+		// Seed lag here so Update() never sees lag == 0
+		lag = getTime10ns();
 
 #ifdef HX_WINDOWS
 		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
@@ -1189,68 +1178,68 @@ namespace lime
 	static int64_t lag = 0;
 	static int64_t minimalSleepCalc10ns = 0;
 
+	// Cached display mode — only refreshed when the window moves or on first call.
+	// Set dirty via drmInitialized flag on Linux, or the sleeptimeclocktimer on others.
+	static int cachedRefreshRate = 0;
+
 	static void calculateMinimalSleepTime()
 	{
 		uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
 		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-		
+
 		if (!focusedWindow || !focusedWindow->sdlWindow) {
 			minimalSleepCalc10ns = 100000;
 			return;
 		}
-		
+
 		SDL_DisplayMode mode;
-		SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode);
+		if (SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode) != 0) {
+			minimalSleepCalc10ns = 100000;
+			return;
+		}
+
+		// Skip recalculation if refresh rate hasn't changed
+		if (mode.refresh_rate == cachedRefreshRate && minimalSleepCalc10ns != 0)
+			return;
+
+		cachedRefreshRate = mode.refresh_rate;
+
+		if (cachedRefreshRate == 0) {
+			minimalSleepCalc10ns = 100000;
+			return;
+		}
 
 		// We sleep in sub-frame chunks sized so that N chunks fit cleanly
-        // into one frame period, with each chunk just over 1ms so the
-        // high-res waitable timer stays in its sweet spot.
-        // The spin at the end of coolSleepUntil10ns then catches the vblank.
-        //
-        // 50Hz:  TICKS_PER_SECOND / (50  * 20) = 100000  (20 chunks, 1.0ms each)
-        // 60Hz:  TICKS_PER_SECOND / (60  * 16) = 104167  (16 chunks, ~1.0417ms)
-        // 75Hz:  TICKS_PER_SECOND / (75  * 13) = 102564  (13 chunks, ~1.0256ms)
-        // 85Hz:  TICKS_PER_SECOND / (85  * 11) = 106951  (11 chunks, ~1.0695ms)
-        // 144Hz: TICKS_PER_SECOND / (144 *  7) = 115741  ( 7 chunks, ~1.1574ms)
-        // 165Hz: TICKS_PER_SECOND / (165 *  6) = 101010  ( 6 chunks, ~1.0101ms)
-		
-		if ((int)mode.refresh_rate == 0) {
-			minimalSleepCalc10ns = 100000;
-			return;
-		}
+		// into one frame period, with each chunk just over 1ms so the
+		// high-res waitable timer stays in its sweet spot.
+		//
+		// 50Hz:  100000  (20 chunks, 1.0ms each)
+		// 60Hz:  104167  (16 chunks, ~1.0417ms)
+		// 75Hz:  102564  (13 chunks, ~1.0256ms)
+		// 85Hz:  106951  (11 chunks, ~1.0695ms)
+		// 144Hz: 115741  ( 7 chunks, ~1.1574ms)
+		// 165Hz: 101010  ( 6 chunks, ~1.0101ms)
 
-		if ((int)mode.refresh_rate % 50 == 0) { // 20 frames inbetween (because yes)
+		if (cachedRefreshRate % 50 == 0) {
 			minimalSleepCalc10ns = 100000;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 60 == 0) { // 16 frames inbetween (because yes)
+		} else if (cachedRefreshRate % 60 == 0) {
 			minimalSleepCalc10ns = 104167;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 75 == 0) { // 13 frames inbetween
+		} else if (cachedRefreshRate % 75 == 0) {
 			minimalSleepCalc10ns = 102564;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 85 == 0) { // 11 frames inbetween
+		} else if (cachedRefreshRate % 85 == 0) {
 			minimalSleepCalc10ns = 106951;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 144 == 0) { // 7 frames inbetween
+		} else if (cachedRefreshRate % 144 == 0) {
 			minimalSleepCalc10ns = 115741;
-			return;
-		}
-
-		if ((int)mode.refresh_rate % 165 == 0) { // 6 frames
+		} else if (cachedRefreshRate % 165 == 0) {
 			minimalSleepCalc10ns = 101010;
-			return;
+		} else {
+			// Generic fallback: ~1ms chunks
+			minimalSleepCalc10ns = 100000;
 		}
 	}
 
-	int sleeptimeclocktimer = 0;
+	static int sleeptimeclocktimer = 0;
+
 	bool SDLApplication::Update()
 	{
 		if (sleeptimeclocktimer > 100) {
@@ -1266,15 +1255,10 @@ namespace lime
 		static bool firstFrame = true;
 		static unsigned int lastVBlankCounter = 0;
 
-		if (lag == 0)
-		{
-			lag = getTime10ns();
-		}
-
 		int64_t now10ns = 0;
 
 		if (uncappedFramerate) {
-			PollInputs(); // Get freshest input RIGHT before processing
+			PollInputs();
 
 			now10ns = getTime10ns();
 
@@ -1282,13 +1266,12 @@ namespace lime
 			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
 			now10ns = getTime10ns();
-			
+
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = now10ns - lag;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;
-
 			RenderEvent::Dispatch(&renderEvent);
 
 			startTimestamp10ns = now10ns;
@@ -1310,19 +1293,20 @@ namespace lime
 		}
 
 		int64_t targetTime = now10ns + minimalSleepCalc10ns;
-
 		coolSleepUntil10ns(targetTime);
 
 		now10ns = getTime10ns();
 
-		subLoopTickEvent.timestamp = getTime10ns();
+		subLoopTickEvent.timestamp = now10ns;
 		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
 		// --- Render scheduling ---
 		bool shouldRender = false;
-	#ifdef HX_WINDOWS
-			static int64_t qpcVBlank = 0;
-			// Use DWM composition timing for precise VSync synchronization
+
+#ifdef HX_WINDOWS
+		{
+			static QPC_TIME lastQpcVBlank = 0;
+
 			static DWM_TIMING_INFO timingInfo = {};
 			timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
 
@@ -1330,12 +1314,25 @@ namespace lime
 
 			if (SUCCEEDED(hr))
 			{
-				if (qpcVBlank == 0 || qpcVBlank != timingInfo.qpcVBlank)
+				// qpcVBlank is a raw QPC counter value — must divide by QPC frequency
+				// to convert to our 10ns tick domain. Do NOT multiply by a constant.
+				if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
 				{
 					shouldRender = true;
-					int64_t oldTimestamp = render_timestamp;
-					render_timestamp = (timingInfo.qpcVBlank - qpcVBlank) * 10LL;
-					qpcVBlank = timingInfo.qpcVBlank;
+
+					if (lastQpcVBlank != 0)
+					{
+						// Convert QPC delta to 10ns ticks using the known frequency
+						int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
+						render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+					}
+					else
+					{
+						// First frame: use the nominal render period as a safe seed
+						render_timestamp = RENDER_PERIOD_10NS;
+					}
+
+					lastQpcVBlank = timingInfo.qpcVBlank;
 				}
 			}
 			else
@@ -1349,38 +1346,36 @@ namespace lime
 					nextRenderTime10ns += RENDER_PERIOD_10NS;
 				}
 			}
-	#elif defined(HX_LINUX)
+		}
+#elif defined(HX_LINUX)
+		{
 			// Linux VSync with DRM events (non-blocking)
 			static int drmFd = -1;
 			static uint32_t drmCrtcId = 0;
 			static uint64_t lastVBlankSeq = 0;
 			static int lastWindowX = -1, lastWindowY = -1;
 
-			// Get current window position
 			uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
 			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-			
+
 			if (!focusedWindow || !focusedWindow->sdlWindow) {
 				return active;
 			}
-			
+
 			int windowX = 0, windowY = 0;
 			SDL_GetWindowPosition(focusedWindow->sdlWindow, &windowX, &windowY);
 
-			// Re-detect if window moved or first time
 			if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
 			{
 				lastWindowX = windowX;
 				lastWindowY = windowY;
 
-				// Close previous fd if open
 				if (drmFd >= 0)
 				{
 					close(drmFd);
 					drmFd = -1;
 				}
 
-				// Enumerate DRM devices
 				drmDevicePtr devices[16];
 				int deviceCount = drmGetDevices(devices, 16);
 
@@ -1398,7 +1393,6 @@ namespace lime
 						if (fd < 0)
 							continue;
 
-						// Get mode resources
 						drmModeResPtr res = drmModeGetResources(fd);
 						if (!res)
 						{
@@ -1406,7 +1400,6 @@ namespace lime
 							continue;
 						}
 
-						// Check each CRTC
 						for (int c = 0; c < res->count_crtcs && !foundDevice; c++)
 						{
 							uint32_t crtcId = res->crtcs[c];
@@ -1415,7 +1408,6 @@ namespace lime
 							if (!crtc)
 								continue;
 
-							// Check if CRTC is enabled and covers window position
 							if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0)
 							{
 								if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
@@ -1447,22 +1439,20 @@ namespace lime
 
 			if (drmFd >= 0 && drmCrtcId != 0)
 			{
-				// Non-blocking poll for DRM events - FIXED STRUCT INITIALIZATION
 				struct pollfd pfd;
 				pfd.fd = drmFd;
 				pfd.events = POLLIN;
 				pfd.revents = 0;
 
-				int pollResult = poll(&pfd, 1, 0); // 0 timeout = non-blocking
+				int pollResult = poll(&pfd, 1, 0);
 
 				if (pollResult > 0 && (pfd.revents & POLLIN))
 				{
-					// FIXED: Use proper drmEventContext initialization
 					drmEventContext evctx;
 					memset(&evctx, 0, sizeof(evctx));
 					evctx.version = DRM_EVENT_CONTEXT_VERSION;
 
-					// FIXED: Correct vblank handler signature and usage
+					// vblankSequence is file-scope so the lambda's user_data pointer is stable
 					static uint64_t vblankSequence = 0;
 					evctx.vblank_handler = [](int fd, unsigned int sequence,
 											unsigned int tv_sec, unsigned int tv_usec,
@@ -1472,10 +1462,8 @@ namespace lime
 						*seqPtr = sequence;
 					};
 
-					// Process DRM events
 					drmHandleEvent(drmFd, &evctx);
 
-					// Check if we got a new vblank
 					if (vblankSequence != lastVBlankSeq)
 					{
 						shouldRender = true;
@@ -1485,37 +1473,25 @@ namespace lime
 					}
 				}
 
-				// Request next VBlank event if not already pending - FIXED STRUCTURE
 				if (!shouldRender)
 				{
 					drmVBlank vbl;
 					memset(&vbl, 0, sizeof(vbl));
 
-					// FIXED: Use the correct structure members for modern libdrm
 					vbl.request.type = DRM_VBLANK_RELATIVE;
 					vbl.request.sequence = 1;
 
-	// For modern versions that support events
-	#ifdef DRM_VBLANK_EVENT
+#ifdef DRM_VBLANK_EVENT
 					vbl.request.type |= DRM_VBLANK_EVENT;
-	#endif
+#endif
 
-	// FIXED: Use the correct member name for crtc ID
-	// Note: The structure member name varies by libdrm version
-	// Try different possible member names
-	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-					// Modern libdrm - use high_crtc field
+#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
 					vbl.request.type |= (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT);
-	#else
-	// Older versions may use different approaches
-	// For now, just try without specifying CRTC
-	#endif
+#endif
 
-					// This will queue the event without blocking
 					int result = drmWaitVBlank(drmFd, &vbl);
 					if (result != 0)
 					{
-						// If drmWaitVBlank fails, fall back to timer
 						shouldRender = (now10ns >= nextRenderTime10ns);
 						if (shouldRender)
 						{
@@ -1538,58 +1514,52 @@ namespace lime
 					nextRenderTime10ns += RENDER_PERIOD_10NS;
 				}
 			}
-	#elif defined(HX_ANDROID)
-			// Android VSync detection
-			if (choreographer)
+		}
+#elif defined(HX_ANDROID)
+		if (choreographer)
+		{
+			if (shouldRenderFromCallback)
 			{
-				if (shouldRenderFromCallback)
-				{
-					shouldRender = true;
-					shouldRenderFromCallback = false;
-					// Re-register for next frame
-					AChoreographer_postFrameCallback(choreographer,
-													choreographer_callback,
-													nullptr);
-				}
+				shouldRender = true;
+				shouldRenderFromCallback = false;
+				AChoreographer_postFrameCallback(choreographer,
+												 choreographer_callback,
+												 nullptr);
 			}
-			else
-			{
-				// Fallback timer-based approach
-				shouldRender = (now10ns >= nextRenderTime10ns);
-				if (shouldRender)
-				{
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
-				}
-			}
-	#else
-			// Other platforms use the original logic
-			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+		}
+		else
+		{
+			shouldRender = (now10ns >= nextRenderTime10ns);
 			if (shouldRender)
 			{
-				render_timestamp = RENDER_PERIOD_10NS;
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
 				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
-	#endif
+		}
+#else
+		// Other platforms: timer-based fallback
+		shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+		if (shouldRender)
+		{
+			render_timestamp = RENDER_PERIOD_10NS;
+			nextRenderTime10ns += RENDER_PERIOD_10NS;
+		}
+#endif
+
+		// PollInputs is unconditional — moved out of the shouldRender branch
+		PollInputs();
 
 		if (shouldRender)
 		{
-			PollInputs(); // Get freshest input RIGHT before processing
-
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = render_timestamp;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;
-
 			RenderEvent::Dispatch(&renderEvent);
 
 			lag = getTime10ns();
-		}
-		else
-		{
-			PollInputs();
 		}
 
 		return active;
