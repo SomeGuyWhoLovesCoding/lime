@@ -1916,11 +1916,6 @@ class GL
 		context.renderbufferStorage(target, internalformat, width, height);
 	}
 
-	public static inline function bufferStorage(target:Int, size:Int, data:DataPointer, flags:Int):Void
-	{
-		context.bufferStorage(target, size, data, flags);
-	}
-
 	public static inline function renderbufferStorageMultisample(target:Int, samples:Int, internalformat:Int, width:Int, height:Int):Void
 	{
 		context.renderbufferStorageMultisample(target, samples, internalformat, width, height);
