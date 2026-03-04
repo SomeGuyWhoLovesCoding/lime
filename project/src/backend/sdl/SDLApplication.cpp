@@ -1102,7 +1102,6 @@ namespace lime
 		}
 	}
 
-	static int64_t lag = 0;
 	int64_t startTimestamp10ns = 0;
 
 	void SDLApplication::Init()
@@ -1176,6 +1175,7 @@ namespace lime
 		}
 	}
 
+	static int64_t lag = 0;
 	static int64_t minimalSleepCalc10ns = 0;
 
 	// Cached display mode — only refreshed when the window moves or on first call.
