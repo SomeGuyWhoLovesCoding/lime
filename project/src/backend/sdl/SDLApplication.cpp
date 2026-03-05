@@ -1381,8 +1381,15 @@ namespace lime
 			static int lastWindowX = -1, lastWindowY = -1;
 
 			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			uint32_t focusedWindowID = kbFocus != NULL ? SDL_GetWindowID(kbFocus) : 0;
+			if (!kbFocus) {
+				goto linux_fallback;
+			}
+			uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
 			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+
+			if (!focusedWindow || !focusedWindow->sdlWindow) {
+				goto linux_fallback;
+			}
 
 			int windowX = 0, windowY = 0;
 			SDL_GetWindowPosition(focusedWindow->sdlWindow, &windowX, &windowY);
@@ -1523,6 +1530,7 @@ namespace lime
 				}
 			}
 
+			linux_fallback:
 			if (!shouldRender)
 			{
 				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
