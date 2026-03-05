@@ -1313,59 +1313,70 @@ namespace lime
 		// --- Render scheduling ---
 		bool shouldRender = false;
 
-#ifdef HX_WINDOWS
+	#ifdef HX_WINDOWS
+	{
+		static QPC_TIME lastQpcVBlank = 0;
+		static int64_t predictedNextVBlank10ns = 0;
+
+		static DWM_TIMING_INFO timingInfo = {};
+		timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+
+		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
+
+		if (SUCCEEDED(hr))
 		{
-			static QPC_TIME lastQpcVBlank = 0;
-
-			static DWM_TIMING_INFO timingInfo = {};
-			timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
-
-			HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
-
-			if (SUCCEEDED(hr))
+			if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
 			{
-				// qpcVBlank is a raw QPC counter value — must divide by QPC frequency
-				// to convert to our 10ns tick domain. Do NOT multiply by a constant.
-				if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
-				{
-					shouldRender = true;
+				shouldRender = true;
 
-					if (lastQpcVBlank != 0)
-					{
-						// Convert QPC delta to 10ns ticks using the known frequency
-						int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
-						render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-					}
-					else
-					{
-						// First frame: use the nominal render period as a safe seed
-						render_timestamp = RENDER_PERIOD_10NS;
-					}
-
-					lastQpcVBlank = timingInfo.qpcVBlank;
-    				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-				}
-				else if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS)
+				if (lastQpcVBlank != 0)
 				{
-					// DWM stalled — force render to avoid skipping a frame
-					shouldRender = true;
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+					int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
+					render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
 				}
+				else
+				{
+					render_timestamp = RENDER_PERIOD_10NS;
+				}
+
+				lastQpcVBlank = timingInfo.qpcVBlank;
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+
+				// Predict next vblank from current vblank time + one frame period
+				int64_t vblank10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+				predictedNextVBlank10ns = vblank10ns + render_timestamp;
 			}
-			else
+			else if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS)
 			{
-				// Fallback timer-based approach
-				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-				if (shouldRender)
+				shouldRender = true;
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			}
+
+			// Shrink sleep chunk as we approach the predicted vblank
+			if (predictedNextVBlank10ns > 0)
+			{
+				int64_t timeUntilVBlank = predictedNextVBlank10ns - now10ns;
+				if (timeUntilVBlank > 0 && timeUntilVBlank < minimalSleepCalc10ns * 2)
 				{
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
+					// Cut chunk size proportionally — sleep in smaller bites near vblank
+					minimalSleepCalc10ns = std::max<int64_t>(timeUntilVBlank / 2, 5000LL); // floor at 50µs
 				}
 			}
 		}
+		else
+		{
+			// Fallback timer-based approach
+			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+			if (shouldRender)
+			{
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns += RENDER_PERIOD_10NS;
+			}
+		}
+	}
 #elif defined(HX_LINUX)
 		{
 			// Linux VSync with DRM events (non-blocking)
