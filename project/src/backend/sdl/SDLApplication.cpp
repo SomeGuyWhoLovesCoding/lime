@@ -1381,18 +1381,13 @@ namespace lime
 			static int lastWindowX = -1, lastWindowY = -1;
 
 			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			if (!kbFocus) {
-				return active;
-			}
-			uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+			uint32_t focusedWindowID = kbFocus != NULL ? SDL_GetWindowID(kbFocus) : 0;
 			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-
-			if (!focusedWindow || !focusedWindow->sdlWindow) {
-				return active;
-			}
 
 			int windowX = 0, windowY = 0;
 			SDL_GetWindowPosition(focusedWindow->sdlWindow, &windowX, &windowY);
+
+			int windowX = 0, windowY = 0;
 
 			if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
 			{
