@@ -1387,8 +1387,6 @@ namespace lime
 			int windowX = 0, windowY = 0;
 			SDL_GetWindowPosition(focusedWindow->sdlWindow, &windowX, &windowY);
 
-			int windowX = 0, windowY = 0;
-
 			if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
 			{
 				lastWindowX = windowX;
