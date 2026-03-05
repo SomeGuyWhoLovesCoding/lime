@@ -1244,7 +1244,7 @@ namespace lime
 			minimalSleepCalc10ns /= 2;
 		}
 		#else
-		minimalSleepCalc10na /= 4;
+		minimalSleepCalc10ns /= 4;
 		#endif
 	}
 
