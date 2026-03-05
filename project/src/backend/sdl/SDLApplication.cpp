@@ -766,21 +766,19 @@ namespace lime
 	constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
 
 	// Default target frame rates
-	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL; // default update period (e.g. 120Hz)
-	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;  // default render period (60Hz)
+	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL;
+	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;
 
 	static int64_t lastRenderTime = 0;
 	static int64_t render_timestamp = 0;
 
 #if HX_ANDROID
-	// Global choreographer state
 	static AChoreographer *choreographer = nullptr;
 	static bool shouldRenderFromCallback = false;
 
 	static void choreographer_callback(long frameTimeNanos, void *data)
 	{
 		shouldRenderFromCallback = true;
-		// Convert nanoseconds to 10ns ticks
 		int64_t frameTime10ns = frameTimeNanos / 10;
 		render_timestamp = frameTime10ns - lastRenderTime;
 		lastRenderTime = frameTime10ns;
@@ -791,8 +789,6 @@ namespace lime
 
 #if HX_WINDOWS
 	static HMODULE ntdll;
-
-	// QPC frequency, queried once at startup
 	static LARGE_INTEGER qpcFrequency = {};
 
 	void fixTimeResolution()
@@ -840,7 +836,6 @@ namespace lime
 
 		if (SDL_Init(initFlags) != 0)
 		{
-
 			printf("Could not initialize SDL: %s.\n", SDL_GetError());
 		}
 
@@ -871,7 +866,6 @@ namespace lime
 
 		if (CFURLGetFileSystemRepresentation(resourcesURL, TRUE, (UInt8 *)path, PATH_MAX))
 		{
-
 			chdir(path);
 		}
 
@@ -879,7 +873,6 @@ namespace lime
 #endif
 
 #if HX_WINDOWS
-		// Query QPC frequency once here so getTime10ns() has no per-call branch
 		QueryPerformanceFrequency(&qpcFrequency);
 		fixTimeResolution();
 #endif
@@ -887,22 +880,17 @@ namespace lime
 
 	SDLApplication::~SDLApplication()
 	{
-
 #if HX_WINDOWS
 		if (ntdll)
 			FreeLibrary(ntdll);
 #endif
 	}
 
-	// ----------------- 10ns timestamp helpers -----------------
-	// Returns monotonic timestamp in 10-ns ticks
 	int64_t getTime10ns()
 	{
 #ifdef HX_WINDOWS
-		// qpcFrequency is initialized in SDLApplication() — no per-call branch needed
 		LARGE_INTEGER now;
 		QueryPerformanceCounter(&now);
-		// Multiply first to preserve precision; frequency is known non-zero
 		return (now.QuadPart * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
 #else
 		struct timespec ts;
@@ -913,7 +901,6 @@ namespace lime
 
 	int SDLApplication::Exec()
 	{
-
 		Init();
 
 #ifdef EMSCRIPTEN
@@ -922,7 +909,6 @@ namespace lime
 
 		while (active)
 		{
-
 			Update();
 		}
 
@@ -945,9 +931,7 @@ namespace lime
 		}
 
 		SDL_QuitSubSystem(initFlags);
-
 		SDL_Quit();
-
 		alreadyQuit = true;
 
 		return 0;
@@ -955,11 +939,11 @@ namespace lime
 
 	void SDLApplication::RegisterWindow(SDLWindow *window)
 	{
-
 #ifdef IPHONE
-		uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
+		SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+		if (!kbFocus) return;
+		uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
 		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-
 		SDL_iPhoneSetAnimationCallback(focusedWindow->sdlWindow, 1, Update, NULL);
 #endif
 	}
@@ -978,16 +962,13 @@ namespace lime
 
 	void SDLApplication::SetFrameRate(double frameRate)
 	{
-
 		if (frameRate > 0)
 		{
-
 			UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / frameRate;
 			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
 		}
 		else
 		{
-
 			UPDATE_PERIOD_10NS = 0;
 			RENDER_PERIOD_10NS = 0;
 		}
@@ -995,31 +976,32 @@ namespace lime
 
 	void SDLApplication::SetRenderFrameRate(double renderFrameRate)
 	{
-
 		if (renderFrameRate > 60)
 		{
-
 			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / renderFrameRate;
 		}
 		else if (renderFrameRate == 0)
 		{
-
 			RENDER_PERIOD_10NS = 0.0;
 		}
 		else
 		{
-
 			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
 		}
 	}
 
 	// SDL3-style precise delay implementation
 	// as seen here: https://github.com/libsdl-org/SDL/blob/370e9407b585466b5ac54cb5240d5eb1e11fc80b/src/timer/SDL_timer.c#L664
-	static int64_t smoothedOvershootNs = 500000LL; // ~0.5ms initial estimate, persists across calls
+	//
+	// FIX: smoothedOvershootNs is no longer static — it resets each call so that
+	// transient scheduler spikes early in a session don't permanently bias future
+	// sleeps and eventually collapse the loop into a pure spin.
+	// The EMA still tracks within a single sleep call, which is all it needs to do.
 
 #if HX_WINDOWS
 	static bool hasHighRes = false;
 #endif
+
 	void coolSleepUntil10ns(int64_t wakeTime10ns)
 	{
 		int64_t current_value = getTime10ns();
@@ -1042,7 +1024,12 @@ namespace lime
 		}
 #endif
 
-		const int64_t SPIN_WINDOW_10NS = 20000LL; // 200µs spin window only
+		const int64_t SPIN_WINDOW_10NS = 20000LL; // 200µs spin window
+
+		// Per-call overshoot estimate — starts at a conservative 0.5ms.
+		// Not static: we don't want a bad sleep from one frame (or one session startup)
+		// to permanently shrink all future sleeps into a spin loop.
+		int64_t localOvershootNs = 500000LL;
 
 		// --- Coarse sleep pass ---
 		while (true) {
@@ -1082,17 +1069,18 @@ namespace lime
 			int64_t overshoot_ns = actual_ns - sleep_ns;
 
 			if (overshoot_ns > 25000LL) {
-				// Slower EMA — tracks the trend without chasing individual spikes
-				smoothedOvershootNs = (int64_t)(smoothedOvershootNs * 0.75 + overshoot_ns * 0.25);
-				if (smoothedOvershootNs <= 25000LL)  smoothedOvershootNs = 25000LL;
-				if (smoothedOvershootNs >= 2000000LL) smoothedOvershootNs = 2000000LL;
+				// EMA within this call only — tracks the trend for the remaining
+				// sleep iterations without persisting across frames.
+				localOvershootNs = (int64_t)(localOvershootNs * 0.75 + overshoot_ns * 0.25);
+				if (localOvershootNs <= 25000LL)   localOvershootNs = 25000LL;
+				if (localOvershootNs >= 2000000LL) localOvershootNs = 2000000LL;
 
 				if (now >= target_value)
 					return;
 			}
 		}
 
-		// --- Final spin: only covers SPIN_WINDOW_10NS = 10µs ---
+		// --- Final spin: only covers SPIN_WINDOW_10NS = 200µs ---
 		while (getTime10ns() < target_value) {
 #if defined(_MSC_VER)
 			_mm_pause();
@@ -1110,8 +1098,6 @@ namespace lime
 	void SDLApplication::Init()
 	{
 		active = true;
-
-		// Seed lag here so Update() never sees lag == 0
 		lag = getTime10ns();
 
 #ifdef HX_WINDOWS
@@ -1168,84 +1154,85 @@ namespace lime
 				break;
 			}
 			if (isInputEvent)
-			{
 				HandleInputEvent(&event);
-			}
 			else
-			{
 				HandleEvent(&event);
-			}
 		}
 	}
 
 	static int64_t minimalSleepCalc10ns = 0;
 
-	// Cached display mode — only refreshed when the window moves or on first call.
-	// Set dirty via drmInitialized flag on Linux, or the sleeptimeclocktimer on others.
+	// The canonical sleep chunk size for the current refresh rate.
+	// minimalSleepCalc10ns is allowed to shrink per-frame near vblank, but this
+	// value is the floor it resets to at the start of each frame so that one
+	// bad prediction can never permanently collapse the sleep into a spin.
+	static int64_t minimalSleepCalcBase10ns = 0;
+
 	static int cachedRefreshRate = 0;
 
 	static void calculateMinimalSleepTime()
 	{
-		uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
+		SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+		if (!kbFocus) {
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+			return;
+		}
+		uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
 		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
 
 		if (!focusedWindow || !focusedWindow->sdlWindow) {
-			minimalSleepCalc10ns = 100000;
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
 			return;
 		}
 
 		SDL_DisplayMode mode;
 		if (SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode) != 0) {
-			minimalSleepCalc10ns = 100000;
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
 			return;
 		}
 
-		// Skip recalculation if refresh rate hasn't changed
 		if (mode.refresh_rate == cachedRefreshRate && minimalSleepCalc10ns != 0)
 			return;
 
 		cachedRefreshRate = mode.refresh_rate;
 
 		if (cachedRefreshRate == 0) {
-			minimalSleepCalc10ns = 100000;
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
 			return;
 		}
 
-		// We sleep in sub-frame chunks sized so that N chunks fit cleanly
-		// into one frame period, with each chunk just over 1ms so the
-		// high-res waitable timer stays in its sweet spot.
-		//
+		// Sub-frame sleep chunks sized so N fit cleanly in one frame period.
 		// 50Hz:  100000  (20 chunks, 1.0ms each)
 		// 60Hz:  104167  (16 chunks, ~1.0417ms)
 		// 75Hz:  102564  (13 chunks, ~1.0256ms)
 		// 85Hz:  106951  (11 chunks, ~1.0695ms)
 		// 144Hz: 115741  ( 7 chunks, ~1.1574ms)
 		// 165Hz: 101010  ( 6 chunks, ~1.0101ms)
-
 		if (cachedRefreshRate % 50 == 0) {
-			minimalSleepCalc10ns = 100000;
+			minimalSleepCalcBase10ns = 100000;
 		} else if (cachedRefreshRate % 60 == 0) {
-			minimalSleepCalc10ns = 104167;
+			minimalSleepCalcBase10ns = 104167;
 		} else if (cachedRefreshRate % 75 == 0) {
-			minimalSleepCalc10ns = 102564;
+			minimalSleepCalcBase10ns = 102564;
 		} else if (cachedRefreshRate % 85 == 0) {
-			minimalSleepCalc10ns = 106951;
+			minimalSleepCalcBase10ns = 106951;
 		} else if (cachedRefreshRate % 144 == 0) {
-			minimalSleepCalc10ns = 115741;
+			minimalSleepCalcBase10ns = 115741;
 		} else if (cachedRefreshRate % 165 == 0) {
-			minimalSleepCalc10ns = 101010;
+			minimalSleepCalcBase10ns = 101010;
 		} else {
-			// Generic fallback: ~1ms chunks
-			minimalSleepCalc10ns = 100000;
+			minimalSleepCalcBase10ns = 100000;
 		}
 
 		#if HX_WINDOWS
 		if (hasHighRes) {
-			minimalSleepCalc10ns /= 2;
+			minimalSleepCalcBase10ns /= 2;
 		}
 		#else
-		minimalSleepCalc10ns /= 4;
+		minimalSleepCalcBase10ns /= 4;
 		#endif
+
+		minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 	}
 
 	static int sleeptimeclocktimer = 0;
@@ -1292,6 +1279,14 @@ namespace lime
 			return active;
 		}
 
+		// FIX: Restore minimalSleepCalc10ns to the base value at the top of every
+		// frame. The vblank-approach shrink below is intentionally transient — it
+		// applies only for the last few iterations before the predicted vblank, then
+		// resets here so a bad prediction or a missed vblank can never leave
+		// minimalSleepCalc10ns permanently at its 50µs floor.
+		if (minimalSleepCalcBase10ns > 0)
+			minimalSleepCalc10ns = minimalSleepCalcBase10ns;
+
 		now10ns = getTime10ns();
 
 		if (firstFrame)
@@ -1313,7 +1308,7 @@ namespace lime
 		// --- Render scheduling ---
 		bool shouldRender = false;
 
-	#ifdef HX_WINDOWS
+#ifdef HX_WINDOWS
 	{
 		static QPC_TIME lastQpcVBlank = 0;
 		static int64_t predictedNextVBlank10ns = 0;
@@ -1342,7 +1337,6 @@ namespace lime
 				lastQpcVBlank = timingInfo.qpcVBlank;
 				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 
-				// Predict next vblank from current vblank time + one frame period
 				int64_t vblank10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
 				predictedNextVBlank10ns = vblank10ns + render_timestamp;
 			}
@@ -1354,14 +1348,16 @@ namespace lime
 				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 			}
 
-			// Shrink sleep chunk as we approach the predicted vblank
+			// Shrink sleep chunk as we approach the predicted vblank.
+			// This only affects minimalSleepCalc10ns for the remaining iterations
+			// this frame; it resets to minimalSleepCalcBase10ns at the top of the
+			// next frame so a bad prediction cannot cause permanent spin-lock.
 			if (predictedNextVBlank10ns > 0)
 			{
 				int64_t timeUntilVBlank = predictedNextVBlank10ns - now10ns;
-				if (timeUntilVBlank > 0 && timeUntilVBlank < minimalSleepCalc10ns * 2)
+				if (timeUntilVBlank > 0 && timeUntilVBlank < minimalSleepCalcBase10ns * 2)
 				{
-					// Cut chunk size proportionally — sleep in smaller bites near vblank
-					minimalSleepCalc10ns = std::max<int64_t>(timeUntilVBlank / 2, 5000LL); // floor at 50µs
+					minimalSleepCalc10ns = std::max<int64_t>(timeUntilVBlank / 2, 5000LL);
 				}
 			}
 		}
@@ -1379,13 +1375,16 @@ namespace lime
 	}
 #elif defined(HX_LINUX)
 		{
-			// Linux VSync with DRM events (non-blocking)
 			static int drmFd = -1;
 			static uint32_t drmCrtcId = 0;
 			static uint64_t lastVBlankSeq = 0;
 			static int lastWindowX = -1, lastWindowY = -1;
 
-			uint32_t focusedWindowID = SDL_GetWindowID(SDL_GetKeyboardFocus());
+			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+			if (!kbFocus) {
+				return active;
+			}
+			uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
 			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
 
 			if (!focusedWindow || !focusedWindow->sdlWindow) {
@@ -1447,6 +1446,19 @@ namespace lime
 									drmCrtcId = crtcId;
 									drmInitialized = true;
 									foundDevice = true;
+
+									// Prime the event stream so the first poll() has
+									// something to receive. Must use DRM_VBLANK_EVENT
+									// so this returns immediately instead of blocking.
+									drmVBlank primeVbl;
+									memset(&primeVbl, 0, sizeof(primeVbl));
+									primeVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
+#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+									primeVbl.request.type = (drmVBlankSeqType)(primeVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
+#endif
+									primeVbl.request.sequence = 1;
+									primeVbl.request.signal = 0;
+									drmWaitVBlank(fd, &primeVbl);
 								}
 							}
 
@@ -1482,7 +1494,6 @@ namespace lime
 					memset(&evctx, 0, sizeof(evctx));
 					evctx.version = DRM_EVENT_CONTEXT_VERSION;
 
-					// vblankSequence is file-scope so the lambda's user_data pointer is stable
 					static uint64_t vblankSequence = 0;
 					evctx.vblank_handler = [](int fd, unsigned int sequence,
 											unsigned int tv_sec, unsigned int tv_usec,
@@ -1503,37 +1514,22 @@ namespace lime
 					}
 				}
 
-				if (!shouldRender)
+				if (shouldRender)
 				{
-					drmVBlank vbl;
-					memset(&vbl, 0, sizeof(vbl));
-
-					vbl.request.type = DRM_VBLANK_RELATIVE;
-					vbl.request.sequence = 1;
-
-#ifdef DRM_VBLANK_EVENT
-					vbl.request.type |= DRM_VBLANK_EVENT;
-#endif
-
+					// Re-prime for the next frame: request the next vblank event
+					// non-blockingly so poll() will fire again one frame from now.
+					drmVBlank nextVbl;
+					memset(&nextVbl, 0, sizeof(nextVbl));
+					nextVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
 #if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-					vbl.request.type |= (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT);
+					nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
 #endif
-
-					int result = drmWaitVBlank(drmFd, &vbl);
-					if (result != 0)
-					{
-						shouldRender = (now10ns >= nextRenderTime10ns);
-						if (shouldRender)
-						{
-							render_timestamp = now10ns - lastRenderTime;
-							lastRenderTime = now10ns;
-							nextRenderTime10ns += RENDER_PERIOD_10NS;
-						}
-					}
+					nextVbl.request.sequence = 1;
+					nextVbl.request.signal = 0;
+					drmWaitVBlank(drmFd, &nextVbl);
 				}
 			}
 
-			// Fallback to timer-based if DRM unavailable
 			if (!shouldRender)
 			{
 				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
@@ -1568,7 +1564,6 @@ namespace lime
 			}
 		}
 #else
-		// Other platforms: timer-based fallback
 		shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 		if (shouldRender)
 		{
@@ -1577,7 +1572,6 @@ namespace lime
 		}
 #endif
 
-		// PollInputs is unconditional — moved out of the shouldRender branch
 		PollInputs();
 
 		if (shouldRender)
@@ -1597,7 +1591,6 @@ namespace lime
 
 	Application *CreateApplication()
 	{
-
 		return new SDLApplication();
 	}
 
