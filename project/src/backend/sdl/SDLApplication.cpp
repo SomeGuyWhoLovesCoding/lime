@@ -795,7 +795,7 @@ namespace lime
 	// QPC frequency, queried once at startup
 	static LARGE_INTEGER qpcFrequency = {};
 
-	void adjustTimerResolutionDynamic()
+	void fixTimeResolution()
 	{
 		typedef NTSTATUS(NTAPI * NtSetTimerResolution_t)(ULONG, BOOLEAN, PULONG);
 		typedef NTSTATUS(NTAPI * NtQueryTimerResolution_t)(PULONG, PULONG, PULONG);
@@ -881,7 +881,7 @@ namespace lime
 #if HX_WINDOWS
 		// Query QPC frequency once here so getTime10ns() has no per-call branch
 		QueryPerformanceFrequency(&qpcFrequency);
-		adjustTimerResolutionDynamic();
+		fixTimeResolution();
 #endif
 	}
 
@@ -1017,6 +1017,9 @@ namespace lime
 	// as seen here: https://github.com/libsdl-org/SDL/blob/370e9407b585466b5ac54cb5240d5eb1e11fc80b/src/timer/SDL_timer.c#L664
 	static int64_t smoothedOvershootNs = 500000LL; // ~0.5ms initial estimate, persists across calls
 
+#if HX_WINDOWS
+	static bool hasHighRes = false;
+#endif
 	void coolSleepUntil10ns(int64_t wakeTime10ns)
 	{
 		int64_t current_value = getTime10ns();
@@ -1028,7 +1031,6 @@ namespace lime
 #if HX_WINDOWS
 		static HANDLE localTimer = nullptr;
 		static bool triedHighRes = false;
-		static bool hasHighRes = false;
 
 		if (!triedHighRes) {
 			localTimer = CreateWaitableTimerEx(nullptr, nullptr,
@@ -1040,7 +1042,7 @@ namespace lime
 		}
 #endif
 
-		const int64_t SPIN_WINDOW_10NS = 1000LL; // 10µs spin window only
+		const int64_t SPIN_WINDOW_10NS = 20000LL; // 200µs spin window only
 
 		// --- Coarse sleep pass ---
 		while (true) {
@@ -1079,11 +1081,11 @@ namespace lime
 			int64_t actual_ns    = (now - before_sleep) * 10LL;
 			int64_t overshoot_ns = actual_ns - sleep_ns;
 
-			if (overshoot_ns > 50000LL) {
-				// EMA alpha 0.5/0.5 for faster adaptation to sudden jitter spikes
-				smoothedOvershootNs = (int64_t)(smoothedOvershootNs * 0.5 + overshoot_ns * 0.5);
-				if (smoothedOvershootNs <= 100000LL)  smoothedOvershootNs = 100000LL;
-				if (smoothedOvershootNs >= 5000000LL) smoothedOvershootNs = 5000000LL;
+			if (overshoot_ns > 25000LL) {
+				// Slower EMA — tracks the trend without chasing individual spikes
+				smoothedOvershootNs = (int64_t)(smoothedOvershootNs * 0.75 + overshoot_ns * 0.25);
+				if (smoothedOvershootNs <= 25000LL)  smoothedOvershootNs = 25000LL;
+				if (smoothedOvershootNs >= 2000000LL) smoothedOvershootNs = 2000000LL;
 
 				if (now >= target_value)
 					return;
@@ -1236,6 +1238,14 @@ namespace lime
 			// Generic fallback: ~1ms chunks
 			minimalSleepCalc10ns = 100000;
 		}
+
+		#if HX_WINDOWS
+		if (hasHighRes) {
+			minimalSleepCalc10ns /= 2;
+		}
+		#else
+		minimalSleepCalc10na /= 4;
+		#endif
 	}
 
 	static int sleeptimeclocktimer = 0;
@@ -1333,6 +1343,15 @@ namespace lime
 					}
 
 					lastQpcVBlank = timingInfo.qpcVBlank;
+    				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+				}
+				else if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS)
+				{
+					// DWM stalled — force render to avoid skipping a frame
+					shouldRender = true;
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 				}
 			}
 			else
