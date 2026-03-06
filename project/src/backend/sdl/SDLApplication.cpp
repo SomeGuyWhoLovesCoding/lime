@@ -1380,156 +1380,159 @@ namespace lime
 			static uint64_t lastVBlankSeq = 0;
 			static int lastWindowX = -1, lastWindowY = -1;
 
-			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			if (!kbFocus) {
-				goto linux_fallback;
-			}
-			uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-
-			if (!focusedWindow || !focusedWindow->sdlWindow) {
-				goto linux_fallback;
-			}
-
-			int windowX = 0, windowY = 0;
-			SDL_GetWindowPosition(focusedWindow->sdlWindow, &windowX, &windowY);
-
-			if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
+			// Inner scope: all window-dependent variables are declared here so that
+			// the goto to linux_fallback (which lives outside this scope) never
+			// crosses an initialization.
 			{
-				lastWindowX = windowX;
-				lastWindowY = windowY;
-
-				if (drmFd >= 0)
+				SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+				if (kbFocus)
 				{
-					close(drmFd);
-					drmFd = -1;
-				}
+					uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+					SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
 
-				drmDevicePtr devices[16];
-				int deviceCount = drmGetDevices(devices, 16);
-
-				if (deviceCount > 0)
-				{
-					bool foundDevice = false;
-
-					for (int i = 0; i < deviceCount && !foundDevice; i++)
+					if (focusedWindow && focusedWindow->sdlWindow)
 					{
-						drmDevicePtr dev = devices[i];
-						if (!dev->nodes[DRM_NODE_PRIMARY])
-							continue;
+						int windowX = 0, windowY = 0;
+						SDL_GetWindowPosition(focusedWindow->sdlWindow, &windowX, &windowY);
 
-						int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
-						if (fd < 0)
-							continue;
-
-						drmModeResPtr res = drmModeGetResources(fd);
-						if (!res)
+						if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
 						{
-							close(fd);
-							continue;
+							lastWindowX = windowX;
+							lastWindowY = windowY;
+
+							if (drmFd >= 0)
+							{
+								close(drmFd);
+								drmFd = -1;
+							}
+
+							drmDevicePtr devices[16];
+							int deviceCount = drmGetDevices(devices, 16);
+
+							if (deviceCount > 0)
+							{
+								bool foundDevice = false;
+
+								for (int i = 0; i < deviceCount && !foundDevice; i++)
+								{
+									drmDevicePtr dev = devices[i];
+									if (!dev->nodes[DRM_NODE_PRIMARY])
+										continue;
+
+									int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
+									if (fd < 0)
+										continue;
+
+									drmModeResPtr res = drmModeGetResources(fd);
+									if (!res)
+									{
+										close(fd);
+										continue;
+									}
+
+									for (int c = 0; c < res->count_crtcs && !foundDevice; c++)
+									{
+										uint32_t crtcId = res->crtcs[c];
+										drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
+
+										if (!crtc)
+											continue;
+
+										if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0)
+										{
+											if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
+												windowY >= crtc->y && windowY < crtc->y + crtc->height)
+											{
+												drmFd = fd;
+												drmCrtcId = crtcId;
+												drmInitialized = true;
+												foundDevice = true;
+
+												// Prime the event stream so the first poll() has
+												// something to receive. Must use DRM_VBLANK_EVENT
+												// so this returns immediately instead of blocking.
+												drmVBlank primeVbl;
+												memset(&primeVbl, 0, sizeof(primeVbl));
+												primeVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
+#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+												primeVbl.request.type = (drmVBlankSeqType)(primeVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
+#endif
+												primeVbl.request.sequence = 1;
+												primeVbl.request.signal = 0;
+												drmWaitVBlank(fd, &primeVbl);
+											}
+										}
+
+										drmModeFreeCrtc(crtc);
+									}
+
+									drmModeFreeResources(res);
+
+									if (!foundDevice)
+									{
+										close(fd);
+									}
+								}
+
+								drmFreeDevices(devices, deviceCount);
+							}
 						}
 
-						for (int c = 0; c < res->count_crtcs && !foundDevice; c++)
+						if (drmFd >= 0 && drmCrtcId != 0)
 						{
-							uint32_t crtcId = res->crtcs[c];
-							drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
+							struct pollfd pfd;
+							pfd.fd = drmFd;
+							pfd.events = POLLIN;
+							pfd.revents = 0;
 
-							if (!crtc)
-								continue;
+							int pollResult = poll(&pfd, 1, 0);
 
-							if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0)
+							if (pollResult > 0 && (pfd.revents & POLLIN))
 							{
-								if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
-									windowY >= crtc->y && windowY < crtc->y + crtc->height)
-								{
-									drmFd = fd;
-									drmCrtcId = crtcId;
-									drmInitialized = true;
-									foundDevice = true;
+								drmEventContext evctx;
+								memset(&evctx, 0, sizeof(evctx));
+								evctx.version = DRM_EVENT_CONTEXT_VERSION;
 
-									// Prime the event stream so the first poll() has
-									// something to receive. Must use DRM_VBLANK_EVENT
-									// so this returns immediately instead of blocking.
-									drmVBlank primeVbl;
-									memset(&primeVbl, 0, sizeof(primeVbl));
-									primeVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
-#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-									primeVbl.request.type = (drmVBlankSeqType)(primeVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
-#endif
-									primeVbl.request.sequence = 1;
-									primeVbl.request.signal = 0;
-									drmWaitVBlank(fd, &primeVbl);
+								static uint64_t vblankSequence = 0;
+								evctx.vblank_handler = [](int fd, unsigned int sequence,
+														unsigned int tv_sec, unsigned int tv_usec,
+														void *user_data)
+								{
+									uint64_t *seqPtr = (uint64_t *)user_data;
+									*seqPtr = sequence;
+								};
+
+								drmHandleEvent(drmFd, &evctx);
+
+								if (vblankSequence != lastVBlankSeq)
+								{
+									shouldRender = true;
+									render_timestamp = now10ns - lastRenderTime;
+									lastRenderTime = now10ns;
+									lastVBlankSeq = vblankSequence;
 								}
 							}
 
-							drmModeFreeCrtc(crtc);
-						}
-
-						drmModeFreeResources(res);
-
-						if (!foundDevice)
-						{
-							close(fd);
-						}
-					}
-
-					drmFreeDevices(devices, deviceCount);
-				}
-			}
-
-			shouldRender = false;
-
-			if (drmFd >= 0 && drmCrtcId != 0)
-			{
-				struct pollfd pfd;
-				pfd.fd = drmFd;
-				pfd.events = POLLIN;
-				pfd.revents = 0;
-
-				int pollResult = poll(&pfd, 1, 0);
-
-				if (pollResult > 0 && (pfd.revents & POLLIN))
-				{
-					drmEventContext evctx;
-					memset(&evctx, 0, sizeof(evctx));
-					evctx.version = DRM_EVENT_CONTEXT_VERSION;
-
-					static uint64_t vblankSequence = 0;
-					evctx.vblank_handler = [](int fd, unsigned int sequence,
-											unsigned int tv_sec, unsigned int tv_usec,
-											void *user_data)
-					{
-						uint64_t *seqPtr = (uint64_t *)user_data;
-						*seqPtr = sequence;
-					};
-
-					drmHandleEvent(drmFd, &evctx);
-
-					if (vblankSequence != lastVBlankSeq)
-					{
-						shouldRender = true;
-						render_timestamp = now10ns - lastRenderTime;
-						lastRenderTime = now10ns;
-						lastVBlankSeq = vblankSequence;
-					}
-				}
-
-				if (shouldRender)
-				{
-					// Re-prime for the next frame: request the next vblank event
-					// non-blockingly so poll() will fire again one frame from now.
-					drmVBlank nextVbl;
-					memset(&nextVbl, 0, sizeof(nextVbl));
-					nextVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
+							if (shouldRender)
+							{
+								// Re-prime for the next frame: request the next vblank event
+								// non-blockingly so poll() will fire again one frame from now.
+								drmVBlank nextVbl;
+								memset(&nextVbl, 0, sizeof(nextVbl));
+								nextVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
 #if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-					nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
+								nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
 #endif
-					nextVbl.request.sequence = 1;
-					nextVbl.request.signal = 0;
-					drmWaitVBlank(drmFd, &nextVbl);
-				}
-			}
+								nextVbl.request.sequence = 1;
+								nextVbl.request.signal = 0;
+								drmWaitVBlank(drmFd, &nextVbl);
+							}
+						}
+					} // end if (focusedWindow && focusedWindow->sdlWindow)
+				} // end if (kbFocus)
+			} // end inner scope — windowX, windowY, focusedWindow, focusedWindowID no longer exist here
 
+			// linux_fallback is outside the inner scope so no goto crosses an initialization.
 			linux_fallback:
 			if (!shouldRender)
 			{
