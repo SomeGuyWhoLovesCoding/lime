@@ -133,12 +133,6 @@ namespace lime
 
 				ProcessWindowEvent(event);
 
-				if (!inBackground)
-				{
-
-					RenderEvent::Dispatch(&renderEvent);
-				}
-
 				break;
 
 			case SDL_WINDOWEVENT_SIZE_CHANGED:
@@ -1264,16 +1258,18 @@ namespace lime
 
 			now10ns = getTime10ns();
 
+			// Only tick game logic at UPDATE_PERIOD_10NS intervals,
+			// same cadence as the capped path — prevents logic running
+			// thousands of times per second and causing visual speedup.
 			applicationEvent.type = UPDATE;
 			applicationEvent.deltaTime = now10ns - lag;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
+			lag = now10ns;
+			nextUpdateTime10ns = now10ns;
+
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
-
-			startTimestamp10ns = now10ns;
-			nextUpdateTime10ns = now10ns + applicationEvent.deltaTime;
-			nextRenderTime10ns = now10ns + applicationEvent.deltaTime;
 
 			lag = getTime10ns();
 			return active;

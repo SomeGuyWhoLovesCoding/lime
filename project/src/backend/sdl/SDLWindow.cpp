@@ -91,24 +91,6 @@ namespace lime {
 
 			}
 
-			#if defined (HX_WINDOWS) && defined (NATIVE_TOOLKIT_SDL_ANGLE)
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
-			SDL_SetHint (SDL_HINT_VIDEO_WIN_D3DCOMPILER, "d3dcompiler_47.dll");
-			#endif
-
-			#if defined (RASPBERRYPI)
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
-			SDL_SetHint (SDL_HINT_RENDER_DRIVER, "opengles2");
-			#endif
-
-			#if defined (IPHONE) || defined (APPLETV)
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-			SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-			#endif
 
 			bool isES3Supported = false;
 			int es3Minor = 2;
@@ -135,13 +117,31 @@ namespace lime {
 			}
 
 			if (!isES3Supported) {	
+				#if defined (HX_WINDOWS) && defined (NATIVE_TOOLKIT_SDL_ANGLE)
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
+				#endif
+
+				#if defined (RASPBERRYPI)
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
+				#endif
+
+				#if defined (IPHONE) || defined (APPLETV)
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+				#endif
 			}
 
+			#if defined (HX_WINDOWS) && defined (NATIVE_TOOLKIT_SDL_ANGLE)
+			SDL_SetHint (SDL_HINT_VIDEO_WIN_D3DCOMPILER, "d3dcompiler_47.dll");
+			#endif
 
-			//SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+			#if defined (RASPBERRYPI)
+			SDL_SetHint (SDL_HINT_RENDER_DRIVER, "opengles2");
+			#endif
 
 			if (flags & WINDOW_FLAG_DEPTH_BUFFER) {
 
