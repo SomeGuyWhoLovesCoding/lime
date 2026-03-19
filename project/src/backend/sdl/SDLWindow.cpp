@@ -95,7 +95,7 @@ namespace lime {
 			bool isES3Supported = false;
 			int es3Minor = 2;
 
-			while (!isES3Supported) {
+			while (!isES3Supported && es3Minor > 0) {
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, es3Minor);
@@ -116,23 +116,9 @@ namespace lime {
 				--es3Minor;
 			}
 
-			if (!isES3Supported) {	
-				#if defined (HX_WINDOWS) && defined (NATIVE_TOOLKIT_SDL_ANGLE)
-				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+			if (!isES3Supported) {
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
 				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
-				#endif
-
-				#if defined (RASPBERRYPI)
-				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MINOR_VERSION, 0);
-				#endif
-
-				#if defined (IPHONE) || defined (APPLETV)
-				SDL_GL_SetAttribute (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-				SDL_GL_SetAttribute (SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-				#endif
 			}
 
 			#if defined (HX_WINDOWS) && defined (NATIVE_TOOLKIT_SDL_ANGLE)
