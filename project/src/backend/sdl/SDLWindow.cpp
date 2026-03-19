@@ -803,17 +803,13 @@ namespace lime {
 
 		if (cursor != currentCursor) {
 
-			if (currentCursor == HIDDEN) {
+			if (currentCursor == HIDDEN || cursor == HIDDEN) {
 
 				SDL_ShowCursor (SDL_ENABLE);
 
 			}
 
 			switch (cursor) {
-
-				case HIDDEN:
-
-					SDL_ShowCursor (SDL_DISABLE);
 
 				case CROSSHAIR:
 
