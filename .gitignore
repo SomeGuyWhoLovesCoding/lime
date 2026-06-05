@@ -2,7 +2,6 @@
 .DS_Store
 .DS_Store?
 Export/
-templates/bin/hl/*
 project/all_objs
 project/obj
 project/vc*.pdb
