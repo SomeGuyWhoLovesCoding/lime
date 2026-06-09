@@ -41,6 +41,8 @@ using namespace std;
 #include <dirent.h>
 #include <sys/epoll.h>
 #include <sys/stat.h>
+#undef KEY_DOWN
+#undef KEY_UP
 #endif
 
 #ifdef HX_MACOS
