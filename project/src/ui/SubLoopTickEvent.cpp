@@ -8,7 +8,7 @@ namespace lime {
 	ValuePointer* SubLoopTickEvent::callback = 0;
 	ValuePointer* SubLoopTickEvent::eventObject = 0;
 
-	static int64_t id_timestamp;
+	static int id_timestamp;
 	static bool init = false;
 
 

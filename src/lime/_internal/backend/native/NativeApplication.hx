@@ -44,6 +44,7 @@ import haxe.Int64;
 class NativeApplication
 {
 	private var applicationEventInfo = new ApplicationEventInfo(UPDATE);
+	private var asyncKeyEventInfo = new AsyncKeyEventInfo();
 	private var subLoopTickEventInfo = new SubLoopTickEventInfo(10000); // 10 microseconds, usually
 	private var clipboardEventInfo = new ClipboardEventInfo();
 	private var currentTouches = new Map<Int, Touch>();
@@ -108,8 +109,8 @@ class NativeApplication
 	{
 		#if !macro
 		#if lime_cffi
-		//Sys.println('What the hell');
 		NativeCFFI.lime_application_event_manager_register(handleApplicationEvent, applicationEventInfo);
+		NativeCFFI.lime_asynckey_event_manager_register(handleAsyncKeyEvent, asyncKeyEventInfo);
 		NativeCFFI.lime_subloop_event_manager_register(handleSubLoopEvent, subLoopTickEventInfo);
 		NativeCFFI.lime_clipboard_event_manager_register(handleClipboardEvent, clipboardEventInfo);
 		NativeCFFI.lime_drop_event_manager_register(handleDropEvent, dropEventInfo);
@@ -121,7 +122,6 @@ class NativeApplication
 		NativeCFFI.lime_text_event_manager_register(handleTextEvent, textEventInfo);
 		NativeCFFI.lime_touch_event_manager_register(handleTouchEvent, touchEventInfo);
 		NativeCFFI.lime_window_event_manager_register(handleWindowEvent, windowEventInfo);
-		//Sys.println(windowEventInfo != null);
 		#if (ios || android || tvos)
 		NativeCFFI.lime_sensor_event_manager_register(handleSensorEvent, sensorEventInfo);
 		#end
@@ -153,7 +153,6 @@ class NativeApplication
 		var result = NativeCFFI.lime_application_exec(handle);
 
 		#if (!webassembly && !ios && !nodejs)
-		//Sys.println("A!"); // it works!!! I found the shit now!!!
 		parent.onExit.dispatch(result);
 		#end
 
@@ -190,6 +189,10 @@ class NativeApplication
 	private function handleSubLoopEvent():Void {
 		if (@:privateAccess parent.onSubLoopTick.__listeners.length != 0)
 			parent.onSubLoopTick.dispatch(subLoopTickEventInfo.timestamp);
+	}
+
+	private function handleAsyncKeyEvent():Void {
+		// nothing to see here
 	}
 
 	private function handleClipboardEvent():Void
@@ -681,6 +684,25 @@ class NativeApplication
 	public function clone():SubLoopTickEventInfo
 	{
 		return new SubLoopTickEventInfo(timestamp);
+	}
+}
+
+@:keep /*private*/ class AsyncKeyEventInfo
+{
+	public var keyCode:Int;
+	public var state:Int;
+	public var timestamp:Float;
+
+	public function new(keyCode:Int = 0, state:Int = 0, timestamp:Float = 0)
+	{
+		this.keyCode = keyCode;
+		this.state = state;
+		this.timestamp = timestamp;
+	}
+
+	public function clone():AsyncKeyEventInfo
+	{
+		return new AsyncKeyEventInfo(keyCode, state, timestamp);
 	}
 }
 
