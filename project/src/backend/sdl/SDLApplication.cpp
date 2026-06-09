@@ -1381,6 +1381,11 @@ namespace lime
 		active = true;
 		lag = getTime10ns();
 
+#ifdef HX_LINUX
+		// Initialize Xlib thread safety - CRITICAL for multi-threaded X11 access
+		XInitThreads();
+#endif
+
 #if HX_WINDOWS
 		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
