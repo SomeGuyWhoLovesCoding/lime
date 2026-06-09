@@ -898,7 +898,7 @@ namespace lime
 #endif
 	}
 
-#if HX_WINDOWS || HX_LINUX
+#ifdef HX_WINDOWS
 	
 	namespace AsyncKeyboard {
 		static constexpr size_t MAX_EVENTS = 512;
@@ -1042,7 +1042,7 @@ namespace lime
 			return true;
 		}
 	}
-#elif HX_LINUX
+#elif defined(HX_LINUX)
 	namespace AsyncKeyboard {
 		static constexpr size_t MAX_EVENTS = 512;
 		
