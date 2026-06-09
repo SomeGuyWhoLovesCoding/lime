@@ -435,11 +435,11 @@
 
 				<lib name="-lpthread" />
 				<lib name="-ldrm" />
-				<lib name="-L/usr/lib/x86_64-linux-gnu" />
-				<lib name="-ludev" />
-				<lib name="-linput" />
 				<lib name="-lX11" />
 				<lib name="-lrt" />
+
+				<lib name="-ludev" />
+				<lib name="-linput" />
 
 				<lib name="-lgc" if="LIME_NEKO" />
 				<lib name="-lm" if="LIME_NEKO" />
