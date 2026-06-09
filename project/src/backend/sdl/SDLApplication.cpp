@@ -1032,8 +1032,6 @@ namespace lime
 		
 	#elif defined(HX_LINUX)
 		// Linux libinput implementation - Professional input handling with microsecond precision
-		#include <libinput.h>
-		#include <libudev.h>
 		
 		static struct udev* udevContext = nullptr;
 		static struct libinput* libinputContext = nullptr;
@@ -1201,7 +1199,7 @@ namespace lime
 								uint64_t timestampUs = libinput_event_keyboard_get_time_usec(kbEvent);
 								double timestampSec = timestampUs / 1000000.0;
 								
-								uint32_t keycode = libinput_event_keyboard_get_keycode(kbEvent);
+								uint32_t keycode = libinput_event_keyboard_get_key(kbEvent);
 								enum libinput_key_state keyState = libinput_event_keyboard_get_key_state(kbEvent);
 								
 								// 0 = released, 1 = pressed
