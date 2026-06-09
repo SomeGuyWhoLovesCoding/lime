@@ -35,6 +35,12 @@ using namespace std;
 #ifdef HX_LINUX
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+#include <linux/input.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/epoll.h>
+#include <sys/stat.h>
 #endif
 
 #ifdef HX_MACOS
@@ -56,12 +62,10 @@ using namespace std;
 #include <windows.h>
 #include <immintrin.h>
 #else
-#include <unistd.h>
 #include <sched.h>
 #if HX_LINUX
 #include <xf86drm.h>
 #include <xf86drmMode.h>
-#include <fcntl.h>
 #include <poll.h>
 #include <x86intrin.h>
 #endif
@@ -1021,213 +1025,193 @@ namespace lime
 			}
 			UnhookWindowsHookEx(keyboardHook);
 			CloseHandle(quitEvent);
+		}		
+	#elif defined(HX_LINUX)
+		// Linux evdev implementation
+		static int epollFd = -1;
+		static std::vector<int> keyboardFds;
+		static int wakeFd[2] = {-1, -1};
+		static std::atomic<bool> shouldStop{false};
+		
+		// Map evdev key codes to Lime key codes
+		static int evdevToLimeKeyCode(uint16_t evdevCode) {
+			// Letter keys (A-Z)
+			if (evdevCode >= 4 && evdevCode <= 29) {  // KEY_A=30, but evdev codes are offset
+				return 0x61 + (evdevCode - 4);
+			}
+			
+			switch (evdevCode) {
+				case 57: return 0x20;  // KEY_SPACE
+				case 28: return 0x0D;  // KEY_ENTER
+				case 1: return 0x1B;   // KEY_ESC
+				case 15: return 0x09;  // KEY_TAB
+				case 14: return 0x08;  // KEY_BACKSPACE
+				case 111: return 0x7F; // KEY_DELETE
+				case 110: return 0x40000049; // KEY_INSERT
+				case 102: return 0x4000004A; // KEY_HOME
+				case 107: return 0x4000004D; // KEY_END
+				case 104: return 0x4000004B; // KEY_PAGEUP
+				case 109: return 0x4000004E; // KEY_PAGEDOWN
+				case 103: return 0x40000052; // KEY_UP
+				case 108: return 0x40000051; // KEY_DOWN
+				case 105: return 0x40000050; // KEY_LEFT
+				case 106: return 0x4000004F; // KEY_RIGHT
+				case 29: return 0x400000E0;  // KEY_LEFTCTRL
+				case 97: return 0x400000E4;  // KEY_RIGHTCTRL
+				case 42: return 0x400000E1;  // KEY_LEFTSHIFT
+				case 54: return 0x400000E5;  // KEY_RIGHTSHIFT
+				case 56: return 0x400000E2;  // KEY_LEFTALT
+				case 100: return 0x400000E6; // KEY_RIGHTALT
+				case 125: return 0x400000E3; // KEY_LEFTMETA
+				case 126: return 0x400000E7; // KEY_RIGHTMETA
+				case 58: return 0x40000039;  // KEY_CAPSLOCK
+				case 69: return 0x40000053;  // KEY_NUMLOCK
+				case 70: return 0x40000047;  // KEY_SCROLLLOCK
+				case 59: return 0x4000003A;  // KEY_F1
+				case 60: return 0x4000003B;  // KEY_F2
+				case 61: return 0x4000003C;  // KEY_F3
+				case 62: return 0x4000003D;  // KEY_F4
+				case 63: return 0x4000003E;  // KEY_F5
+				case 64: return 0x4000003F;  // KEY_F6
+				case 65: return 0x40000040;  // KEY_F7
+				case 66: return 0x40000041;  // KEY_F8
+				case 67: return 0x40000042;  // KEY_F9
+				case 68: return 0x40000043;  // KEY_F10
+				case 87: return 0x40000044;  // KEY_F11
+				case 88: return 0x40000045;  // KEY_F12
+				default: 
+					// Number keys (2-11 map to 1-0)
+					if (evdevCode >= 2 && evdevCode <= 11) {
+						if (evdevCode == 11) return 0x30;  // 0
+						return 0x30 + (evdevCode - 1);
+					}
+					return 0x00;
+			}
 		}
 		
-	#elif defined(HX_LINUX)
-    static int epollFd = -1;
-    static std::vector<int> keyboardFds;
-    static int wakeFd[2] = {-1, -1};
-    static std::atomic<bool> shouldStop{false};
-    
-    // Map evdev key codes to Lime key codes
-    static int evdevToLimeKeyCode(uint16_t evdevCode) {
-        // Letter keys (A-Z)
-        if (evdevCode >= KEY_A && evdevCode <= KEY_Z) {
-            return 0x61 + (evdevCode - KEY_A);
-        }
-        // Number keys (1-0)
-        if (evdevCode >= KEY_1 && evdevCode <= KEY_9) {
-            return 0x31 + (evdevCode - KEY_1);
-        }
-        if (evdevCode == KEY_0) return 0x30;
-        
-        switch (evdevCode) {
-            case KEY_SPACE: return 0x20;
-            case KEY_ENTER: return 0x0D;
-            case KEY_ESC: return 0x1B;
-            case KEY_TAB: return 0x09;
-            case KEY_BACKSPACE: return 0x08;
-            case KEY_DELETE: return 0x7F;
-            case KEY_INSERT: return 0x40000049;
-            case KEY_HOME: return 0x4000004A;
-            case KEY_END: return 0x4000004D;
-            case KEY_PAGEUP: return 0x4000004B;
-            case KEY_PAGEDOWN: return 0x4000004E;
-            case KEY_UP: return 0x40000052;
-            case KEY_DOWN: return 0x40000051;
-            case KEY_LEFT: return 0x40000050;
-            case KEY_RIGHT: return 0x4000004F;
-            case KEY_LEFTCTRL: return 0x400000E0;
-            case KEY_RIGHTCTRL: return 0x400000E4;
-            case KEY_LEFTSHIFT: return 0x400000E1;
-            case KEY_RIGHTSHIFT: return 0x400000E5;
-            case KEY_LEFTALT: return 0x400000E2;
-            case KEY_RIGHTALT: return 0x400000E6;
-            case KEY_LEFTMETA: return 0x400000E3;
-            case KEY_RIGHTMETA: return 0x400000E7;
-            case KEY_CAPSLOCK: return 0x40000039;
-            case KEY_NUMLOCK: return 0x40000053;
-            case KEY_SCROLLLOCK: return 0x40000047;
-            case KEY_F1: return 0x4000003A;
-            case KEY_F2: return 0x4000003B;
-            case KEY_F3: return 0x4000003C;
-            case KEY_F4: return 0x4000003D;
-            case KEY_F5: return 0x4000003E;
-            case KEY_F6: return 0x4000003F;
-            case KEY_F7: return 0x40000040;
-            case KEY_F8: return 0x40000041;
-            case KEY_F9: return 0x40000042;
-            case KEY_F10: return 0x40000043;
-            case KEY_F11: return 0x40000044;
-            case KEY_F12: return 0x40000045;
-            case KEY_MINUS: return 0x2D;
-            case KEY_EQUAL: return 0x3D;
-            case KEY_LEFTBRACE: return 0x5B;
-            case KEY_RIGHTBRACE: return 0x5D;
-            case KEY_BACKSLASH: return 0x5C;
-            case KEY_SEMICOLON: return 0x3B;
-            case KEY_APOSTROPHE: return 0x27;
-            case KEY_GRAVE: return 0x60;
-            case KEY_COMMA: return 0x2C;
-            case KEY_DOT: return 0x2E;
-            case KEY_SLASH: return 0x2F;
-            default: return 0x00;
-        }
-    }
-    
-    static bool isKeyboardDevice(const char* devPath) {
-        int fd = open(devPath, O_RDONLY | O_NONBLOCK);
-        if (fd < 0) return false;
-        
-        unsigned char keyBits[(KEY_MAX + 7) / 8];
-        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keyBits)), keyBits) >= 0) {
-            // Check for alphanumeric keys to identify keyboards
-            if (keyBits[KEY_A / 8] & (1 << (KEY_A % 8))) {
-                close(fd);
-                return true;
-            }
-        }
-        close(fd);
-        return false;
-    }
-    
-    static void enumerateKeyboards() {
-        const char* inputPath = "/dev/input";
-        DIR* dir = opendir(inputPath);
-        if (!dir) return;
-        
-        struct dirent* entry;
-        while ((entry = readdir(dir)) != NULL) {
-            if (strncmp(entry->d_name, "event", 5) == 0) {
-                char devPath[256];
-                snprintf(devPath, sizeof(devPath), "%s/%s", inputPath, entry->d_name);
-                
-                if (isKeyboardDevice(devPath)) {
-                    int fd = open(devPath, O_RDONLY | O_NONBLOCK);
-                    if (fd >= 0) {
-                        keyboardFds.push_back(fd);
-                        
-                        struct epoll_event ev;
-                        ev.events = EPOLLIN;
-                        ev.data.fd = fd;
-                        epoll_ctl(epollFd, EPOLL_CTL_ADD, fd, &ev);
-                    }
-                }
-            }
-        }
-        closedir(dir);
-        
-        if (keyboardFds.empty()) {
-            fprintf(stderr, "AsyncKB: No keyboards found. Make sure you're in the 'input' group.\n");
-            fprintf(stderr, "Run: sudo usermod -a -G input $USER && newgrp input\n");
-        }
-    }
-    
-    static void workerFunction() {
-        // Create epoll instance for efficient event monitoring
-        epollFd = epoll_create1(0);
-        if (epollFd < 0) {
-            fprintf(stderr, "AsyncKB: Failed to create epoll\n");
-            return;
-        }
-        
-        // Create wake pipe for clean shutdown
-        if (pipe(wakeFd) != 0) {
-            close(epollFd);
-            epollFd = -1;
-            fprintf(stderr, "AsyncKB: Failed to create wake pipe\n");
-            return;
-        }
-        
-        // Add wake pipe to epoll
-        struct epoll_event wakeEv;
-        wakeEv.events = EPOLLIN;
-        wakeEv.data.fd = wakeFd[0];
-        epoll_ctl(epollFd, EPOLL_CTL_ADD, wakeFd[0], &wakeEv);
-        
-        // Enumerate and open all keyboard devices
-        enumerateKeyboards();
-        
-        struct epoll_event events[64];
-        struct input_event inputEvents[64];
-        
-        while (!shouldStop) {
-            int nfds = epoll_wait(epollFd, events, 64, 10);
-            
-            for (int i = 0; i < nfds; i++) {
-                // Check if we need to exit (wake pipe was written to)
-                if (events[i].data.fd == wakeFd[0]) {
-                    char dummy;
-                    read(wakeFd[0], &dummy, 1);
-                    break;
-                }
-                
-                // Read keyboard events
-                ssize_t bytes = read(events[i].data.fd, inputEvents, sizeof(inputEvents));
-                if (bytes > 0) {
-                    int numEvents = bytes / sizeof(struct input_event);
-                    for (int j = 0; j < numEvents; j++) {
-                        if (inputEvents[j].type == EV_KEY) {
-                            // Only process key down (1) and up (0), ignore auto-repeat (2)
-                            if (inputEvents[j].value == 1 || inputEvents[j].value == 0) {
-                                // Use kernel's hardware timestamp for maximum precision
-                                uint64_t timestampNs = inputEvents[j].time.tv_sec * 1000000000ULL + 
-                                                       inputEvents[j].time.tv_usec * 1000ULL;
-                                double timestampSec = timestampNs / 1000000000.0;
-                                
-                                int limeKeyCode = evdevToLimeKeyCode(inputEvents[j].code);
-                                if (limeKeyCode != 0) {
-                                    double state = (inputEvents[j].value == 1) ? 1.0 : 0.0;
-                                    addEvent(limeKeyCode, state, timestampSec);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Cleanup
-        for (int fd : keyboardFds) {
-            close(fd);
-        }
-        keyboardFds.clear();
-        
-        if (epollFd != -1) {
-            close(epollFd);
-            epollFd = -1;
-        }
-        
-        if (wakeFd[0] != -1) {
-            close(wakeFd[0]);
-            wakeFd[0] = -1;
-        }
-        
-        if (wakeFd[1] != -1) {
-            close(wakeFd[1]);
-            wakeFd[1] = -1;
-        }
-    }
+		static bool isKeyboardDevice(const char* devPath) {
+			int fd = open(devPath, O_RDONLY | O_NONBLOCK);
+			if (fd < 0) return false;
+			
+			unsigned char evBits[EV_MAX];
+			if (ioctl(fd, EVIOCGBIT(0, sizeof(evBits)), evBits) >= 0) {
+				// Check if it supports EV_KEY events
+				if (evBits[EV_KEY / 8] & (1 << (EV_KEY % 8))) {
+					close(fd);
+					return true;
+				}
+			}
+			close(fd);
+			return false;
+		}
+		
+		static void enumerateKeyboards() {
+			const char* inputPath = "/dev/input";
+			DIR* dir = opendir(inputPath);
+			if (!dir) return;
+			
+			struct dirent* entry;
+			while ((entry = readdir(dir)) != NULL) {
+				if (strncmp(entry->d_name, "event", 5) == 0) {
+					char devPath[256];
+					snprintf(devPath, sizeof(devPath), "%s/%s", inputPath, entry->d_name);
+					
+					if (isKeyboardDevice(devPath)) {
+						int fd = open(devPath, O_RDONLY | O_NONBLOCK);
+						if (fd >= 0) {
+							keyboardFds.push_back(fd);
+							
+							struct epoll_event ev;
+							ev.events = EPOLLIN;
+							ev.data.fd = fd;
+							epoll_ctl(epollFd, EPOLL_CTL_ADD, fd, &ev);
+						}
+					}
+				}
+			}
+			closedir(dir);
+			
+			if (keyboardFds.empty()) {
+				fprintf(stderr, "AsyncKB: No keyboards found. Make sure you're in the 'input' group.\n");
+				fprintf(stderr, "Run: sudo usermod -a -G input $USER && newgrp input\n");
+			}
+		}
+		
+		static void workerFunction() {
+			// Create epoll instance
+			epollFd = epoll_create1(0);
+			if (epollFd < 0) {
+				fprintf(stderr, "AsyncKB: Failed to create epoll: %s\n", strerror(errno));
+				return;
+			}
+			
+			// Create wake pipe
+			if (pipe(wakeFd) != 0) {
+				close(epollFd);
+				epollFd = -1;
+				fprintf(stderr, "AsyncKB: Failed to create wake pipe: %s\n", strerror(errno));
+				return;
+			}
+			
+			// Add wake pipe to epoll
+			struct epoll_event wakeEv;
+			wakeEv.events = EPOLLIN;
+			wakeEv.data.fd = wakeFd[0];
+			epoll_ctl(epollFd, EPOLL_CTL_ADD, wakeFd[0], &wakeEv);
+			
+			// Enumerate keyboards
+			enumerateKeyboards();
+			
+			struct epoll_event events[64];
+			struct input_event inputEvents[64];
+			
+			while (!shouldStop) {
+				int nfds = epoll_wait(epollFd, events, 64, 10);
+				
+				for (int i = 0; i < nfds; i++) {
+					if (events[i].data.fd == wakeFd[0]) {
+						char dummy;
+						read(wakeFd[0], &dummy, 1);
+						break;
+					}
+					
+					ssize_t bytes = read(events[i].data.fd, inputEvents, sizeof(inputEvents));
+					if (bytes > 0) {
+						int numEvents = bytes / sizeof(struct input_event);
+						for (int j = 0; j < numEvents; j++) {
+							if (inputEvents[j].type == EV_KEY) {
+								if (inputEvents[j].value == 1 || inputEvents[j].value == 0) {
+									uint64_t timestampNs = inputEvents[j].time.tv_sec * 1000000000ULL + 
+														inputEvents[j].time.tv_usec * 1000ULL;
+									double timestampSec = timestampNs / 1000000000.0;
+									
+									int limeKeyCode = evdevToLimeKeyCode(inputEvents[j].code);
+									if (limeKeyCode != 0) {
+										double state = (inputEvents[j].value == 1) ? 1.0 : 0.0;
+										addEvent(limeKeyCode, state, timestampSec);
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			
+			// Cleanup
+			for (int fd : keyboardFds) {
+				close(fd);
+			}
+			keyboardFds.clear();
+			
+			if (epollFd != -1) {
+				close(epollFd);
+				epollFd = -1;
+			}
+			
+			if (wakeFd[0] != -1) close(wakeFd[0]);
+			if (wakeFd[1] != -1) close(wakeFd[1]);
+			wakeFd[0] = wakeFd[1] = -1;
+		}
 	#else
 		// Empty implementation for other platforms
 		static void workerFunction() {
