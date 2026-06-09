@@ -61,10 +61,23 @@ namespace lime {
 
 	}
 
+	inline static int64_t getTime10ns()
+	{
+#ifdef HX_WINDOWS
+		LARGE_INTEGER now;
+		LARGE_INTEGER qpcFrequency = {};
+		QueryPerformanceCounter(&now);
+		QueryPerformanceFrequency(&qpcFrequency);
+		return (now.QuadPart * 100000000.0f) / qpcFrequency.QuadPart;
+#else
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		return ts.tv_sec * 100000000.0f + (ts.tv_nsec / 10LL);
+#endif
+	}
+
 	double AsyncKeyEvent::Timestamp() {
-		auto now = std::chrono::steady_clock::now();
-		auto elapsed = std::chrono::duration<double>(now.time_since_epoch());
-		return elapsed.count();
+		return (double)getTime10ns() / 100000000.0f;
 	}
 
 
