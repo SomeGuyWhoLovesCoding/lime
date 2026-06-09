@@ -32,6 +32,11 @@ using namespace std;
 #pragma comment(lib, "dwmapi.lib")
 #endif
 
+#ifdef HX_LINUX
+#include <X11/Xlib.h>
+#include <X11/keysym.h>
+#endif
+
 #ifdef HX_MACOS
 #include <CoreFoundation/CoreFoundation.h>
 #endif
@@ -827,6 +832,11 @@ namespace lime
 
 	SDLApplication::SDLApplication()
 	{
+#ifdef HX_LINUX
+		// Initialize Xlib thread safety - CRITICAL for multi-threaded X11 access
+		XInitThreads();
+#endif
+
 		initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
 #if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
 		initFlags |= SDL_INIT_AUDIO;
@@ -1014,10 +1024,13 @@ namespace lime
 		}
 		
 	#elif defined(HX_LINUX)
-		// Linux X11 implementation
-		static Display* display = nullptr;
+		// Linux X11 implementation - WITH SEPARATE DISPLAY CONNECTION
+		
+		static Display* asyncDisplay = nullptr;  // SEPARATE display for this thread
 		static ::Window rootWindow;
 		static int x11Fd = -1;
+		static int wakeFd[2] = {-1, -1};  // Pipe for waking up poll
+		static std::atomic<bool> shouldStop{false};
 		static const ::Window InvalidWindow = 0;
 		
 		static int x11ToLimeKeyCode(::KeyCode keycode) {
@@ -1076,60 +1089,100 @@ namespace lime
 		}
 		
 		static bool isOurWindowFocused() {
-			if (!display) return false;
+			if (!asyncDisplay) return false;
 			
 			::Window currentWindow = getCurrentWindowX11();
 			if (currentWindow == InvalidWindow) return false;
 			
 			::Window focusedWindow;
 			int revert;
-			XGetInputFocus(display, &focusedWindow, &revert);
+			XGetInputFocus(asyncDisplay, &focusedWindow, &revert);
 			
 			return (focusedWindow == currentWindow);
 		}
 		
 		static void workerFunction() {
-			display = XOpenDisplay(nullptr);
-			if (!display) {
-				fprintf(stderr, "Failed to open X11 display for async keyboard\n");
+			// OPEN A SEPARATE DISPLAY CONNECTION FOR THIS THREAD
+			// This is the key fix - each thread gets its own connection to X11
+			asyncDisplay = XOpenDisplay(nullptr);
+			if (!asyncDisplay) {
+				fprintf(stderr, "AsyncKB: Failed to open X11 display connection\n");
 				return;
 			}
 			
-			rootWindow = DefaultRootWindow(display);
-			x11Fd = ConnectionNumber(display);
+			// Tell Xlib that this thread owns its own event queue
+			XSetEventQueueOwner(asyncDisplay, XlibOwnsEventQueue);
 			
-			XSelectInput(display, rootWindow, KeyPressMask | KeyReleaseMask);
+			rootWindow = DefaultRootWindow(asyncDisplay);
+			x11Fd = ConnectionNumber(asyncDisplay);
 			
-			struct pollfd fds[1];
+			// Create pipe for waking up poll() during shutdown
+			if (pipe(wakeFd) != 0) {
+				fprintf(stderr, "AsyncKB: Failed to create wake pipe\n");
+				XCloseDisplay(asyncDisplay);
+				asyncDisplay = nullptr;
+				return;
+			}
+			
+			// Set non-blocking for wake pipe read end
+			int flags = fcntl(wakeFd[0], F_GETFL, 0);
+			fcntl(wakeFd[0], F_SETFL, flags | O_NONBLOCK);
+			
+			// Select keyboard events on the root window
+			XSelectInput(asyncDisplay, rootWindow, KeyPressMask | KeyReleaseMask);
+			
+			struct pollfd fds[2];
 			fds[0].fd = x11Fd;
 			fds[0].events = POLLIN;
+			fds[1].fd = wakeFd[0];
+			fds[1].events = POLLIN;
 			
 			XEvent event;
 			
-			while (running) {
-				int ret = poll(fds, 1, 100);
+			while (!shouldStop) {
+				// Poll with both X11 socket and wake pipe
+				int ret = poll(fds, 2, 50);  // 50ms timeout to check shouldStop periodically
 				
-				if (ret > 0 && (fds[0].revents & POLLIN)) {
-					while (XPending(display) > 0) {
-						XNextEvent(display, &event);
-						
-						if (isOurWindowFocused()) {
-							if (event.type == KeyPress || event.type == KeyRelease) {
-								XKeyEvent* keyEvent = (XKeyEvent*)&event;
-								
-								int limeKeyCode = x11ToLimeKeyCode(keyEvent->keycode);
-								double state = (event.type == KeyPress) ? 1.0 : 0.0;
-								double timestamp = getCurrentTimestamp();
-								
-								addEvent(limeKeyCode, state, timestamp);
+				if (ret > 0) {
+					// Check if we need to exit (wake pipe was written to)
+					if (fds[1].revents & POLLIN) {
+						char dummy;
+						while (read(wakeFd[0], &dummy, 1) > 0) {}
+						break;
+					}
+					
+					// Process X11 events
+					if (fds[0].revents & POLLIN) {
+						while (XPending(asyncDisplay) > 0 && !shouldStop) {
+							XNextEvent(asyncDisplay, &event);
+							
+							if (isOurWindowFocused()) {
+								if (event.type == KeyPress || event.type == KeyRelease) {
+									XKeyEvent* keyEvent = (XKeyEvent*)&event;
+									
+									int limeKeyCode = x11ToLimeKeyCode(keyEvent->keycode);
+									if (limeKeyCode != 0) {
+										double state = (event.type == KeyPress) ? 1.0 : 0.0;
+										double timestamp = getCurrentTimestamp();
+										
+										addEvent(limeKeyCode, state, timestamp);
+									}
+								}
 							}
 						}
 					}
 				}
 			}
 			
-			XCloseDisplay(display);
-			display = nullptr;
+			// Cleanup
+			if (wakeFd[0] != -1) close(wakeFd[0]);
+			if (wakeFd[1] != -1) close(wakeFd[1]);
+			wakeFd[0] = wakeFd[1] = -1;
+			
+			if (asyncDisplay) {
+				XCloseDisplay(asyncDisplay);
+				asyncDisplay = nullptr;
+			}
 			x11Fd = -1;
 		}
 		
@@ -1145,15 +1198,34 @@ namespace lime
 		void start() {
 			if (running) return;
 			running = true;
+	#ifdef HX_LINUX
+			shouldStop = false;
+	#endif
 			workerThread = std::thread(workerFunction);
 		}
 		
 		void stop() {
 			if (!running) return;
-			running = false;
+			
+	#ifdef HX_LINUX
+			shouldStop = true;
+			// Wake up the poll loop if the pipe exists
+			if (wakeFd[1] != -1) {
+				char dummy = 0;
+				write(wakeFd[1], &dummy, 1);
+			}
+	#endif
+			
+	#ifdef HX_WINDOWS
+			if (quitEvent) {
+				SetEvent(quitEvent);
+			}
+	#endif
+			
 			if (workerThread.joinable()) {
 				workerThread.join();
 			}
+			running = false;
 		}
 		
 		bool hasEvent() {
@@ -1381,11 +1453,6 @@ namespace lime
 		active = true;
 		lag = getTime10ns();
 
-#ifdef HX_LINUX
-		// Initialize Xlib thread safety - CRITICAL for multi-threaded X11 access
-		XInitThreads();
-#endif
-
 #if HX_WINDOWS
 		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
@@ -1412,7 +1479,7 @@ namespace lime
 		while (AsyncKB::hasEvent()) {
 			if (AsyncKB::getEvent(scanCode, state, timestamp)) {
 					
-				//printf("Keycode: %.3f, state: %.0f, timestamp: %.9f\n", scanCode, state, timestamp);
+				printf("Keycode: %.3f, state: %.0f, timestamp: %.9f\n", scanCode, state, timestamp);
 				asyncKeyEvent.keyCode = (int)scanCode;
 				asyncKeyEvent.state = (int)state;
 				asyncKeyEvent.timestamp = timestamp;
