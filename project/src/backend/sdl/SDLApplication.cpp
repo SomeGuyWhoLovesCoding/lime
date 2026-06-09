@@ -1030,6 +1030,14 @@ namespace lime
 			CloseHandle(quitEvent);
 		}
 		
+		void stop() {
+			if (!running) return;
+			if (workerThread.joinable()) {
+				workerThread.join();
+			}
+			running = false;
+		}
+		
 	#elif defined(HX_LINUX)
 		// Linux libinput implementation - Professional input handling with microsecond precision
 		
