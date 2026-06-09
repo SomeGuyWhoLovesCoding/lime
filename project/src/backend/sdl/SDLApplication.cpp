@@ -898,25 +898,35 @@ namespace lime
 #endif
 	}
 
-	namespace AsyncKeyboard {
+	struct AsyncKeyboard {
 		static constexpr size_t MAX_EVENTS = 512;
 		
 		// Queue: array of arrays of doubles
 		// [0] = scanCode, [1] = state (1.0 = down, 0.0 = up), [2] = timestamp
-		static std::array<std::array<double, 3>, MAX_EVENTS> eventQueue;
-		static std::atomic<size_t> writeIndex{0};
-		static std::atomic<size_t> readIndex{0};
-		static std::atomic<size_t> eventCount{0};
-		static std::mutex queueMutex;
+		std::array<std::array<double, 3>, MAX_EVENTS> eventQueue;
+		std::atomic<size_t> writeIndex{0};
+		std::atomic<size_t> readIndex{0};
+		std::atomic<size_t> eventCount{0};
+		std::mutex queueMutex;
 		
-		static std::atomic<bool> running{false};
-		static std::thread workerThread;
+		std::atomic<bool> running{false};
+		std::thread workerThread;
+		
+	#ifdef HX_WINDOWS
+		HHOOK keyboardHook = nullptr;
+		HANDLE quitEvent = nullptr;
+		DWORD processId = 0;
+	#elif defined(HX_LINUX)
+		Display* display = nullptr;
+		::Window rootWindow;
+		int x11Fd = -1;
+	#endif
 		
 		static double getCurrentTimestamp() {
 			return AsyncKeyEvent::Timestamp();
 		}
 		
-		static void addEvent(double scanCode, double state, double timestamp) {
+		void addEvent(double scanCode, double state, double timestamp) {
 			std::lock_guard<std::mutex> lock(queueMutex);
 			size_t currentWrite = writeIndex.load(std::memory_order_acquire);
 			eventQueue[currentWrite][0] = scanCode;
@@ -934,12 +944,7 @@ namespace lime
 		}
 		
 	#ifdef HX_WINDOWS
-		// Windows implementation
-		static HHOOK keyboardHook = nullptr;
-		static HANDLE quitEvent = nullptr;
-		static DWORD processId = 0;
-		
-		static int windowsToLimeKeyCode(int winKeyCode) {
+		int windowsToLimeKeyCode(int winKeyCode) {
 			if (winKeyCode >= 'A' && winKeyCode <= 'Z') return 0x61 + (winKeyCode - 'A');
 			if (winKeyCode >= '0' && winKeyCode <= '9') return winKeyCode;
 			
@@ -966,10 +971,11 @@ namespace lime
 		
 		static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 			if (nCode >= 0) {
+				auto& instance = getInstance();
 				HWND foreground = GetForegroundWindow();
 				DWORD pid = 0;
 				if (foreground) GetWindowThreadProcessId(foreground, &pid);
-				bool isFocused = (pid == processId);
+				bool isFocused = (pid == instance.processId);
 
 				if (isFocused) {
 					KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
@@ -977,17 +983,17 @@ namespace lime
 					if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN || 
 						wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
 						
-						double scanCode = (double)windowsToLimeKeyCode(kb->vkCode);
+						double scanCode = (double)instance.windowsToLimeKeyCode(kb->vkCode);
 						double state = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) ? 1.0 : 0.0;
 						double timestamp = getCurrentTimestamp();
-						addEvent(scanCode, state, timestamp);
+						instance.addEvent(scanCode, state, timestamp);
 					}
 				}
 			}
 			return CallNextHookEx(NULL, nCode, wParam, lParam);
 		}
 		
-		static void workerFunction() {
+		void workerFunction() {
 			quitEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 			processId = GetCurrentProcessId();
 			
@@ -1014,14 +1020,17 @@ namespace lime
 		}
 		
 	#elif defined(HX_LINUX)
-		// Linux X11 implementation
-		static Display* display = nullptr;
-		static ::Window rootWindow;
-		static int x11Fd = -1;
+		#include <X11/Xlib.h>
+		#include <X11/Xutil.h>
+		
+		// Undefine X11 macros that cause conflicts
+		#undef None
+		#undef KeyPress
+		#undef KeyRelease
+		
 		static const ::Window InvalidWindow = 0;
 		
-		static int x11ToLimeKeyCode(::KeyCode keycode) {
-			// Common key mappings for US keyboard layout
+		int x11ToLimeKeyCode(::KeyCode keycode) {
 			switch (keycode) {
 				case 38: return 0x61; case 56: return 0x62; case 54: return 0x63;
 				case 40: return 0x64; case 26: return 0x65; case 41: return 0x66;
@@ -1056,7 +1065,7 @@ namespace lime
 			}
 		}
 		
-		static ::Window getCurrentWindowX11() {
+		::Window getCurrentWindowX11() {
 			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
 			if (!kbFocus) return InvalidWindow;
 			
@@ -1075,7 +1084,7 @@ namespace lime
 			return InvalidWindow;
 		}
 		
-		static bool isOurWindowFocused() {
+		bool isOurWindowFocused() {
 			if (!display) return false;
 			
 			::Window currentWindow = getCurrentWindowX11();
@@ -1088,7 +1097,7 @@ namespace lime
 			return (focusedWindow == currentWindow);
 		}
 		
-		static void workerFunction() {
+		void workerFunction() {
 			display = XOpenDisplay(nullptr);
 			if (!display) {
 				fprintf(stderr, "Failed to open X11 display for async keyboard\n");
@@ -1132,20 +1141,12 @@ namespace lime
 			display = nullptr;
 			x11Fd = -1;
 		}
-		
-	#else
-		// Empty implementation for other platforms
-		static void workerFunction() {
-			while (running) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(100));
-			}
-		}
 	#endif
 		
 		void start() {
 			if (running) return;
 			running = true;
-			workerThread = std::thread(workerFunction);
+			workerThread = std::thread(&AsyncKeyboard::workerFunction, this);
 		}
 		
 		void stop() {
@@ -1172,7 +1173,12 @@ namespace lime
 			eventCount.fetch_sub(1, std::memory_order_release);
 			return true;
 		}
-	}
+		
+		static AsyncKeyboard& getInstance() {
+			static AsyncKeyboard instance;
+			return instance;
+		}
+	};
 
 	int SDLApplication::Exec()
 	{
@@ -1196,7 +1202,7 @@ namespace lime
 		if (alreadyQuit)
 			return 0;
 
-		AsyncKeyboard::stop();
+		AsyncKeyboard::getInstance().stop();
 
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch(&applicationEvent);
@@ -1384,7 +1390,7 @@ namespace lime
 #if HX_WINDOWS
 		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
-		AsyncKeyboard::start();
+		AsyncKeyboard::getInstance().start();
 
 #ifdef HX_ANDROID
 		if (!choreographer)
@@ -1404,8 +1410,9 @@ namespace lime
 	{
 		// Process async keyboard events first
 		double scanCode, state, timestamp;
-		while (AsyncKeyboard::hasEvent()) {
-			if (AsyncKeyboard::getEvent(scanCode, state, timestamp)) {
+    	auto& keyboard = AsyncKeyboard::getInstance();
+		while (keyboard.hasEvent()) {
+			if (keyboard.getEvent(scanCode, state, timestamp)) {
 					
 				//printf("Keycode: %.3f, state: %.0f, timestamp: %.9f\n", scanCode, state, timestamp);
 				asyncKeyEvent.keyCode = (int)scanCode;
