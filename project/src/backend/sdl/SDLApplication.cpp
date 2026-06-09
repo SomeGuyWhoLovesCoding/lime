@@ -898,8 +898,6 @@ namespace lime
 #endif
 	}
 
-#ifdef HX_WINDOWS
-	
 	namespace AsyncKeyboard {
 		static constexpr size_t MAX_EVENTS = 512;
 		
@@ -913,13 +911,33 @@ namespace lime
 		
 		static std::atomic<bool> running{false};
 		static std::thread workerThread;
-		static HHOOK keyboardHook = nullptr;
-		static HANDLE quitEvent = nullptr;
-		static DWORD processId = 0;
 		
 		static double getCurrentTimestamp() {
 			return AsyncKeyEvent::Timestamp();
 		}
+		
+		static void addEvent(double scanCode, double state, double timestamp) {
+			std::lock_guard<std::mutex> lock(queueMutex);
+			size_t currentWrite = writeIndex.load(std::memory_order_acquire);
+			eventQueue[currentWrite][0] = scanCode;
+			eventQueue[currentWrite][1] = state;
+			eventQueue[currentWrite][2] = timestamp;
+			writeIndex.store((currentWrite + 1) % MAX_EVENTS, std::memory_order_release);
+			
+			size_t count = eventCount.load(std::memory_order_acquire);
+			if (count < MAX_EVENTS) {
+				eventCount.store(count + 1, std::memory_order_release);
+			} else {
+				size_t currentRead = readIndex.load(std::memory_order_acquire);
+				readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
+			}
+		}
+		
+	#ifdef HX_WINDOWS
+		// Windows implementation
+		static HHOOK keyboardHook = nullptr;
+		static HANDLE quitEvent = nullptr;
+		static DWORD processId = 0;
 		
 		static int windowsToLimeKeyCode(int winKeyCode) {
 			if (winKeyCode >= 'A' && winKeyCode <= 'Z') return 0x61 + (winKeyCode - 'A');
@@ -943,23 +961,6 @@ namespace lime
 				case VK_OEM_5: return 0x5C; case VK_OEM_1: return 0x3B; case VK_OEM_7: return 0x27;
 				case VK_OEM_3: return 0x60; case VK_OEM_COMMA: return 0x2C; case VK_OEM_PERIOD: return 0x2E;
 				case VK_OEM_2: return 0x2F; default: return 0x00;
-			}
-		}
-		
-		static void addEvent(double scanCode, double state, double timestamp) {
-			std::lock_guard<std::mutex> lock(queueMutex);
-			size_t currentWrite = writeIndex.load(std::memory_order_acquire);
-			eventQueue[currentWrite][0] = scanCode;
-			eventQueue[currentWrite][1] = state;
-			eventQueue[currentWrite][2] = timestamp;
-			writeIndex.store((currentWrite + 1) % MAX_EVENTS, std::memory_order_release);
-			
-			size_t count = eventCount.load(std::memory_order_acquire);
-			if (count < MAX_EVENTS) {
-				eventCount.store(count + 1, std::memory_order_release);
-			} else {
-				size_t currentRead = readIndex.load(std::memory_order_acquire);
-				readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
 			}
 		}
 		
@@ -1012,6 +1013,135 @@ namespace lime
 			CloseHandle(quitEvent);
 		}
 		
+	#elif defined(HX_LINUX)
+		// Linux X11 implementation
+		static Display* display = nullptr;
+		static ::Window rootWindow;
+		static int x11Fd = -1;
+		static const ::Window InvalidWindow = 0;
+		
+		static int x11ToLimeKeyCode(::KeyCode keycode) {
+			// Common key mappings for US keyboard layout
+			switch (keycode) {
+				case 38: return 0x61; case 56: return 0x62; case 54: return 0x63;
+				case 40: return 0x64; case 26: return 0x65; case 41: return 0x66;
+				case 42: return 0x67; case 43: return 0x68; case 31: return 0x69;
+				case 44: return 0x6A; case 45: return 0x6B; case 46: return 0x6C;
+				case 58: return 0x6D; case 57: return 0x6E; case 32: return 0x6F;
+				case 33: return 0x70; case 24: return 0x71; case 27: return 0x72;
+				case 39: return 0x73; case 28: return 0x74; case 30: return 0x75;
+				case 55: return 0x76; case 25: return 0x77; case 53: return 0x78;
+				case 29: return 0x79; case 52: return 0x7A;
+				case 10: return 0x30; case 11: return 0x31; case 12: return 0x32;
+				case 13: return 0x33; case 14: return 0x34; case 15: return 0x35;
+				case 16: return 0x36; case 17: return 0x37; case 18: return 0x38;
+				case 19: return 0x39;
+				case 67: return 0x4000003A; case 68: return 0x4000003B;
+				case 69: return 0x4000003C; case 70: return 0x4000003D;
+				case 71: return 0x4000003E; case 72: return 0x4000003F;
+				case 73: return 0x40000040; case 74: return 0x40000041;
+				case 75: return 0x40000042; case 76: return 0x40000043;
+				case 95: return 0x40000044; case 96: return 0x40000045;
+				case 9:  return 0x1B; case 36: return 0x0D; case 22: return 0x08;
+				case 23: return 0x09; case 65: return 0x20; case 37: return 0x400000E1;
+				case 105: return 0x400000E4; case 50: return 0x400000E2;
+				case 108: return 0x400000E6; case 133: return 0x400000E3;
+				case 134: return 0x400000E7;
+				case 111: return 0x40000052; case 116: return 0x40000051;
+				case 113: return 0x40000050; case 114: return 0x4000004F;
+				case 110: return 0x40000049; case 115: return 0x4000004A;
+				case 112: return 0x4000004B; case 117: return 0x4000004E;
+				case 118: return 0x7F; case 77: return 0x40000053;
+				default: return 0x00;
+			}
+		}
+		
+		static ::Window getCurrentWindowX11() {
+			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+			if (!kbFocus) return InvalidWindow;
+			
+			uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+			SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+			
+			if (focusedWindow && focusedWindow->sdlWindow) {
+				SDL_SysWMinfo wmInfo;
+				SDL_VERSION(&wmInfo.version);
+				
+				if (SDL_GetWindowWMInfo(focusedWindow->sdlWindow, &wmInfo) == SDL_TRUE) {
+					return wmInfo.info.x11.window;
+				}
+			}
+			
+			return InvalidWindow;
+		}
+		
+		static bool isOurWindowFocused() {
+			if (!display) return false;
+			
+			::Window currentWindow = getCurrentWindowX11();
+			if (currentWindow == InvalidWindow) return false;
+			
+			::Window focusedWindow;
+			int revert;
+			XGetInputFocus(display, &focusedWindow, &revert);
+			
+			return (focusedWindow == currentWindow);
+		}
+		
+		static void workerFunction() {
+			display = XOpenDisplay(nullptr);
+			if (!display) {
+				fprintf(stderr, "Failed to open X11 display for async keyboard\n");
+				return;
+			}
+			
+			rootWindow = DefaultRootWindow(display);
+			x11Fd = ConnectionNumber(display);
+			
+			XSelectInput(display, rootWindow, KeyPressMask | KeyReleaseMask);
+			
+			struct pollfd fds[1];
+			fds[0].fd = x11Fd;
+			fds[0].events = POLLIN;
+			
+			XEvent event;
+			
+			while (running) {
+				int ret = poll(fds, 1, 100);
+				
+				if (ret > 0 && (fds[0].revents & POLLIN)) {
+					while (XPending(display) > 0) {
+						XNextEvent(display, &event);
+						
+						if (isOurWindowFocused()) {
+							if (event.type == KeyPress || event.type == KeyRelease) {
+								XKeyEvent* keyEvent = (XKeyEvent*)&event;
+								
+								int limeKeyCode = x11ToLimeKeyCode(keyEvent->keycode);
+								double state = (event.type == KeyPress) ? 1.0 : 0.0;
+								double timestamp = getCurrentTimestamp();
+								
+								addEvent(limeKeyCode, state, timestamp);
+							}
+						}
+					}
+				}
+			}
+			
+			XCloseDisplay(display);
+			display = nullptr;
+			x11Fd = -1;
+		}
+		
+	#else
+		// Empty implementation for other platforms
+		static void workerFunction() {
+			while (running) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			}
+		}
+	#endif
+		
 		void start() {
 			if (running) return;
 			running = true;
@@ -1021,8 +1151,9 @@ namespace lime
 		void stop() {
 			if (!running) return;
 			running = false;
-			if (quitEvent) SetEvent(quitEvent);
-			if (workerThread.joinable()) workerThread.join();
+			if (workerThread.joinable()) {
+				workerThread.join();
+			}
 		}
 		
 		bool hasEvent() {
@@ -1042,251 +1173,6 @@ namespace lime
 			return true;
 		}
 	}
-#elif defined(HX_LINUX)
-namespace AsyncKeyboard {
-    static constexpr size_t MAX_EVENTS = 512;
-    
-    // Queue: array of arrays of doubles
-    // [0] = scanCode, [1] = state (1.0 = down, 0.0 = up), [2] = timestamp
-    static std::array<std::array<double, 3>, MAX_EVENTS> eventQueue;
-    static std::atomic<size_t> writeIndex{0};
-    static std::atomic<size_t> readIndex{0};
-    static std::atomic<size_t> eventCount{0};
-    static std::mutex queueMutex;
-    
-    static std::atomic<bool> running{false};
-    static std::thread workerThread;
-    static Display* display = nullptr;
-    static Window rootWindow;
-    static int x11Fd = -1;
-    
-    // Undefine None macro from X11 to avoid conflicts
-    #undef None
-    static const Window InvalidWindow = 0;
-    
-    static double getCurrentTimestamp() {
-        return AsyncKeyEvent::Timestamp();
-    }
-    
-    // X11 keycode to Linux/LIME keycode mapping
-    static int x11ToLimeKeyCode(KeyCode keycode) {
-        // Common key mappings
-        switch (keycode) {
-            // Letters A-Z (typically keycode 38-62)
-            case 38: return 0x61; // A
-            case 56: return 0x62; // B
-            case 54: return 0x63; // C
-            case 40: return 0x64; // D
-            case 26: return 0x65; // E
-            case 41: return 0x66; // F
-            case 42: return 0x67; // G
-            case 43: return 0x68; // H
-            case 31: return 0x69; // I
-            case 44: return 0x6A; // J
-            case 45: return 0x6B; // K
-            case 46: return 0x6C; // L
-            case 58: return 0x6D; // M
-            case 57: return 0x6E; // N
-            case 32: return 0x6F; // O
-            case 33: return 0x70; // P
-            case 24: return 0x71; // Q
-            case 27: return 0x72; // R
-            case 39: return 0x73; // S
-            case 28: return 0x74; // T
-            case 30: return 0x75; // U
-            case 55: return 0x76; // V
-            case 25: return 0x77; // W
-            case 53: return 0x78; // X
-            case 29: return 0x79; // Y
-            case 52: return 0x7A; // Z
-            
-            // Numbers
-            case 10: return 0x30; // 1
-            case 11: return 0x31; // 2
-            case 12: return 0x32; // 3
-            case 13: return 0x33; // 4
-            case 14: return 0x34; // 5
-            case 15: return 0x35; // 6
-            case 16: return 0x36; // 7
-            case 17: return 0x37; // 8
-            case 18: return 0x38; // 9
-            case 19: return 0x39; // 0
-            
-            // Function keys
-            case 67: return 0x4000003A; // F1
-            case 68: return 0x4000003B; // F2
-            case 69: return 0x4000003C; // F3
-            case 70: return 0x4000003D; // F4
-            case 71: return 0x4000003E; // F5
-            case 72: return 0x4000003F; // F6
-            case 73: return 0x40000040; // F7
-            case 74: return 0x40000041; // F8
-            case 75: return 0x40000042; // F9
-            case 76: return 0x40000043; // F10
-            case 95: return 0x40000044; // F11
-            case 96: return 0x40000045; // F12
-            
-            // Modifiers and special keys
-            case 9:  return 0x1B; // ESC
-            case 36: return 0x0D; // Enter
-            case 22: return 0x08; // Backspace
-            case 23: return 0x09; // Tab
-            case 65: return 0x20; // Space
-            case 37: return 0x400000E1; // Left Ctrl
-            case 105: return 0x400000E4; // Right Ctrl
-            case 50: return 0x400000E2; // Left Alt
-            case 108: return 0x400000E6; // Right Alt
-            case 133: return 0x400000E3; // Left Win/Super
-            case 134: return 0x400000E7; // Right Win/Super
-            
-            // Arrow keys
-            case 111: return 0x40000052; // Up
-            case 116: return 0x40000051; // Down
-            case 113: return 0x40000050; // Left
-            case 114: return 0x4000004F; // Right
-            
-            // Navigation
-            case 110: return 0x40000049; // Home
-            case 115: return 0x4000004A; // End
-            case 112: return 0x4000004B; // Page Up
-            case 117: return 0x4000004E; // Page Down
-            case 118: return 0x7F; // Delete
-            case 77: return 0x40000053; // Num Lock
-            
-            default: return 0x00;
-        }
-    }
-    
-    static void addEvent(double scanCode, double state, double timestamp) {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        size_t currentWrite = writeIndex.load(std::memory_order_acquire);
-        eventQueue[currentWrite][0] = scanCode;
-        eventQueue[currentWrite][1] = state;
-        eventQueue[currentWrite][2] = timestamp;
-        writeIndex.store((currentWrite + 1) % MAX_EVENTS, std::memory_order_release);
-        
-        size_t count = eventCount.load(std::memory_order_acquire);
-        if (count < MAX_EVENTS) {
-            eventCount.store(count + 1, std::memory_order_release);
-        } else {
-            size_t currentRead = readIndex.load(std::memory_order_acquire);
-            readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
-        }
-    }
-    
-    static Window getCurrentWindowX11() {
-        SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-        if (!kbFocus) return InvalidWindow;
-        
-        uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-        SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-        
-        if (focusedWindow && focusedWindow->sdlWindow) {
-            SDL_SysWMinfo wmInfo;
-            SDL_VERSION(&wmInfo.version);
-            
-            if (SDL_GetWindowWMInfo(focusedWindow->sdlWindow, &wmInfo) == SDL_TRUE) {
-                return wmInfo.info.x11.window;
-            }
-        }
-        
-        return InvalidWindow;
-    }
-    
-    static bool isOurWindowFocused() {
-        if (!display) return false;
-        
-        Window currentWindow = getCurrentWindowX11();
-        if (currentWindow == InvalidWindow) return false;
-        
-        Window focusedWindow;
-        int revert;
-        XGetInputFocus(display, &focusedWindow, &revert);
-        
-        return (focusedWindow == currentWindow);
-    }
-    
-    static void workerFunction() {
-        display = XOpenDisplay(nullptr);
-        if (!display) {
-            fprintf(stderr, "Failed to open X11 display for async keyboard\n");
-            return;
-        }
-        
-        rootWindow = DefaultRootWindow(display);
-        x11Fd = ConnectionNumber(display);
-        
-        // Select for KeyPress and KeyRelease events on the root window
-        XSelectInput(display, rootWindow, KeyPressMask | KeyReleaseMask);
-        
-        // Create a file descriptor set for polling
-        struct pollfd fds[1];
-        fds[0].fd = x11Fd;
-        fds[0].events = POLLIN;
-        
-        XEvent event;
-        
-        while (running) {
-            // Poll with timeout to allow checking running flag
-            int ret = poll(fds, 1, 100);
-            
-            if (ret > 0 && (fds[0].revents & POLLIN)) {
-                // Process all pending X11 events
-                while (XPending(display) > 0) {
-                    XNextEvent(display, &event);
-                    
-                    if (isOurWindowFocused()) {
-                        if (event.type == KeyPress || event.type == KeyRelease) {
-                            XKeyEvent* keyEvent = (XKeyEvent*)&event;
-                            
-                            int limeKeyCode = x11ToLimeKeyCode(keyEvent->keycode);
-                            double state = (event.type == KeyPress) ? 1.0 : 0.0;
-                            double timestamp = getCurrentTimestamp();
-                            
-                            addEvent(limeKeyCode, state, timestamp);
-                        }
-                    }
-                }
-            }
-        }
-        
-        XCloseDisplay(display);
-        display = nullptr;
-        x11Fd = -1;
-    }
-    
-    void start() {
-        if (running) return;
-        running = true;
-        workerThread = std::thread(workerFunction);
-    }
-    
-    void stop() {
-        if (!running) return;
-        running = false;
-        if (workerThread.joinable()) {
-            workerThread.join();
-        }
-    }
-    
-    bool hasEvent() {
-        return eventCount.load(std::memory_order_acquire) > 0;
-    }
-    
-    bool getEvent(double& scanCode, double& state, double& timestamp) {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        if (eventCount.load(std::memory_order_acquire) == 0) return false;
-        
-        size_t currentRead = readIndex.load(std::memory_order_acquire);
-        scanCode = eventQueue[currentRead][0];
-        state = eventQueue[currentRead][1];
-        timestamp = eventQueue[currentRead][2];
-        readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
-        eventCount.fetch_sub(1, std::memory_order_release);
-        return true;
-    }
-}
-#endif
 
 	int SDLApplication::Exec()
 	{
@@ -1310,9 +1196,7 @@ namespace AsyncKeyboard {
 		if (alreadyQuit)
 			return 0;
 
-#if HX_WINDOWS || HX_LINUX
 		AsyncKeyboard::stop();
-#endif
 
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch(&applicationEvent);
@@ -1497,12 +1381,10 @@ namespace AsyncKeyboard {
 		active = true;
 		lag = getTime10ns();
 
-#if HX_WINDOWS || HX_LINUX
 #if HX_WINDOWS
 		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
 		AsyncKeyboard::start();
-#endif
 
 #ifdef HX_ANDROID
 		if (!choreographer)
@@ -1520,7 +1402,6 @@ namespace AsyncKeyboard {
 
 	void SDLApplication::PollInputs()
 	{
-#if HX_WINDOWS || HX_LINUX
 		// Process async keyboard events first
 		double scanCode, state, timestamp;
 		while (AsyncKeyboard::hasEvent()) {
@@ -1534,7 +1415,6 @@ namespace AsyncKeyboard {
 				
 			}
 		}
-#endif
 
 		SDL_Event event;
 		while (SDL_PollEvent(&event))
