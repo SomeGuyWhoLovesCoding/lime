@@ -401,6 +401,8 @@ class NativeCFFI
 		"lime_subloop_event_manager_register", "oov", false)); // subloop event manager
 	private static var lime_asynckey_event_manager_register = new cpp.Callable<cpp.Object->cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime",
 		"lime_asynckey_event_manager_register", "oov", false));
+	private static var lime_asynckey_timestamp = new cpp.Callable<Void->Float>(cpp.Prime._loadPrime("lime",
+		"lime_asynckey_timestamp", "d", false));
 	private static var lime_clipboard_event_manager_register = new cpp.Callable<cpp.Object->cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime",
 		"lime_clipboard_event_manager_register", "oov", false));
 	private static var lime_clipboard_get_text = new cpp.Callable<Void->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_clipboard_get_text", "o", false));
@@ -664,6 +666,7 @@ class NativeCFFI
 	private static var lime_cffi_get_native_pointer = CFFI.load("lime", "lime_cffi_get_native_pointer", 1);
 	private static var lime_subloop_event_manager_register = CFFI.load("lime", "lime_subloop_event_manager_register", 2);
 	private static var lime_asynckey_event_manager_register = CFFI.load("lime", "lime_asynckey_event_manager_register", 2);
+	private static var lime_asynckey_timestamp = CFFI.load("lime", "lime_asynckey_timestamp", 2);
 	private static var lime_clipboard_event_manager_register = CFFI.load("lime", "lime_clipboard_event_manager_register", 2);
 	private static var lime_clipboard_get_text = CFFI.load("lime", "lime_clipboard_get_text", 0);
 	private static var lime_clipboard_set_text = CFFI.load("lime", "lime_clipboard_set_text", 1);
@@ -878,6 +881,10 @@ class NativeCFFI
 
 	@:hlNative("lime", "hl_asynckey_event_manager_register") private static function lime_asynckey_event_manager_register(callback:Void->Void,
 		eventObject:AsyncKeyEventInfo):Void {}
+
+	@:hlNative("lime", "hl_asynckey_timestamp") private static function lime_asynckey_timestamp():Float {
+		return 0.0;
+	}
 
 	@:hlNative("lime", "hl_clipboard_event_manager_register") private static function lime_clipboard_event_manager_register(callback:Void->Void,
 		eventObject:ClipboardEventInfo):Void {}

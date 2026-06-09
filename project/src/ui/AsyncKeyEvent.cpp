@@ -1,5 +1,6 @@
 #include <system/CFFI.h>
 #include <ui/AsyncKeyEvent.h>
+#include <chrono>
 
 
 namespace lime {
@@ -58,6 +59,12 @@ namespace lime {
 
 		}
 
+	}
+
+	double AsyncKeyEvent::Timestamp() {
+		auto now = std::chrono::steady_clock::now();
+		auto elapsed = std::chrono::duration<double>(now.time_since_epoch());
+		return elapsed.count();
 	}
 
 

@@ -23,6 +23,7 @@ namespace lime {
 		AsyncKeyEvent ();
 
 		static void Dispatch (AsyncKeyEvent* event);
+		static double Timestamp();
 
 	};
 

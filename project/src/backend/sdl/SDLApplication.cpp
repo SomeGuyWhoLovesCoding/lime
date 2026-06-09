@@ -100,9 +100,7 @@ namespace lime
 		static DWORD processId = 0;
 		
 		static double getCurrentTimestamp() {
-			auto now = std::chrono::steady_clock::now();
-			auto elapsed = std::chrono::duration<double>(now.time_since_epoch());
-			return elapsed.count();
+			return AsyncKeyEvent::Timestamp();
 		}
 		
 		static int windowsToLimeKeyCode(int winKeyCode) {
@@ -1099,7 +1097,7 @@ namespace lime
 	}
 
 	/*static double GetGlobalKeyboardTimestampComparison() {
-		return getCurrentTimestamp();
+		return AysncKeyboard::getCurrentTimestamp();
 	}*/
 
 	void SDLApplication::SetUncappedFrameRate(bool value)
@@ -1775,28 +1773,4 @@ namespace lime
 
 #ifdef ANDROID
 int SDL_main(int argc, char *argv[]) { return 0; }
-#endif
-
-// ==========================================
-// Standalone Test Block
-// ==========================================
-#ifdef TEST_ASYNC_KEYBOARD
-int main() {
-    lime::AsyncKeyboard::start();
-    printf("Async keyboard started. Press any key (Ctrl+C to exit)...\n");
-    
-    double scanCode, state, timestamp;
-    while (true) {
-        while (lime::AsyncKeyboard::hasEvent()) {
-            if (lime::AsyncKeyboard::getEvent(scanCode, state, timestamp)) {
-                printf("[Async] ScanCode: %.0f | State: %.0f | Timestamp: %.6f\n", 
-                       scanCode, state, timestamp);
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    lime::AsyncKeyboard::stop();
-    return 0;
-}
 #endif
