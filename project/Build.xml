@@ -436,6 +436,8 @@
 				<lib name="-lpthread" />
 				<lib name="-ldrm" />
 				<lib name="-lX11" />
+				<lib name="-llibudev" />
+				<lib name="-llibinput" />
 				<lib name="-lrt" />
 
 				<lib name="-lgc" if="LIME_NEKO" />
