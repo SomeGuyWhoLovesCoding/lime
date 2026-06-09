@@ -1501,7 +1501,9 @@ namespace lime
 		lag = getTime10ns();
 
 #if HX_WINDOWS || HX_LINUX
+#if HX_WINDOWS
 		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+#endif
 		AsyncKeyboard::start();
 #endif
 
