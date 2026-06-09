@@ -636,6 +636,20 @@ namespace lime {
 	}
 
 
+	/*double lime_asynckey_timestamp () {
+
+		return lime::SDLApplication::GetGlobalKeyboardTimestampComparison();
+
+	}
+
+
+	HL_PRIM void HL_NAME(lime_hl_asynckey_timestamp) () {
+
+		return lime::SDLApplication::GetGlobalKeyboardTimestampComparison();
+
+	}*/
+
+
 	void lime_clipboard_event_manager_register (value callback, value eventObject) {
 
 		ClipboardEvent::callback = new ValuePointer (callback);
@@ -4050,6 +4064,7 @@ namespace lime {
 	DEFINE_PRIME1 (lime_cffi_set_finalizer);
 	DEFINE_PRIME2v (lime_subloop_event_manager_register);
 	DEFINE_PRIME2v (lime_asynckey_event_manager_register);
+	//DEFINE_PRIME0 (lime_asynckey_timestamp);
 	DEFINE_PRIME2v (lime_clipboard_event_manager_register);
 	DEFINE_PRIME0 (lime_clipboard_get_text);
 	DEFINE_PRIME1v (lime_clipboard_set_text);
@@ -4247,6 +4262,7 @@ namespace lime {
 	// DEFINE_PRIME1 (lime_cffi_set_finalizer);
 	DEFINE_HL_PRIM (_VOID, hl_subloop_event_manager_register, _FUN(_VOID, _NO_ARG) _TSUBLOOP_EVENT);
 	DEFINE_HL_PRIM (_VOID, hl_asynckey_event_manager_register, _FUN(_VOID, _NO_ARG) _TASYNCKEY_EVENT);
+	//DEFINE_HL_PRIM (_F64, hl_asynckey_timestamp, _NO_ARG);
 	DEFINE_HL_PRIM (_VOID, hl_clipboard_event_manager_register, _FUN(_VOID, _NO_ARG) _TCLIPBOARD_EVENT);
 	DEFINE_HL_PRIM (_BYTES, hl_clipboard_get_text, _NO_ARG);
 	DEFINE_HL_PRIM (_VOID, hl_clipboard_set_text, _STRING);

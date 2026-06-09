@@ -81,6 +81,7 @@ namespace lime
 	static bool uncappedFramerate = false;
 
 #ifdef HX_WINDOWS
+	
 	namespace AsyncKeyboard {
 		static constexpr size_t MAX_EVENTS = 512;
 		
@@ -98,11 +99,9 @@ namespace lime
 		static HANDLE quitEvent = nullptr;
 		static DWORD processId = 0;
 		
-		static std::chrono::steady_clock::time_point startTime;
-		
 		static double getCurrentTimestamp() {
 			auto now = std::chrono::steady_clock::now();
-			auto elapsed = std::chrono::duration<double>(now - startTime);
+			auto elapsed = std::chrono::duration<double>(now.time_since_epoch());
 			return elapsed.count();
 		}
 		
@@ -174,7 +173,6 @@ namespace lime
 		static void workerFunction() {
 			quitEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 			processId = GetCurrentProcessId();
-			startTime = std::chrono::steady_clock::now();
 			
 			keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
 			if (!keyboardHook) {
@@ -1099,6 +1097,10 @@ namespace lime
 		SDL_iPhoneSetAnimationCallback(focusedWindow->sdlWindow, 1, Update, NULL);
 #endif
 	}
+
+	/*static double GetGlobalKeyboardTimestampComparison() {
+		return getCurrentTimestamp();
+	}*/
 
 	void SDLApplication::SetUncappedFrameRate(bool value)
 	{
