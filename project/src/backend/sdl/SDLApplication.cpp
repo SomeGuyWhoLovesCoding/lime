@@ -1037,7 +1037,7 @@ namespace lime
 			}
 			running = false;
 		}
-	#ifdef HX_LINUX
+	#elif defined(HX_LINUX)
 		// Linux implementation using SDL_GetKeyboardState
 		static void workerFunction() {
 			const Uint8* keyboardState = nullptr;
