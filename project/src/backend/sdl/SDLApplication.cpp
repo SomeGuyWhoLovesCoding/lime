@@ -1437,7 +1437,7 @@ namespace lime
 		while (AsyncKB::hasEvent()) {
 			if (AsyncKB::getEvent(scanCode, state, timestamp)) {
 					
-				printf("Keycode: %.3f, state: %.0f, timestamp: %.9f\n", scanCode, state, timestamp);
+				//printf("Keycode: %.3f, state: %.0f, timestamp: %.9f\n", scanCode, state, timestamp);
 				asyncKeyEvent.keyCode = (int)scanCode;
 				asyncKeyEvent.state = (int)state;
 				asyncKeyEvent.timestamp = timestamp;
