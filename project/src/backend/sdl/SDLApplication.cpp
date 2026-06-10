@@ -1184,7 +1184,7 @@ namespace lime
 			if (workerThread.joinable()) {
 				workerThread.join();
 			}
-		}=
+		}
 	#else
 		// Empty implementation for other platforms
 		static void workerFunction() {
