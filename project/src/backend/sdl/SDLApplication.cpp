@@ -1037,253 +1037,68 @@ namespace lime
 			}
 			running = false;
 		}
-		
-	#elif defined(HX_LINUX)
-		// Linux libinput implementation - Professional input handling with microsecond precision
-		
-		static struct udev* udevContext = nullptr;
-		static struct libinput* libinputContext = nullptr;
-		static int libinputFd = -1;
-		static int wakeFd[2] = {-1, -1};
-		static std::atomic<bool> shouldStop{false};
-		
-		// Map evdev key codes to Lime key codes (libinput uses evdev keycodes)
-		static int libinputToLimeKeyCode(uint32_t keycode) {
-			// Letter keys (A-Z) - evdev codes 4-29
-			if (keycode >= 4 && keycode <= 29) {
-				return 0x61 + (keycode - 4);
-			}
-			
-			switch (keycode) {
-				case 57: return 0x20;  // KEY_SPACE
-				case 28: return 0x0D;  // KEY_ENTER
-				case 1: return 0x1B;   // KEY_ESC
-				case 15: return 0x09;  // KEY_TAB
-				case 14: return 0x08;  // KEY_BACKSPACE
-				case 111: return 0x7F; // KEY_DELETE
-				case 110: return 0x40000049; // KEY_INSERT
-				case 102: return 0x4000004A; // KEY_HOME
-				case 107: return 0x4000004D; // KEY_END
-				case 104: return 0x4000004B; // KEY_PAGEUP
-				case 109: return 0x4000004E; // KEY_PAGEDOWN
-				case 103: return 0x40000052; // KEY_UP
-				case 108: return 0x40000051; // KEY_DOWN
-				case 105: return 0x40000050; // KEY_LEFT
-				case 106: return 0x4000004F; // KEY_RIGHT
-				case 29: return 0x400000E0;  // KEY_LEFTCTRL
-				case 97: return 0x400000E4;  // KEY_RIGHTCTRL
-				case 42: return 0x400000E1;  // KEY_LEFTSHIFT
-				case 54: return 0x400000E5;  // KEY_RIGHTSHIFT
-				case 56: return 0x400000E2;  // KEY_LEFTALT
-				case 100: return 0x400000E6; // KEY_RIGHTALT
-				case 125: return 0x400000E3; // KEY_LEFTMETA
-				case 126: return 0x400000E7; // KEY_RIGHTMETA
-				case 58: return 0x40000039;  // KEY_CAPSLOCK
-				case 69: return 0x40000053;  // KEY_NUMLOCK
-				case 70: return 0x40000047;  // KEY_SCROLLLOCK
-				case 59: return 0x4000003A;  // KEY_F1
-				case 60: return 0x4000003B;  // KEY_F2
-				case 61: return 0x4000003C;  // KEY_F3
-				case 62: return 0x4000003D;  // KEY_F4
-				case 63: return 0x4000003E;  // KEY_F5
-				case 64: return 0x4000003F;  // KEY_F6
-				case 65: return 0x40000040;  // KEY_F7
-				case 66: return 0x40000041;  // KEY_F8
-				case 67: return 0x40000042;  // KEY_F9
-				case 68: return 0x40000043;  // KEY_F10
-				case 87: return 0x40000044;  // KEY_F11
-				case 88: return 0x40000045;  // KEY_F12
-				default: 
-					// Number keys (2-11 map to 1-0)
-					if (keycode >= 2 && keycode <= 11) {
-						if (keycode == 11) return 0x30;  // 0
-						return 0x30 + (keycode - 1);
-					}
-					return 0x00;
-			}
-		}
-		
-		static int openRestricted(const char *path, int flags, void *user_data) {
-			int fd = open(path, flags | O_NONBLOCK);
-			if (fd < 0) return -errno;
-			return fd;
-		}
-		
-		static void closeRestricted(int fd, void *user_data) {
-			close(fd);
-		}
-		
-		static const struct libinput_interface interface = {
-			.open_restricted = openRestricted,
-			.close_restricted = closeRestricted,
-		};
-		
+	#ifdef HX_LINUX
+		// Linux implementation using SDL_GetKeyboardState
 		static void workerFunction() {
-			// Initialize udev
-			udevContext = udev_new();
-			if (!udevContext) {
-				fprintf(stderr, "AsyncKB: Failed to create udev context\n");
-				return;
-			}
+			const Uint8* keyboardState = nullptr;
+			int numKeys = 0;
 			
-			// Create libinput context
-			libinputContext = libinput_udev_create_context(&interface, nullptr, udevContext);
-			if (!libinputContext) {
-				fprintf(stderr, "AsyncKB: Failed to create libinput context\n");
-				udev_unref(udevContext);
-				udevContext = nullptr;
-				return;
-			}
-			
-			// Assign seat (usually "seat0")
-			if (libinput_udev_assign_seat(libinputContext, "seat0") != 0) {
-				fprintf(stderr, "AsyncKB: Failed to assign seat\n");
-				libinput_unref(libinputContext);
-				libinputContext = nullptr;
-				udev_unref(udevContext);
-				udevContext = nullptr;
-				return;
-			}
-			
-			// Get the file descriptor for epoll
-			libinputFd = libinput_get_fd(libinputContext);
-			
-			// Create wake pipe for shutdown
-			if (pipe(wakeFd) != 0) {
-				fprintf(stderr, "AsyncKB: Failed to create wake pipe\n");
-				libinput_unref(libinputContext);
-				libinputContext = nullptr;
-				udev_unref(udevContext);
-				udevContext = nullptr;
-				return;
-			}
-			
-			// Set up epoll
-			int epollFd = epoll_create1(0);
-			if (epollFd < 0) {
-				fprintf(stderr, "AsyncKB: Failed to create epoll\n");
-				close(wakeFd[0]);
-				close(wakeFd[1]);
-				libinput_unref(libinputContext);
-				libinputContext = nullptr;
-				udev_unref(udevContext);
-				udevContext = nullptr;
-				return;
-			}
-			
-			struct epoll_event ev;
-			ev.events = EPOLLIN;
-			ev.data.fd = libinputFd;
-			epoll_ctl(epollFd, EPOLL_CTL_ADD, libinputFd, &ev);
-			
-			ev.data.fd = wakeFd[0];
-			epoll_ctl(epollFd, EPOLL_CTL_ADD, wakeFd[0], &ev);
-			
-			struct epoll_event events[64];
-			
-			fprintf(stderr, "AsyncKB: libinput initialized successfully\n");
-			
-			while (!shouldStop) {
-				int nfds = epoll_wait(epollFd, events, 64, -1);
+			while (running) {
+				// Get current keyboard state
+				keyboardState = SDL_GetKeyboardState(&numKeys);
 				
-				for (int i = 0; i < nfds; i++) {
-					if (events[i].data.fd == wakeFd[0]) {
-						char dummy;
-						read(wakeFd[0], &dummy, 1);
-						break;
-					}
+				// Check all possible key scancodes
+				for (int i = 0; i < numKeys; i++) {
+					static std::array<int, SDL_NUM_SCANCODES> lastState = {0};
 					
-					if (events[i].data.fd == libinputFd) {
-						libinput_dispatch(libinputContext);
-						
-						struct libinput_event* event;
-						while ((event = libinput_get_event(libinputContext)) != nullptr) {
-							enum libinput_event_type type = libinput_event_get_type(event);
-							
-							if (type == LIBINPUT_EVENT_KEYBOARD_KEY) {
-								struct libinput_event_keyboard* kbEvent = libinput_event_get_keyboard_event(event);
-								
-								// Get microsecond precision timestamp from libinput!
-								uint64_t timestampUs = libinput_event_keyboard_get_time_usec(kbEvent);
-								double timestampSec = timestampUs / 1000000.0;
-								
-								uint32_t keycode = libinput_event_keyboard_get_key(kbEvent);
-								enum libinput_key_state keyState = libinput_event_keyboard_get_key_state(kbEvent);
-								
-								// 0 = released, 1 = pressed
-								if (keyState == LIBINPUT_KEY_STATE_RELEASED || keyState == LIBINPUT_KEY_STATE_PRESSED) {
-									int limeKeyCode = libinputToLimeKeyCode(keycode);
-									if (limeKeyCode != 0) {
-										double state = (keyState == LIBINPUT_KEY_STATE_PRESSED) ? 1.0 : 0.0;
-										addEvent(limeKeyCode, state, timestampSec);
-									}
-								}
-							}
-							libinput_event_destroy(event);
-						}
+					Uint8 currentState = keyboardState[i];
+					if (currentState != lastState[i]) {
+						double scanCode = (double)i;
+						double state = (double)(currentState ? 1 : 0);
+						double timestamp = getCurrentTimestamp();
+						addEvent(scanCode, state, timestamp);
+						lastState[i] = currentState;
 					}
 				}
+				
+				// Sleep to avoid hammering the CPU
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
-			
-			// Cleanup
-			close(epollFd);
-			if (wakeFd[0] != -1) close(wakeFd[0]);
-			if (wakeFd[1] != -1) close(wakeFd[1]);
-			wakeFd[0] = wakeFd[1] = -1;
-			
-			if (libinputContext) {
-				libinput_unref(libinputContext);
-				libinputContext = nullptr;
-			}
-			if (udevContext) {
-				udev_unref(udevContext);
-				udevContext = nullptr;
-			}
-			libinputFd = -1;
-			
-			fprintf(stderr, "AsyncKB: libinput shut down\n");
 		}
 		
-		void start() {
+		static void start() {
 			if (running) return;
 			running = true;
-			shouldStop = false;
 			workerThread = std::thread(workerFunction);
 		}
 		
-		void stop() {
+		static void stop() {
 			if (!running) return;
-			shouldStop = true;
-			if (wakeFd[1] != -1) {
-				char dummy = 0;
-				write(wakeFd[1], &dummy, 1);
-			}
+			running = false;
 			if (workerThread.joinable()) {
 				workerThread.join();
 			}
-			running = false;
 		}
-		
 	#else
 		// Empty implementation for other platforms
 		static void workerFunction() {
 			while (running) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 		}
 		
-		void start() {
+		static void start() {
 			if (running) return;
 			running = true;
 			workerThread = std::thread(workerFunction);
 		}
 		
-		void stop() {
+		static void stop() {
 			if (!running) return;
+			running = false;
 			if (workerThread.joinable()) {
 				workerThread.join();
 			}
-			running = false;
 		}
 	#endif
 		
