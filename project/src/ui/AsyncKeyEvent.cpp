@@ -124,20 +124,44 @@ namespace lime {
     }
     
     double AsyncKeyEvent::Timestamp() {
-		if (cpuFrequency == 0) calibrateCpuFrequency();
-		
-		uint64_t rdtscValue = rdtsc();
-
-		uint32_t high = (uint32_t)(rdtscValue >> 32);
-		uint32_t low = (uint32_t)(rdtscValue & 0xFFFFFFFF);
-		
-		// Convert each part to double to maintain precision
-		double highPart = (double)high * 4294967296.0; // 2^32
-		double lowPart = (double)low;
-		double totalCycles = highPart + lowPart;
-		
-		return totalCycles / (double)cpuFrequency;
-	}
+        if (cpuFrequency == 0) calibrateCpuFrequency();
+        
+        uint64_t rdtscValue = rdtsc();
+        
+        // Convert to nanoseconds using 64-bit split multiplication
+        // rdtscValue * 1,000,000,000 / cpuFrequency
+        const uint64_t NANOSECONDS = 1000000000ULL;
+        
+        // Split into 32-bit parts for multiplication
+        uint32_t low = (uint32_t)(rdtscValue & 0xFFFFFFFF);
+        uint32_t high = (uint32_t)(rdtscValue >> 32);
+        
+        // Multiply each part
+        uint64_t lowPart = (uint64_t)low * NANOSECONDS;
+        uint64_t highPart = (uint64_t)high * NANOSECONDS;
+        
+        // Combine: highPart << 32 + lowPart (but without shifting > 63 bits)
+        // We'll handle division first
+        
+        // Divide highPart by cpuFrequency first to keep numbers manageable
+        if (cpuFrequency == 0) return 0.0;
+        
+        uint64_t highQuotient = highPart / cpuFrequency;
+        uint64_t highRemainder = highPart % cpuFrequency;
+        
+        // Combine remainder with lowPart: (highRemainder << 32) + lowPart
+        uint64_t combinedLow = (highRemainder << 32) + (lowPart >> 32);
+        uint64_t combinedLowRemainder = lowPart & 0xFFFFFFFF;
+        
+        uint64_t lowQuotient = combinedLow / cpuFrequency;
+        uint64_t lowRemainder = combinedLow % cpuFrequency;
+        
+        // Final quotient: highQuotient << 32 + lowQuotient
+        double seconds = (double)(highQuotient << 32) / NANOSECONDS;
+        seconds += (double)lowQuotient / NANOSECONDS;
+        
+        return seconds;
+    }
 
 
 }
