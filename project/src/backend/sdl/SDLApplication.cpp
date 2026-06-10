@@ -1293,15 +1293,21 @@ namespace lime
 		}
 		
 		bool getEvent(double& scanCode, double& state, double& timestamp) {
-			std::lock_guard<std::mutex> lock(queueMutex);
+			// Quick check without lock first
 			if (eventCount.load(std::memory_order_acquire) == 0) return false;
 			
-			size_t currentRead = readIndex.load(std::memory_order_acquire);
-			scanCode = eventQueue[currentRead][0];
-			state = eventQueue[currentRead][1];
-			timestamp = eventQueue[currentRead][2];
-			readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
-			eventCount.fetch_sub(1, std::memory_order_release);
+			// Minimal critical section
+			{
+				std::lock_guard<std::mutex> lock(queueMutex);
+				if (eventCount.load(std::memory_order_acquire) == 0) return false;
+				
+				size_t currentRead = readIndex.load(std::memory_order_acquire);
+				scanCode = eventQueue[currentRead][0];
+				state = eventQueue[currentRead][1];
+				timestamp = eventQueue[currentRead][2];
+				readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
+				eventCount.fetch_sub(1, std::memory_order_release);
+			}
 			return true;
 		}
 	}
