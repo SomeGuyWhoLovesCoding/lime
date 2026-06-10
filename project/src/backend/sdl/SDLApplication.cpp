@@ -33,10 +33,6 @@ using namespace std;
 #endif
 
 #ifdef HX_LINUX
-#include <X11/Xlib.h>
-#include <X11/keysym.h>
-#include <libinput.h>
-#include <libudev.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/epoll.h>
@@ -1038,31 +1034,141 @@ namespace lime
 			running = false;
 		}
 	#elif defined(HX_LINUX)
-		// Linux implementation using SDL_GetKeyboardState
+		// Linux implementation using SDL_GetKeyboardState with focus check
+		static std::array<int, SDL_NUM_SCANCODES> lastState;
+		static std::once_flag initFlag;
+		
+		static int linuxToLimeKeycode(SDL_Scancode scancode) {
+			// Convert SDL_Scancode to Lime keycodes (matching Windows virtual keycodes)
+			switch (scancode) {
+				case SDL_SCANCODE_A: return 0x61;
+				case SDL_SCANCODE_B: return 0x62;
+				case SDL_SCANCODE_C: return 0x63;
+				case SDL_SCANCODE_D: return 0x64;
+				case SDL_SCANCODE_E: return 0x65;
+				case SDL_SCANCODE_F: return 0x66;
+				case SDL_SCANCODE_G: return 0x67;
+				case SDL_SCANCODE_H: return 0x68;
+				case SDL_SCANCODE_I: return 0x69;
+				case SDL_SCANCODE_J: return 0x6A;
+				case SDL_SCANCODE_K: return 0x6B;
+				case SDL_SCANCODE_L: return 0x6C;
+				case SDL_SCANCODE_M: return 0x6D;
+				case SDL_SCANCODE_N: return 0x6E;
+				case SDL_SCANCODE_O: return 0x6F;
+				case SDL_SCANCODE_P: return 0x70;
+				case SDL_SCANCODE_Q: return 0x71;
+				case SDL_SCANCODE_R: return 0x72;
+				case SDL_SCANCODE_S: return 0x73;
+				case SDL_SCANCODE_T: return 0x74;
+				case SDL_SCANCODE_U: return 0x75;
+				case SDL_SCANCODE_V: return 0x76;
+				case SDL_SCANCODE_W: return 0x77;
+				case SDL_SCANCODE_X: return 0x78;
+				case SDL_SCANCODE_Y: return 0x79;
+				case SDL_SCANCODE_Z: return 0x7A;
+				
+				case SDL_SCANCODE_0: return 0x30;
+				case SDL_SCANCODE_1: return 0x31;
+				case SDL_SCANCODE_2: return 0x32;
+				case SDL_SCANCODE_3: return 0x33;
+				case SDL_SCANCODE_4: return 0x34;
+				case SDL_SCANCODE_5: return 0x35;
+				case SDL_SCANCODE_6: return 0x36;
+				case SDL_SCANCODE_7: return 0x37;
+				case SDL_SCANCODE_8: return 0x38;
+				case SDL_SCANCODE_9: return 0x39;
+				
+				case SDL_SCANCODE_BACKSPACE: return 0x08;
+				case SDL_SCANCODE_TAB: return 0x09;
+				case SDL_SCANCODE_RETURN: return 0x0D;
+				case SDL_SCANCODE_ESCAPE: return 0x1B;
+				case SDL_SCANCODE_SPACE: return 0x20;
+				case SDL_SCANCODE_DELETE: return 0x7F;
+				case SDL_SCANCODE_INSERT: return 0x40000049;
+				case SDL_SCANCODE_HOME: return 0x4000004A;
+				case SDL_SCANCODE_END: return 0x4000004D;
+				case SDL_SCANCODE_PAGEUP: return 0x4000004B;
+				case SDL_SCANCODE_PAGEDOWN: return 0x4000004E;
+				case SDL_SCANCODE_UP: return 0x40000052;
+				case SDL_SCANCODE_DOWN: return 0x40000051;
+				case SDL_SCANCODE_LEFT: return 0x40000050;
+				case SDL_SCANCODE_RIGHT: return 0x4000004F;
+				
+				case SDL_SCANCODE_LCTRL: return 0x400000E0;
+				case SDL_SCANCODE_RCTRL: return 0x400000E4;
+				case SDL_SCANCODE_LSHIFT: return 0x400000E1;
+				case SDL_SCANCODE_RSHIFT: return 0x400000E5;
+				case SDL_SCANCODE_LALT: return 0x400000E2;
+				case SDL_SCANCODE_RALT: return 0x400000E6;
+				case SDL_SCANCODE_LGUI: return 0x400000E3;
+				case SDL_SCANCODE_RGUI: return 0x400000E7;
+				case SDL_SCANCODE_CAPSLOCK: return 0x40000039;
+				case SDL_SCANCODE_NUMLOCKCLEAR: return 0x40000053;
+				case SDL_SCANCODE_SCROLLLOCK: return 0x40000047;
+				
+				case SDL_SCANCODE_F1: return 0x4000003A;
+				case SDL_SCANCODE_F2: return 0x4000003B;
+				case SDL_SCANCODE_F3: return 0x4000003C;
+				case SDL_SCANCODE_F4: return 0x4000003D;
+				case SDL_SCANCODE_F5: return 0x4000003E;
+				case SDL_SCANCODE_F6: return 0x4000003F;
+				case SDL_SCANCODE_F7: return 0x40000040;
+				case SDL_SCANCODE_F8: return 0x40000041;
+				case SDL_SCANCODE_F9: return 0x40000042;
+				case SDL_SCANCODE_F10: return 0x40000043;
+				case SDL_SCANCODE_F11: return 0x40000044;
+				case SDL_SCANCODE_F12: return 0x40000045;
+				
+				case SDL_SCANCODE_MINUS: return 0x2D;
+				case SDL_SCANCODE_EQUALS: return 0x3D;
+				case SDL_SCANCODE_LEFTBRACKET: return 0x5B;
+				case SDL_SCANCODE_RIGHTBRACKET: return 0x5D;
+				case SDL_SCANCODE_BACKSLASH: return 0x5C;
+				case SDL_SCANCODE_SEMICOLON: return 0x3B;
+				case SDL_SCANCODE_APOSTROPHE: return 0x27;
+				case SDL_SCANCODE_GRAVE: return 0x60;
+				case SDL_SCANCODE_COMMA: return 0x2C;
+				case SDL_SCANCODE_PERIOD: return 0x2E;
+				case SDL_SCANCODE_SLASH: return 0x2F;
+				
+				default: return 0x00;
+			}
+		}
+		
+		static void initLastState() {
+			lastState.fill(0);
+		}
+		
 		static void workerFunction() {
-			const Uint8* keyboardState = nullptr;
-			int numKeys = 0;
+			std::call_once(initFlag, initLastState);
 			
 			while (running) {
-				// Get current keyboard state
-				keyboardState = SDL_GetKeyboardState(&numKeys);
+				// Check if our window has focus
+				SDL_Window* focusedWindow = SDL_GetKeyboardFocus();
+				bool hasFocus = (focusedWindow != nullptr);
 				
-				// Check all possible key scancodes
-				for (int i = 0; i < numKeys; i++) {
-					static std::array<int, SDL_NUM_SCANCODES> lastState = {0};
+				if (hasFocus) {
+					const Uint8* keyboardState = SDL_GetKeyboardState(nullptr);
 					
-					Uint8 currentState = keyboardState[i];
-					if (currentState != lastState[i]) {
-						double scanCode = (double)i;
-						double state = (double)(currentState ? 1 : 0);
-						double timestamp = getCurrentTimestamp();
-						addEvent(scanCode, state, timestamp);
-						lastState[i] = currentState;
+					// Check all possible key scancodes
+					for (int i = 0; i < SDL_NUM_SCANCODES; i++) {
+						Uint8 currentState = keyboardState[i];
+						if (currentState != lastState[i]) {
+							double scanCode = (double)linuxToLimeKeycode((SDL_Scancode)i);
+							double state = (double)(currentState ? 1 : 0);
+							double timestamp = getCurrentTimestamp();
+							addEvent(scanCode, state, timestamp);
+							lastState[i] = currentState;
+						}
 					}
+					
+					// Poll aggressively when focused (1ms sleep)
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				} else {
+					// When not focused, conserve CPU
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
 				}
-				
-				// Sleep to avoid hammering the CPU
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
 		}
 		
@@ -1079,6 +1185,7 @@ namespace lime
 				workerThread.join();
 			}
 		}
+	#endif
 	#else
 		// Empty implementation for other platforms
 		static void workerFunction() {
