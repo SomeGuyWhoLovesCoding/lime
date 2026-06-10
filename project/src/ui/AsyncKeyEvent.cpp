@@ -2,6 +2,10 @@
 #include <ui/AsyncKeyEvent.h>
 #include <chrono>
 
+#ifdef _WIN32
+#include <intrin.h>
+#pragma intrinsic(__rdtsc)
+#endif
 
 namespace lime {
 
@@ -75,9 +79,64 @@ namespace lime {
 		return ts.tv_sec * 100000000.0f + (ts.tv_nsec / 10LL);
 #endif
 	}
+    
+    // CPU cycle counter - much faster than QueryPerformanceCounter
+    static inline uint64_t rdtsc() {
+        #ifdef _WIN32
+        return __rdtsc();
+        #elif defined(__x86_64__) || defined(__i386__)
+        unsigned int lo, hi;
+        __asm__ __volatile__("rdtsc" : "=a" (lo), "=d" (hi));
+        return ((uint64_t)hi << 32) | lo;
+        #elif defined(__aarch64__)
+        uint64_t value;
+        __asm__ __volatile__("mrs %0, cntvct_el0" : "=r" (value));
+        return value;
+        #else
+        return std::chrono::steady_clock::now().time_since_epoch().count();
+        #endif
+    }
+    
+    // CPU frequency calibration (run once at startup)
+    static uint64_t cpuFrequency = 0;
+    
+    static void calibrateCpuFrequency() {
+        #ifdef _WIN32
+        LARGE_INTEGER freq, start, end;
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&start);
+        uint64_t startCycles = rdtsc();
+        Sleep(100);
+        QueryPerformanceCounter(&end);
+        uint64_t endCycles = rdtsc();
+        double seconds = (end.QuadPart - start.QuadPart) / (double)freq.QuadPart;
+        cpuFrequency = (uint64_t)((endCycles - startCycles) / seconds);
+        #else
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t startCycles = rdtsc();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t endCycles = rdtsc();
+        double seconds = ts.tv_sec + ts.tv_nsec / 1e9;
+        cpuFrequency = (uint64_t)((endCycles - startCycles) / seconds);
+        #endif
+    }
+    
+    double AsyncKeyEvent::Timestamp() {
+		if (cpuFrequency == 0) calibrateCpuFrequency();
+		
+		uint64_t rdtscValue = rdtsc();
 
-	double AsyncKeyEvent::Timestamp() {
-		return (double)getTime10ns() / 100000000.0f;
+		uint32_t high = (uint32_t)(rdtscValue >> 32);
+		uint32_t low = (uint32_t)(rdtscValue & 0xFFFFFFFF);
+		
+		// Convert each part to double to maintain precision
+		double highPart = (double)high * 4294967296.0; // 2^32
+		double lowPart = (double)low;
+		double totalCycles = highPart + lowPart;
+		
+		return totalCycles / (double)cpuFrequency;
 	}
 
 
