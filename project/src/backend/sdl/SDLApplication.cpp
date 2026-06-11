@@ -1571,33 +1571,76 @@ namespace lime
 	#if defined(HX_LINUX)
 
 	// ============================================================================
-	// GLX Vsync Support - Simple, reliable, non-blocking
+	// GLX Vsync Support - Dynamically loaded (no linking required)
 	// ============================================================================
+
+	// GLX types (minimal definitions)
+	typedef void* GLXContext;
+	typedef unsigned long XID;
+	typedef XID GLXDrawable;
+	typedef struct _XDisplay Display;
+
+	// GLX function pointer types
+	typedef GLXDrawable (*glXGetCurrentDrawable_t)(void);
+	typedef void* (*glXGetProcAddress_t)(const GLubyte*);
 
 	// GLX extension function pointers
 	typedef Bool (*glXGetSyncValuesOML_t)(Display *dpy, GLXDrawable drawable, int64_t *ust, int64_t *msc, int64_t *sbc);
 	typedef int (*glXGetVideoSyncSGI_t)(unsigned int *count);
 	typedef int (*glXWaitVideoSyncSGI_t)(int divisor, int remainder, unsigned int *count);
 
+	static glXGetCurrentDrawable_t p_glXGetCurrentDrawable = nullptr;
+	static glXGetProcAddress_t p_glXGetProcAddress = nullptr;
+
 	static glXGetSyncValuesOML_t p_glXGetSyncValuesOML = nullptr;
 	static glXGetVideoSyncSGI_t p_glXGetVideoSyncSGI = nullptr;
 	static glXWaitVideoSyncSGI_t p_glXWaitVideoSyncSGI = nullptr;
 
+	static void* libGL_handle = nullptr;
 	static bool glxExtensionsLoaded = false;
 	static bool hasOML = false;
 	static bool hasSGI = false;
+
+	// GLX vsync state
+	static Display* cachedDisplay = nullptr;
+	static GLXDrawable cachedDrawable = 0;
+	static int64_t lastVsyncTimestamp = 0;
+	static int64_t lastVsyncPeriod = RENDER_PERIOD_10NS;
+	static unsigned int lastSgiCounter = 0;
+	static bool glxInitialized = false;
 
 	void loadGLXExtensions() {
 		if (glxExtensionsLoaded) return;
 		glxExtensionsLoaded = true;
 		
-		// Get function pointers from GLX
-		p_glXGetSyncValuesOML = (glXGetSyncValuesOML_t)glXGetProcAddress((const GLubyte*)"glXGetSyncValuesOML");
-		p_glXGetVideoSyncSGI = (glXGetVideoSyncSGI_t)glXGetProcAddress((const GLubyte*)"glXGetVideoSyncSGI");
-		p_glXWaitVideoSyncSGI = (glXWaitVideoSyncSGI_t)glXGetProcAddress((const GLubyte*)"glXWaitVideoSyncSGI");
+		// Dynamically load libGL
+		libGL_handle = dlopen("libGL.so.1", RTLD_LAZY);
+		if (!libGL_handle) {
+			libGL_handle = dlopen("libGL.so", RTLD_LAZY);
+		}
 		
-		hasOML = (p_glXGetSyncValuesOML != nullptr);
-		hasSGI = (p_glXGetVideoSyncSGI != nullptr);
+		if (!libGL_handle) {
+			printf("Linux Vsync: Could not load libGL - using timer fallback\n");
+			return;
+		}
+		
+		// Get core GLX functions
+		p_glXGetCurrentDrawable = (glXGetCurrentDrawable_t)dlsym(libGL_handle, "glXGetCurrentDrawable");
+		p_glXGetProcAddress = (glXGetProcAddress_t)dlsym(libGL_handle, "glXGetProcAddress");
+		
+		if (!p_glXGetProcAddress) {
+			p_glXGetProcAddress = (glXGetProcAddress_t)dlsym(libGL_handle, "glXGetProcAddressARB");
+		}
+		
+		if (p_glXGetProcAddress) {
+			// Get extension functions
+			p_glXGetSyncValuesOML = (glXGetSyncValuesOML_t)p_glXGetProcAddress((const GLubyte*)"glXGetSyncValuesOML");
+			p_glXGetVideoSyncSGI = (glXGetVideoSyncSGI_t)p_glXGetProcAddress((const GLubyte*)"glXGetVideoSyncSGI");
+			p_glXWaitVideoSyncSGI = (glXWaitVideoSyncSGI_t)p_glXGetProcAddress((const GLubyte*)"glXWaitVideoSyncSGI");
+			
+			hasOML = (p_glXGetSyncValuesOML != nullptr);
+			hasSGI = (p_glXGetVideoSyncSGI != nullptr);
+		}
 		
 		if (hasOML) {
 			printf("Linux Vsync: Using GLX_OML_sync_control\n");
@@ -1607,14 +1650,6 @@ namespace lime
 			printf("Linux Vsync: No GLX vsync extensions found, using timer fallback\n");
 		}
 	}
-
-	// GLX vsync state
-	static Display* cachedDisplay = nullptr;
-	static GLXDrawable cachedDrawable = 0;
-	static int64_t lastVsyncTimestamp = 0;
-	static int64_t lastVsyncPeriod = RENDER_PERIOD_10NS;
-	static unsigned int lastSgiCounter = 0;
-	static bool glxInitialized = false;
 
 	void initGLXVsync(SDL_Window* sdlWindow) {
 		if (glxInitialized) return;
@@ -1628,8 +1663,9 @@ namespace lime
 			cachedDisplay = wmInfo.info.x11.display;
 			
 			// Try to get the current GLX drawable
-			// This will only work if a GL context is current!
-			cachedDrawable = glXGetCurrentDrawable();
+			if (p_glXGetCurrentDrawable) {
+				cachedDrawable = p_glXGetCurrentDrawable();
+			}
 			
 			if (cachedDrawable == 0) {
 				printf("Warning: No GLX drawable available. Vsync may not work.\n");
@@ -1645,20 +1681,20 @@ namespace lime
 		glxInitialized = true;
 	}
 
-	// Call this when your GL context is current to set the drawable
-	void setGLXDrawable(GLXDrawable drawable) {
-		cachedDrawable = drawable;
-	}
+		// Call this when your GL context is current to set the drawable
+		void setGLXDrawable(GLXDrawable drawable) {
+			cachedDrawable = drawable;
+		}
 
 	// Non-blocking vsync check using GLX extensions
 	bool checkGLXVsync(int64_t& vsyncTimestamp, int64_t& vsyncPeriod) {
 		vsyncPeriod = lastVsyncPeriod;
 		
-		if (hasOML && cachedDisplay && cachedDrawable) {
+		if (hasOML && cachedDisplay && cachedDrawable && p_glXGetSyncValuesOML) {
 			int64_t ust, msc, sbc;
 			if (p_glXGetSyncValuesOML(cachedDisplay, cachedDrawable, &ust, &msc, &sbc)) {
-				// ust is in nanoseconds - convert to 10ns ticks and normalize to 0
-				int64_t timestamp = (ust / 10);
+				// ust is in nanoseconds - convert to 10ns ticks
+				int64_t timestamp = ust / 10;
 				
 				if (timestamp != lastVsyncTimestamp && timestamp > 0) {
 					if (lastVsyncTimestamp > 0 && timestamp > lastVsyncTimestamp) {
@@ -1675,11 +1711,11 @@ namespace lime
 				}
 			}
 		}
-		else if (hasSGI && cachedDisplay) {
+		else if (hasSGI && cachedDisplay && p_glXGetVideoSyncSGI) {
 			unsigned int count;
 			if (p_glXGetVideoSyncSGI(&count) == 0) {
 				if (count != lastSgiCounter) {
-					int64_t now = getTime10ns();
+					int64_t now = getMonotonicTime10ns();
 					unsigned int diff = count - lastSgiCounter;
 					
 					if (lastSgiCounter > 0 && diff > 0) {
