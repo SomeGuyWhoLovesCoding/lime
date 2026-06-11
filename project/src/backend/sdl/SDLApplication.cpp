@@ -1658,7 +1658,7 @@ namespace lime
 			int64_t ust, msc, sbc;
 			if (p_glXGetSyncValuesOML(cachedDisplay, cachedDrawable, &ust, &msc, &sbc)) {
 				// ust is in nanoseconds - convert to 10ns ticks and normalize to 0
-				int64_t timestamp = (ust / 10) - timeBaseOffset;
+				int64_t timestamp = (ust / 10);
 				
 				if (timestamp != lastVsyncTimestamp && timestamp > 0) {
 					if (lastVsyncTimestamp > 0 && timestamp > lastVsyncTimestamp) {
