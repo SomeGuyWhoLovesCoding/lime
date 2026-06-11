@@ -1,6 +1,7 @@
 #include <system/CFFI.h>
 #include <ui/AsyncKeyEvent.h>
 #include <chrono>
+#include <thread>
 
 #ifdef _WIN32
 #include <intrin.h>
@@ -106,7 +107,7 @@ namespace lime {
         QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&start);
         uint64_t startCycles = rdtsc();
-        Sleep(100);
+        Sleep(50);
         QueryPerformanceCounter(&end);
         uint64_t endCycles = rdtsc();
         double seconds = (end.QuadPart - start.QuadPart) / (double)freq.QuadPart;
