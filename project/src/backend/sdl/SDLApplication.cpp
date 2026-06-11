@@ -1346,6 +1346,8 @@ namespace lime
 		return 0;
 	}
 
+	static SDLWindow* STATIC_WINDOW;
+
 	void SDLApplication::RegisterWindow(SDLWindow *window)
 	{
 #ifdef IPHONE
@@ -1355,6 +1357,7 @@ namespace lime
 		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
 		SDL_iPhoneSetAnimationCallback(focusedWindow->sdlWindow, 1, Update, NULL);
 #endif
+		STATIC_WINDOW = window;
 	}
 
 	/*static double GetGlobalKeyboardTimestampComparison() {
@@ -1942,20 +1945,9 @@ namespace lime
 	}
 #elif defined(HX_LINUX)
 		{
-			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			if (kbFocus) {
-				uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-				SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-				if (focusedWindow && focusedWindow->sdlWindow) {
-					handleLinuxVsync(focusedWindow->sdlWindow, now10ns, lag, nextRenderTime10ns, shouldRender);
-				} else {
-					shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-					if (shouldRender) {
-						render_timestamp = now10ns - lastRenderTime;
-						lastRenderTime = now10ns;
-						nextRenderTime10ns += RENDER_PERIOD_10NS;
-					}
-				}
+			SDLWindow* focusedWindow = STATIC_WINDOW;
+			if (focusedWindow && focusedWindow->sdlWindow) {
+				handleLinuxVsync(focusedWindow->sdlWindow, now10ns, lag, nextRenderTime10ns, shouldRender);
 			} else {
 				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 				if (shouldRender) {
