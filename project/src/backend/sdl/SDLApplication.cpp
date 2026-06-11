@@ -68,6 +68,8 @@ using namespace std;
 #include <poll.h>
 #include <x86intrin.h>
 #include <dlfcn.h>
+#include <GL/glx.h>
+#include <X11/Xlib.h>
 #endif
 #if HX_ANDROID
 #include <android/choreographer.h>
@@ -1677,7 +1679,7 @@ namespace lime
 			unsigned int count;
 			if (p_glXGetVideoSyncSGI(&count) == 0) {
 				if (count != lastSgiCounter) {
-					int64_t now = getMonotonicTime10ns();
+					int64_t now = getTime10ns();
 					unsigned int diff = count - lastSgiCounter;
 					
 					if (lastSgiCounter > 0 && diff > 0) {
@@ -1704,7 +1706,7 @@ namespace lime
 		static int64_t lastFallbackTimestamp = 0;
 		static int64_t fallbackPeriod = lastVsyncPeriod;
 		
-		int64_t now = getMonotonicTime10ns();
+		int64_t now = getTime10ns();
 		vsyncPeriod = fallbackPeriod;
 		
 		if (lastFallbackTimestamp == 0) {
