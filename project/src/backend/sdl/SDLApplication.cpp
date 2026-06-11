@@ -1561,468 +1561,575 @@ namespace lime
 		minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 	}
 
-	static int sleeptimeclocktimer = 0;
+	// ============================================================================
+// AsyncVSync - Non-blocking vsync counter for all platforms
+// ============================================================================
 
-	#if defined(HX_LINUX)
+class AsyncVSync {
+public:
+    struct VSyncInfo {
+        int64_t counter;      // Monotonically increasing vsync counter
+        int64_t timestamp;    // Timestamp of last vsync in 10ns ticks
+        int64_t period;       // Detected refresh period in 10ns ticks
+    };
 
-	// Minimal Wayland definitions to avoid compile-time dependency on libwayland-dev
-	struct wl_surface;
-	struct wl_callback;
-
-	struct wl_callback_listener {
-		void (*done)(void *data, struct wl_callback *callback, uint32_t time);
-	};
-
-	// Function pointer types
-	typedef struct wl_callback* (*wl_surface_frame_t)(struct wl_surface *surface);
-	typedef int (*wl_callback_add_listener_t)(struct wl_callback *callback, const struct wl_callback_listener *listener, void *data);
-	typedef void (*wl_callback_destroy_t)(struct wl_callback *callback);
-
-	// Global function pointers
-	static void* wl_lib_handle = nullptr;
-	static wl_surface_frame_t p_wl_surface_frame = nullptr;
-	static wl_callback_add_listener_t p_wl_callback_add_listener = nullptr;
-	static wl_callback_destroy_t p_wl_callback_destroy = nullptr;
-
-	static bool waylandLoaded = false;
-
-	void loadWaylandDynamically() {
-		if (waylandLoaded) return;
-		waylandLoaded = true;
-
-		wl_lib_handle = dlopen("libwayland-client.so.0", RTLD_LAZY);
-		if (wl_lib_handle) {
-			p_wl_surface_frame = (wl_surface_frame_t)dlsym(wl_lib_handle, "wl_surface_frame");
-			p_wl_callback_add_listener = (wl_callback_add_listener_t)dlsym(wl_lib_handle, "wl_callback_add_listener");
-			p_wl_callback_destroy = (wl_callback_destroy_t)dlsym(wl_lib_handle, "wl_callback_destroy");
-			
-			if (!p_wl_surface_frame || !p_wl_callback_add_listener || !p_wl_callback_destroy) {
-				dlclose(wl_lib_handle);
-				wl_lib_handle = nullptr;
-			}
-		}
-	}
-
-	// --- Wayland Vsync Support ---
-	static bool waylandVsyncFired = false;
-	static int64_t waylandLastCallbackTime10ns = 0;
-	static struct wl_surface* cachedWaylandSurface = nullptr;
-	static struct wl_callback* cachedWaylandCallback = nullptr;
-
-	// FIX 1: Forward declare the *function* instead of the const struct variable
-	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time);
-
-	// Now we can initialize the listener struct immediately
-	static const struct wl_callback_listener waylandFrameListener = {
-		waylandFrameCallbackHandler
-	};
-
-	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
-		waylandVsyncFired = true;
-		
-		int64_t now = getTime10ns();
-		if (waylandLastCallbackTime10ns > 0) {
-			render_timestamp = now - waylandLastCallbackTime10ns;
-		} else {
-			render_timestamp = RENDER_PERIOD_10NS;
-		}
-		waylandLastCallbackTime10ns = now;
-		lastRenderTime = now; // Keep consistent with DRM logic
-		
-		if (p_wl_callback_destroy) p_wl_callback_destroy(callback); // One-shot callback, destroy it
-		
-		struct wl_surface* surface = (struct wl_surface*)data;
-		if (p_wl_surface_frame && p_wl_callback_add_listener) {
-			cachedWaylandCallback = p_wl_surface_frame(surface);
-			p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, surface);
-		}
-	}
-
-	void initWaylandVsync(SDL_Window* sdlWindow) {
-		loadWaylandDynamically();
-		if (!p_wl_surface_frame || !p_wl_callback_add_listener) return;
-
-		// FIX 2: Guard the SDL2 Wayland info access. 
-		// If the user's SDL2 was compiled without Wayland support, this safely skips.
-	#if defined(SDL_VIDEO_DRIVER_WAYLAND)
-		SDL_SysWMinfo wmInfo;
-		SDL_VERSION(&wmInfo.version);
-		if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
-			if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
-				cachedWaylandSurface = wmInfo.info.wl.surface;
-				if (cachedWaylandSurface && !cachedWaylandCallback) {
-					cachedWaylandCallback = p_wl_surface_frame(cachedWaylandSurface);
-					p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
-				}
-			}
-		}
-	#endif
-	}
-
-	// --- DRM Vsync Support (Extracted) ---
-	static int drmFd = -1;
-	static uint32_t drmCrtcId = 0;
-	static uint64_t lastVBlankSeq = 0;
-	static int lastWindowX = -1, lastWindowY = -1;
-	static bool drmInitializedLocal = false;
-
-	void updateDrmVsync(SDL_Window* sdlWindow, int64_t now10ns, bool& shouldRender) {
-		int windowX = 0, windowY = 0;
-		SDL_GetWindowPosition(sdlWindow, &windowX, &windowY);
-
-		// Automatically re-initialize if the window moved to a different monitor
-		if (!drmInitializedLocal || windowX != lastWindowX || windowY != lastWindowY) {
-			lastWindowX = windowX;
-			lastWindowY = windowY;
-
-			if (drmFd >= 0) {
-				close(drmFd);
-				drmFd = -1;
-			}
-
-			drmDevicePtr devices[16];
-			int deviceCount = drmGetDevices(devices, 16);
-
-			if (deviceCount > 0) {
-				bool foundDevice = false;
-
-				for (int i = 0; i < deviceCount && !foundDevice; i++) {
-					drmDevicePtr dev = devices[i];
-					if (!dev->nodes[DRM_NODE_PRIMARY]) continue;
-
-					int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
-					if (fd < 0) continue;
-
-					drmModeResPtr res = drmModeGetResources(fd);
-					if (!res) {
-						close(fd);
-						continue;
-					}
-
-					for (int c = 0; c < res->count_crtcs && !foundDevice; c++) {
-						uint32_t crtcId = res->crtcs[c];
-						drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
-
-						if (!crtc) continue;
-
-						if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0) {
-							if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
-								windowY >= crtc->y && windowY < crtc->y + crtc->height) {
-								
-								drmFd = fd;
-								drmCrtcId = crtcId;
-								drmInitializedLocal = true;
-								foundDevice = true;
-
-								drmVBlank primeVbl;
-								memset(&primeVbl, 0, sizeof(primeVbl));
-								primeVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
-	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-								primeVbl.request.type = (drmVBlankSeqType)(primeVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
-	#endif
-								primeVbl.request.sequence = 1;
-								primeVbl.request.signal = 0;
-								drmWaitVBlank(fd, &primeVbl);
-							}
-						}
-						drmModeFreeCrtc(crtc);
-					}
-					drmModeFreeResources(res);
-					if (!foundDevice) close(fd);
-				}
-				drmFreeDevices(devices, deviceCount);
-			}
-		}
-
-		if (drmFd >= 0 && drmCrtcId != 0) {
-			struct pollfd pfd;
-			pfd.fd = drmFd;
-			pfd.events = POLLIN;
-			pfd.revents = 0;
-
-			int pollResult = poll(&pfd, 1, 0);
-
-			if (pollResult > 0 && (pfd.revents & POLLIN)) {
-				drmEventContext evctx;
-				memset(&evctx, 0, sizeof(evctx));
-				evctx.version = DRM_EVENT_CONTEXT_VERSION;
-
-				static uint64_t vblankSequence = 0;
-				evctx.vblank_handler = [](int fd, unsigned int sequence,
-										unsigned int tv_sec, unsigned int tv_usec,
-										void *user_data) {
-					uint64_t *seqPtr = (uint64_t *)user_data;
-					*seqPtr = sequence;
-				};
-
-				drmHandleEvent(drmFd, &evctx);
-
-				if (vblankSequence != lastVBlankSeq) {
-					shouldRender = true;
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					lastVBlankSeq = vblankSequence;
-				}
-			}
-
-			if (shouldRender) {
-				drmVBlank nextVbl;
-				memset(&nextVbl, 0, sizeof(nextVbl));
-				nextVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
-	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-				nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
-	#endif
-				nextVbl.request.sequence = 1;
-				nextVbl.request.signal = 0;
-				drmWaitVBlank(drmFd, &nextVbl);
-			}
-		}
-	}
-
-	// --- Unified Linux Vsync Wrapper ---
-	void handleLinuxVsync(SDL_Window* sdlWindow, int64_t now10ns, int64_t lag, int64_t& nextRenderTime10ns, bool& shouldRender) {
-		shouldRender = false;
-
-		// 1. Try Wayland first
-		if (!cachedWaylandSurface) {
-			initWaylandVsync(sdlWindow);
-		}
-
-		if (cachedWaylandSurface) {
-			if (waylandVsyncFired) {
-				shouldRender = true;
-				waylandVsyncFired = false;
-				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			}
-		} 
-		// 2. Fallback to DRM if not on Wayland (e.g., X11)
-		else {
-			updateDrmVsync(sdlWindow, now10ns, shouldRender);
-		}
-
-		// 3. Universal timer-based fallback
-		if (!shouldRender) {
-			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-			if (shouldRender) {
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
-			}
-		}
-	}
-
-	#endif
-
-	bool SDLApplication::Update()
-	{
-		if (sleeptimeclocktimer > 100) {
-			sleeptimeclocktimer = 0;
-			calculateMinimalSleepTime();
-		}
-		sleeptimeclocktimer++;
-
-		static int64_t nextUpdateTime10ns = 0;
-		static int64_t nextRenderTime10ns = 0;
-		static int64_t lastRenderTime = getTime10ns();
-		static int64_t renderCounter = 0;
-		static bool firstFrame = true;
-		static unsigned int lastVBlankCounter = 0;
-
-		int64_t now10ns = 0;
-
-		if (uncappedFramerate) {
-			PollInputs();
-
-			now10ns = getTime10ns();
-
-			subLoopTickEvent.timestamp = now10ns;
-			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-
-			now10ns = getTime10ns();
-
-			// Only tick game logic at UPDATE_PERIOD_10NS intervals,
-			// same cadence as the capped path — prevents logic running
-			// thousands of times per second and causing visual speedup.
-			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = now10ns - lag;
-			ApplicationEvent::Dispatch(&applicationEvent);
-
-			lag = now10ns;
-			nextUpdateTime10ns = now10ns;
-
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
-
-			lag = getTime10ns();
-			return active;
-		}
-
-		// FIX: Restore minimalSleepCalc10ns to the base value at the top of every
-		// frame. The vblank-approach shrink below is intentionally transient — it
-		// applies only for the last few iterations before the predicted vblank, then
-		// resets here so a bad prediction or a missed vblank can never leave
-		// minimalSleepCalc10ns permanently at its 50µs floor.
-		if (minimalSleepCalcBase10ns > 0)
-			minimalSleepCalc10ns = minimalSleepCalcBase10ns;
-
-		now10ns = getTime10ns();
-
-		if (firstFrame)
-		{
-			startTimestamp10ns = now10ns;
-			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
-			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			firstFrame = false;
-		}
-
-		int64_t targetTime = now10ns + minimalSleepCalc10ns;
-		coolSleepUntil10ns(targetTime);
-
-		now10ns = getTime10ns();
-
-		subLoopTickEvent.timestamp = now10ns;
-		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-
-		// --- Render scheduling ---
-		bool shouldRender = false;
-
+private:
+    // Platform-specific state
 #ifdef HX_WINDOWS
-	{
-		static QPC_TIME lastQpcVBlank = 0;
-		static int64_t predictedNextVBlank10ns = 0;
-
-		static DWM_TIMING_INFO timingInfo = {};
-		timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
-
-		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
-
-		if (SUCCEEDED(hr))
-		{
-			if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
-			{
-				shouldRender = true;
-
-				if (lastQpcVBlank != 0)
-				{
-					int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
-					render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-				}
-				else
-				{
-					render_timestamp = RENDER_PERIOD_10NS;
-				}
-
-				lastQpcVBlank = timingInfo.qpcVBlank;
-				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-
-				int64_t vblank10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-				predictedNextVBlank10ns = vblank10ns + render_timestamp;
-			}
-			else if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS)
-			{
-				shouldRender = true;
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			}
-
-			// Shrink sleep chunk as we approach the predicted vblank.
-			// This only affects minimalSleepCalc10ns for the remaining iterations
-			// this frame; it resets to minimalSleepCalcBase10ns at the top of the
-			// next frame so a bad prediction cannot cause permanent spin-lock.
-			if (predictedNextVBlank10ns > 0)
-			{
-				int64_t timeUntilVBlank = predictedNextVBlank10ns - now10ns;
-				if (timeUntilVBlank > 0 && timeUntilVBlank < minimalSleepCalcBase10ns * 2)
-				{
-					minimalSleepCalc10ns = std::max<int64_t>(timeUntilVBlank / 2, 5000LL);
-				}
-			}
-		}
-		else
-		{
-			// Fallback timer-based approach
-			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-			if (shouldRender)
-			{
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
-			}
-		}
-	}
-#elif defined(HX_LINUX)
-		{
-			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			if (kbFocus) {
-				uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-				SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-				if (focusedWindow && focusedWindow->sdlWindow) {
-					handleLinuxVsync(focusedWindow->sdlWindow, now10ns, lag, nextRenderTime10ns, shouldRender);
-				} else {
-					shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-					if (shouldRender) {
-						render_timestamp = now10ns - lastRenderTime;
-						lastRenderTime = now10ns;
-						nextRenderTime10ns += RENDER_PERIOD_10NS;
-					}
-				}
-			} else {
-				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-				if (shouldRender) {
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
-				}
-			}
-		}
-#elif defined(HX_ANDROID)
-		if (choreographer)
-		{
-			if (shouldRenderFromCallback)
-			{
-				shouldRender = true;
-				shouldRenderFromCallback = false;
-				AChoreographer_postFrameCallback(choreographer,
-												 choreographer_callback,
-												 nullptr);
-			}
-		}
-		else
-		{
-			shouldRender = (now10ns >= nextRenderTime10ns);
-			if (shouldRender)
-			{
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
-			}
-		}
-#else
-		shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-		if (shouldRender)
-		{
-			render_timestamp = RENDER_PERIOD_10NS;
-			nextRenderTime10ns += RENDER_PERIOD_10NS;
-		}
+    struct WindowsState {
+        LARGE_INTEGER qpcFrequency = {};
+        DWM_TIMING_INFO timingInfo = {};
+        QPC_TIME lastQpcVBlank = 0;
+        int64_t predictedNextVBlank10ns = 0;
+        bool initialized = false;
+    } windows;
 #endif
 
-		PollInputs();
+#ifdef HX_LINUX
+    struct LinuxState {
+        // Wayland state
+        void* wl_lib_handle = nullptr;
+        struct wl_surface* cachedWaylandSurface = nullptr;
+        struct wl_callback* cachedWaylandCallback = nullptr;
+        bool waylandVsyncFired = false;
+        int64_t waylandLastCallbackTime10ns = 0;
+        
+        // Wayland function pointers
+        struct wl_callback* (*wl_surface_frame)(struct wl_surface*);
+        int (*wl_callback_add_listener)(struct wl_callback*, const void*, void*);
+        void (*wl_callback_destroy)(struct wl_callback*);
+        
+        // GLX state (fallback when Wayland unavailable)
+        Display* x11Display = nullptr;
+        GLXDrawable glxDrawable = 0;
+        bool hasGLXSyncControl = false;
+        bool hasGLXVideoSync = false;
+        
+        // Timer fallback state
+        int64_t lastTimerCounter = 0;
+        int64_t lastTimerTimestamp = 0;
+        int64_t detectedRefreshPeriod = 0;
+        int detectedRefreshRate = 60;
+        
+        bool waylandLoaded = false;
+    } linux;
+#endif
 
-		if (shouldRender)
-		{
-			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = render_timestamp;
-			ApplicationEvent::Dispatch(&applicationEvent);
+#ifdef HX_ANDROID
+    struct AndroidState {
+        void* choreographer = nullptr;
+        bool vsyncFired = false;
+        int64_t lastVsyncTime = 0;
+    } android;
+#endif
 
-			renderEvent.type = RENDER;
-			RenderEvent::Dispatch(&renderEvent);
+    // Common state
+    VSyncInfo lastInfo = {0, 0, 0};
+    std::atomic<bool> initialized{false};
+    int64_t fallbackPeriod10ns = TICKS_PER_SECOND_10NS / 60; // Default 60Hz
 
-			lag = getTime10ns();
-		}
+    // Platform-specific initialization
+    void initWindows();
+    void initLinux(SDL_Window* window);
+    void initAndroid();
+    
+    // Platform-specific query functions (non-blocking)
+    bool queryWindows(VSyncInfo& info);
+    bool queryLinux(VSyncInfo& info);
+    bool queryAndroid(VSyncInfo& info);
+    
+    // Fallback timer-based counter
+    bool queryTimerFallback(VSyncInfo& info);
 
-		return active;
-	}
+public:
+    AsyncVSync() = default;
+    ~AsyncVSync();
+    
+    // Initialize with an SDL window (required for GLX/Wayland queries)
+    void initialize(SDL_Window* window);
+    
+    // Non-blocking vsync query. Returns true if new vsync occurred since last call.
+    // This is designed to be called in your sleep-stepping subloop.
+    bool poll(VSyncInfo& outInfo);
+    
+    // Get current vsync counter without checking for changes
+    bool getCurrentCounter(int64_t& outCounter);
+    
+    // Get the current vsync period (refresh rate in 10ns ticks)
+    int64_t getRefreshPeriod() const { return lastInfo.period > 0 ? lastInfo.period : fallbackPeriod10ns; }
+    
+    // Get the current refresh rate in Hz
+    int getRefreshRate() const { return (int)(TICKS_PER_SECOND_10NS / getRefreshPeriod()); }
+    
+    // Check if vsync hardware is available
+    bool isAvailable() const { return initialized; }
+};
+
+// ============================================================================
+// Windows Implementation
+// ============================================================================
+
+#ifdef HX_WINDOWS
+void AsyncVSync::initWindows() {
+    QueryPerformanceFrequency(&windows.qpcFrequency);
+    windows.timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+    windows.initialized = true;
+    initialized = true;
+    
+    // Get initial period from display mode
+    SDL_DisplayMode mode;
+    if (SDL_GetCurrentDisplayMode(0, &mode) == 0 && mode.refresh_rate > 0) {
+        fallbackPeriod10ns = TICKS_PER_SECOND_10NS / mode.refresh_rate;
+        lastInfo.period = fallbackPeriod10ns;
+    }
+}
+
+bool AsyncVSync::queryWindows(VSyncInfo& info) {
+    if (!windows.initialized) return false;
+    
+    HRESULT hr = DwmGetCompositionTimingInfo(NULL, &windows.timingInfo);
+    
+    if (SUCCEEDED(hr) && windows.timingInfo.qpcVBlank != 0) {
+        if (windows.lastQpcVBlank == 0 || windows.lastQpcVBlank != windows.timingInfo.qpcVBlank) {
+            info.counter++;
+            info.timestamp = (windows.timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / windows.qpcFrequency.QuadPart;
+            
+            if (windows.lastQpcVBlank != 0) {
+                int64_t qpcDelta = (int64_t)(windows.timingInfo.qpcVBlank - windows.lastQpcVBlank);
+                info.period = (qpcDelta * TICKS_PER_SECOND_10NS) / windows.qpcFrequency.QuadPart;
+                if (info.period > 0 && info.period < TICKS_PER_SECOND_10NS / 30) {
+                    lastInfo.period = info.period;
+                }
+            }
+            
+            windows.lastQpcVBlank = windows.timingInfo.qpcVBlank;
+            windows.predictedNextVBlank10ns = info.timestamp + info.period;
+            return true;
+        }
+    }
+    
+    // Fallback: use timer approximation
+    return queryTimerFallback(info);
+}
+#endif
+
+// ============================================================================
+// Linux Implementation
+// ============================================================================
+
+#ifdef HX_LINUX
+
+// Wayland callback listener structure
+struct WaylandCallbackListener {
+    void (*done)(void*, struct wl_callback*, uint32_t);
+};
+
+static void waylandFrameCallback(void* data, struct wl_callback* callback, uint32_t time) {
+    auto* state = (AsyncVSync::LinuxState*)data;
+    if (!state) return;
+    
+    state->waylandVsyncFired = true;
+    int64_t now = getTime10ns();
+    
+    if (state->waylandLastCallbackTime10ns > 0) {
+        // Update detected period
+        int64_t period = now - state->waylandLastCallbackTime10ns;
+        if (period > 0 && period < TICKS_PER_SECOND_10NS / 30) {
+            // EMA smoothing for period detection
+            auto* vsync = (AsyncVSync*)((char*)state - offsetof(AsyncVSync, linux));
+            if (vsync) vsync->lastInfo.period = (vsync->lastInfo.period * 7 + period) / 8;
+        }
+    }
+    state->waylandLastCallbackTime10ns = now;
+    
+    // Re-arm callback
+    if (state->wl_callback_destroy) state->wl_callback_destroy(callback);
+    if (state->cachedWaylandSurface && state->wl_surface_frame && state->wl_callback_add_listener) {
+        state->cachedWaylandCallback = state->wl_surface_frame(state->cachedWaylandSurface);
+        if (state->cachedWaylandCallback) {
+            state->wl_callback_add_listener(state->cachedWaylandCallback, &waylandFrameCallback, state);
+        }
+    }
+}
+
+static const WaylandCallbackListener waylandListener = { waylandFrameCallback };
+
+void AsyncVSync::initLinux(SDL_Window* window) {
+    if (!window) return;
+    
+    // Try to load Wayland dynamically
+    if (!linux.waylandLoaded) {
+        linux.waylandLoaded = true;
+        linux.wl_lib_handle = dlopen("libwayland-client.so.0", RTLD_LAZY);
+        
+        if (linux.wl_lib_handle) {
+            *(void**)&linux.wl_surface_frame = dlsym(linux.wl_lib_handle, "wl_surface_frame");
+            *(void**)&linux.wl_callback_add_listener = dlsym(linux.wl_lib_handle, "wl_callback_add_listener");
+            *(void**)&linux.wl_callback_destroy = dlsym(linux.wl_lib_handle, "wl_callback_destroy");
+            
+            if (!linux.wl_surface_frame || !linux.wl_callback_add_listener || !linux.wl_callback_destroy) {
+                dlclose(linux.wl_lib_handle);
+                linux.wl_lib_handle = nullptr;
+            }
+        }
+    }
+    
+    // Try to get Wayland surface from SDL
+    if (linux.wl_lib_handle) {
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        if (SDL_GetWindowWMInfo(window, &wmInfo) && wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
+            linux.cachedWaylandSurface = wmInfo.info.wl.surface;
+            if (linux.cachedWaylandSurface) {
+                linux.cachedWaylandCallback = linux.wl_surface_frame(linux.cachedWaylandSurface);
+                if (linux.cachedWaylandCallback) {
+                    linux.wl_callback_add_listener(linux.cachedWaylandCallback, &waylandListener, &linux);
+                }
+            }
+        }
+    }
+    
+    // Fallback to GLX extensions if Wayland not available
+    if (!linux.cachedWaylandSurface) {
+        // Get X11 display and GLX drawable from SDL
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        if (SDL_GetWindowWMInfo(window, &wmInfo) && wmInfo.subsystem == SDL_SYSWM_X11) {
+            linux.x11Display = wmInfo.info.x11.display;
+            
+            // Note: Getting the GLXDrawable requires an active GL context
+            // This would need to be set by the application after context creation
+            // For now, we'll rely on the timer fallback
+        }
+    }
+    
+    // Get refresh rate from display mode
+    SDL_DisplayMode mode;
+    if (SDL_GetCurrentDisplayMode(0, &mode) == 0 && mode.refresh_rate > 0) {
+        linux.detectedRefreshRate = mode.refresh_rate;
+        fallbackPeriod10ns = TICKS_PER_SECOND_10NS / mode.refresh_rate;
+        lastInfo.period = fallbackPeriod10ns;
+    }
+    
+    initialized = true;
+}
+
+bool AsyncVSync::queryLinux(VSyncInfo& info) {
+    // Priority 1: Wayland callback-based vsync
+    if (linux.cachedWaylandSurface && linux.waylandVsyncFired) {
+        linux.waylandVsyncFired = false;
+        info.counter++;
+        info.timestamp = linux.waylandLastCallbackTime10ns;
+        info.period = lastInfo.period;
+        return true;
+    }
+    
+    // Priority 2: GLX OML sync control (non-blocking query)
+    if (linux.hasGLXSyncControl && linux.x11Display && linux.glxDrawable) {
+        int64_t ust, msc, sbc;
+        if (glXGetSyncValuesOML(linux.x11Display, linux.glxDrawable, &ust, &msc, &sbc)) {
+            if ((int64_t)msc != info.counter) {
+                info.counter = msc;
+                info.timestamp = ust / 10; // Convert nanoseconds to 10ns ticks
+                return true;
+            }
+        }
+    }
+    
+    // Priority 3: GLX SGI video sync (non-blocking query)
+    if (linux.hasGLXVideoSync && linux.x11Display) {
+        unsigned int count;
+        if (glXGetVideoSyncSGI(&count) == 0) {
+            if ((int64_t)count != info.counter) {
+                info.counter = count;
+                info.timestamp = getTime10ns(); // Approximate timestamp
+                return true;
+            }
+        }
+    }
+    
+    // Priority 4: Timer-based fallback
+    return queryTimerFallback(info);
+}
+#endif
+
+// ============================================================================
+// Android Implementation
+// ============================================================================
+
+#ifdef HX_ANDROID
+#include <android/choreographer.h>
+
+static void choreographerCallback(long frameTimeNanos, void* data) {
+    auto* state = (AsyncVSync::AndroidState*)data;
+    if (state) {
+        state->vsyncFired = true;
+        state->lastVsyncTime = frameTimeNanos / 10; // Convert to 10ns ticks
+    }
+}
+
+void AsyncVSync::initAndroid() {
+    android.choreographer = AChoreographer_getInstance();
+    if (android.choreographer) {
+        AChoreographer_postFrameCallback(android.choreographer, choreographerCallback, &android);
+    }
+    initialized = true;
+}
+
+bool AsyncVSync::queryAndroid(VSyncInfo& info) {
+    if (android.vsyncFired) {
+        android.vsyncFired = false;
+        info.counter++;
+        info.timestamp = android.lastVsyncTime;
+        
+        // Re-arm callback
+        if (android.choreographer) {
+            AChoreographer_postFrameCallback(android.choreographer, choreographerCallback, &android);
+        }
+        return true;
+    }
+    return queryTimerFallback(info);
+}
+#endif
+
+// ============================================================================
+// Common Fallback Implementation (all platforms)
+// ============================================================================
+
+bool AsyncVSync::queryTimerFallback(VSyncInfo& info) {
+    int64_t now = getTime10ns();
+    
+    // Use detected refresh period to predict vsync boundaries
+    int64_t period = lastInfo.period > 0 ? lastInfo.period : fallbackPeriod10ns;
+    int64_t timeSinceLastVsync = now - lastInfo.timestamp;
+    
+    // Detect vsync by checking if we've crossed a period boundary
+    // with some tolerance for timer jitter
+    int64_t tolerance = period / 10; // 10% tolerance
+    int64_t periodsSinceLast = (timeSinceLastVsync + tolerance) / period;
+    
+    if (periodsSinceLast >= 1) {
+        // We've likely crossed one or more vsync boundaries
+        info.counter = lastInfo.counter + periodsSinceLast;
+        info.timestamp = lastInfo.timestamp + (periodsSinceLast * period);
+        info.period = period;
+        
+        // Adjust for jitter
+        if (timeSinceLastVsync > period + tolerance) {
+            // Slightly adjust period based on actual timing
+            int64_t measuredPeriod = timeSinceLastVsync / periodsSinceLast;
+            if (measuredPeriod > period * 0.9 && measuredPeriod < period * 1.1) {
+                // EMA smoothing
+                lastInfo.period = (lastInfo.period * 7 + measuredPeriod) / 8;
+            }
+        }
+        
+        return true;
+    }
+    
+    return false;
+}
+
+// ============================================================================
+// AsyncVSync Public Methods
+// ============================================================================
+
+AsyncVSync::~AsyncVSync() {
+#ifdef HX_LINUX
+    if (linux.wl_lib_handle) {
+        dlclose(linux.wl_lib_handle);
+    }
+#endif
+}
+
+void AsyncVSync::initialize(SDL_Window* window) {
+    if (initialized) return;
+    
+#ifdef HX_WINDOWS
+    initWindows();
+#elif defined(HX_LINUX)
+    initLinux(window);
+#elif defined(HX_ANDROID)
+    initAndroid();
+#else
+    // Generic fallback
+    initialized = true;
+    SDL_DisplayMode mode;
+    if (SDL_GetCurrentDisplayMode(0, &mode) == 0 && mode.refresh_rate > 0) {
+        fallbackPeriod10ns = TICKS_PER_SECOND_10NS / mode.refresh_rate;
+        lastInfo.period = fallbackPeriod10ns;
+    }
+#endif
+}
+
+bool AsyncVSync::poll(VSyncInfo& outInfo) {
+    if (!initialized) return false;
+    
+    VSyncInfo newInfo = lastInfo;
+    bool hasNew = false;
+    
+#ifdef HX_WINDOWS
+    hasNew = queryWindows(newInfo);
+#elif defined(HX_LINUX)
+    hasNew = queryLinux(newInfo);
+#elif defined(HX_ANDROID)
+    hasNew = queryAndroid(newInfo);
+#else
+    hasNew = queryTimerFallback(newInfo);
+#endif
+    
+    if (hasNew) {
+        lastInfo = newInfo;
+        outInfo = newInfo;
+        return true;
+    }
+    
+    outInfo = lastInfo;
+    return false;
+}
+
+bool AsyncVSync::getCurrentCounter(int64_t& outCounter) {
+    if (!initialized) return false;
+    outCounter = lastInfo.counter;
+    return true;
+}
+
+// ============================================================================
+// Modified SDLApplication::Update() using AsyncVSync
+// ============================================================================
+
+// Add this as a member variable to SDLApplication class:
+// AsyncVSync asyncVSync;
+
+bool SDLApplication::Update() {
+    if (sleeptimeclocktimer > 100) {
+        sleeptimeclocktimer = 0;
+        calculateMinimalSleepTime();
+    }
+    sleeptimeclocktimer++;
+
+    static int64_t nextUpdateTime10ns = 0;
+    static int64_t nextRenderTime10ns = 0;
+    static bool firstFrame = true;
+    static bool vsyncInitialized = false;
+
+    int64_t now10ns = 0;
+
+    // Initialize AsyncVSync on first frame
+    if (!vsyncInitialized && !uncappedFramerate) {
+        SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+        if (kbFocus) {
+            uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+            SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+            if (focusedWindow && focusedWindow->sdlWindow) {
+                asyncVSync.initialize(focusedWindow->sdlWindow);
+                vsyncInitialized = true;
+            }
+        }
+    }
+
+    if (uncappedFramerate) {
+        PollInputs();
+        now10ns = getTime10ns();
+
+        subLoopTickEvent.timestamp = now10ns;
+        SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+
+        now10ns = getTime10ns();
+
+        applicationEvent.type = UPDATE;
+        applicationEvent.deltaTime = now10ns - lag;
+        ApplicationEvent::Dispatch(&applicationEvent);
+
+        lag = now10ns;
+        nextUpdateTime10ns = now10ns;
+
+        renderEvent.type = RENDER;
+        RenderEvent::Dispatch(&renderEvent);
+
+        lag = getTime10ns();
+        return active;
+    }
+
+    // Restore minimalSleepCalc10ns to base value
+    if (minimalSleepCalcBase10ns > 0)
+        minimalSleepCalc10ns = minimalSleepCalcBase10ns;
+
+    now10ns = getTime10ns();
+
+    if (firstFrame) {
+        startTimestamp10ns = now10ns;
+        nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
+        nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+        firstFrame = false;
+    }
+
+    // --- Sleep stepping with vsync awareness ---
+    int64_t targetTime = now10ns + minimalSleepCalc10ns;
+    coolSleepUntil10ns(targetTime);
+
+    now10ns = getTime10ns();
+
+    subLoopTickEvent.timestamp = now10ns;
+    SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+
+    // --- Non-blocking vsync query for timing decisions ---
+    AsyncVSync::VSyncInfo vsyncInfo;
+    bool vsyncOccurred = asyncVSync.poll(vsyncInfo);
+    
+    if (vsyncOccurred) {
+        // Vsync just happened - perfect for rhythm game sync
+        // You can dispatch a vsync event to your game logic here
+        // vsyncInfo.counter = current vsync count
+        // vsyncInfo.timestamp = exact time of vsync in 10ns ticks
+        // vsyncInfo.period = detected refresh period
+        
+        // Update render timestamp with accurate vsync timing
+        render_timestamp = vsyncInfo.period;
+        nextRenderTime10ns = vsyncInfo.timestamp + vsyncInfo.period;
+    }
+
+    // --- Render scheduling using vsync info ---
+    bool shouldRender = false;
+    
+    if (vsyncInitialized) {
+        // Use the accurate vsync counter to determine if we should render
+        int64_t period = asyncVSync.getRefreshPeriod();
+        int64_t timeUntilNextVsync = (vsyncInfo.timestamp + period) - now10ns;
+        
+        // Render if we're within a small window before the predicted vsync
+        shouldRender = (timeUntilNextVsync <= (period / 4)) || (timeUntilNextVsync < 0);
+        
+        if (shouldRender) {
+            render_timestamp = period;
+            // Don't update nextRenderTime10ns here - let the vsync event drive it
+        }
+    } else {
+        // Fallback to timer-based approach if vsync not available
+        shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+        if (shouldRender) {
+            render_timestamp = now10ns - lastRenderTime;
+            lastRenderTime = now10ns;
+            nextRenderTime10ns += RENDER_PERIOD_10NS;
+        }
+    }
+
+    PollInputs();
+
+    if (shouldRender) {
+        applicationEvent.type = UPDATE;
+        applicationEvent.deltaTime = render_timestamp;
+        ApplicationEvent::Dispatch(&applicationEvent);
+
+        renderEvent.type = RENDER;
+        RenderEvent::Dispatch(&renderEvent);
+
+        lag = getTime10ns();
+    }
+
+    return active;
+}
+
 
 	Application *CreateApplication()
 	{
