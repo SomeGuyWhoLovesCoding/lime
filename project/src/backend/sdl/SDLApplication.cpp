@@ -67,7 +67,7 @@ using namespace std;
 #include <xf86drmMode.h>
 #include <poll.h>
 #include <x86intrin.h>
-#include <wayland-client.h> // <-- ADD THIS
+#include <dlfcn.h>
 #endif
 #if HX_ANDROID
 #include <android/choreographer.h>
@@ -1529,11 +1529,53 @@ namespace lime
 
 	#if defined(HX_LINUX)
 
+	// Minimal Wayland definitions to avoid compile-time dependency on libwayland-dev
+	struct wl_surface;
+	struct wl_callback;
+
+	struct wl_callback_listener {
+		void (*done)(void *data, struct wl_callback *callback, uint32_t time);
+	};
+
+	// Function pointer types
+	typedef struct wl_callback* (*wl_surface_frame_t)(struct wl_surface *surface);
+	typedef int (*wl_callback_add_listener_t)(struct wl_callback *callback, const struct wl_callback_listener *listener, void *data);
+	typedef void (*wl_callback_destroy_t)(struct wl_callback *callback);
+
+	// Global function pointers
+	static void* wl_lib_handle = nullptr;
+	static wl_surface_frame_t p_wl_surface_frame = nullptr;
+	static wl_callback_add_listener_t p_wl_callback_add_listener = nullptr;
+	static wl_callback_destroy_t p_wl_callback_destroy = nullptr;
+
+	static bool waylandLoaded = false;
+
+	void loadWaylandDynamically() {
+		if (waylandLoaded) return;
+		waylandLoaded = true;
+
+		wl_lib_handle = dlopen("libwayland-client.so.0", RTLD_LAZY);
+		if (wl_lib_handle) {
+			p_wl_surface_frame = (wl_surface_frame_t)dlsym(wl_lib_handle, "wl_surface_frame");
+			p_wl_callback_add_listener = (wl_callback_add_listener_t)dlsym(wl_lib_handle, "wl_callback_add_listener");
+			p_wl_callback_destroy = (wl_callback_destroy_t)dlsym(wl_lib_handle, "wl_callback_destroy");
+			
+			// If any required function is missing, close the handle and fail gracefully
+			if (!p_wl_surface_frame || !p_wl_callback_add_listener || !p_wl_callback_destroy) {
+				dlclose(wl_lib_handle);
+				wl_lib_handle = nullptr;
+			}
+		}
+	}
+
 	// --- Wayland Vsync Support ---
 	static bool waylandVsyncFired = false;
 	static int64_t waylandLastCallbackTime10ns = 0;
 	static struct wl_surface* cachedWaylandSurface = nullptr;
 	static struct wl_callback* cachedWaylandCallback = nullptr;
+
+	// Forward declaration to fix use-before-declaration
+	static const struct wl_callback_listener waylandFrameListener;
 
 	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
 		waylandVsyncFired = true;
@@ -1547,12 +1589,15 @@ namespace lime
 		waylandLastCallbackTime10ns = now;
 		lastRenderTime = now; // Keep consistent with DRM logic
 		
-		wl_callback_destroy(callback); // One-shot callback, destroy it
+		// Use the dynamically loaded function pointer
+		if (p_wl_callback_destroy) p_wl_callback_destroy(callback); // One-shot callback, destroy it
 		
 		// Request next frame callback
 		struct wl_surface* surface = (struct wl_surface*)data;
-		cachedWaylandCallback = wl_surface_frame(surface);
-		wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, surface);
+		if (p_wl_surface_frame && p_wl_callback_add_listener) {
+			cachedWaylandCallback = p_wl_surface_frame(surface);
+			p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, surface);
+		}
 	}
 
 	static const struct wl_callback_listener waylandFrameListener = {
@@ -1560,14 +1605,17 @@ namespace lime
 	};
 
 	void initWaylandVsync(SDL_Window* sdlWindow) {
+		loadWaylandDynamically(); // Load the library at runtime
+		if (!p_wl_surface_frame || !p_wl_callback_add_listener) return; // Wayland not available
+
 		SDL_SysWMinfo wmInfo;
 		SDL_VERSION(&wmInfo.version);
 		if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
 			if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
 				cachedWaylandSurface = wmInfo.info.wl.surface;
 				if (cachedWaylandSurface && !cachedWaylandCallback) {
-					cachedWaylandCallback = wl_surface_frame(cachedWaylandSurface);
-					wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
+					cachedWaylandCallback = p_wl_surface_frame(cachedWaylandSurface);
+					p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
 				}
 			}
 		}
@@ -1684,7 +1732,7 @@ namespace lime
 				memset(&nextVbl, 0, sizeof(nextVbl));
 				nextVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
 	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-				nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
+				nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
 	#endif
 				nextVbl.request.sequence = 1;
 				nextVbl.request.signal = 0;
