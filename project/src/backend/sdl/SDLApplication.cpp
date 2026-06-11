@@ -1565,6 +1565,8 @@ namespace lime
 
 	#if defined(HX_LINUX)
 
+	static uint64_t VblankSequence = 0;
+
 	// Minimal Wayland definitions to avoid compile-time dependency on libwayland-dev
 	struct wl_surface;
 	struct wl_callback;
@@ -1721,7 +1723,7 @@ namespace lime
 								primeVbl.request.type = (drmVBlankSeqType)(primeVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
 	#endif
 								primeVbl.request.sequence = 1;
-								primeVbl.request.signal = 0;
+								primeVbl.request.signal = (unsigned long)&VblankSequence;
 								drmWaitVBlank(fd, &primeVbl);
 							}
 						}
@@ -1747,7 +1749,6 @@ namespace lime
 				memset(&evctx, 0, sizeof(evctx));
 				evctx.version = DRM_EVENT_CONTEXT_VERSION;
 
-				static uint64_t vblankSequence = 0;
 				evctx.vblank_handler = [](int fd, unsigned int sequence,
 										unsigned int tv_sec, unsigned int tv_usec,
 										void *user_data) {
@@ -1761,7 +1762,7 @@ namespace lime
 					shouldRender = true;
 					render_timestamp = now10ns - lastRenderTime;
 					lastRenderTime = now10ns;
-					lastVBlankSeq = vblankSequence;
+					lastVBlankSeq = VblankSequence;
 				}
 			}
 
@@ -1773,7 +1774,7 @@ namespace lime
 				nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
 	#endif
 				nextVbl.request.sequence = 1;
-				nextVbl.request.signal = 0;
+				nextVbl.request.signal = (unsigned long)&VblankSequence;
 				drmWaitVBlank(drmFd, &nextVbl);
 			}
 		}
