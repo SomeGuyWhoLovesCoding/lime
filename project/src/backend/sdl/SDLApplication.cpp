@@ -1758,7 +1758,7 @@ namespace lime
 
 				drmHandleEvent(drmFd, &evctx);
 
-				if (vblankSequence != lastVBlankSeq) {
+				if (VblankSequence != lastVBlankSeq) {
 					shouldRender = true;
 					render_timestamp = now10ns - lastRenderTime;
 					lastRenderTime = now10ns;
