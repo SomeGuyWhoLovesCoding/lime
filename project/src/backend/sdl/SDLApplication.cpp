@@ -1008,22 +1008,16 @@ namespace lime
 	}
 
 	namespace AsyncKB {
-		static constexpr size_t MAX_EVENTS = 2048;
-		static constexpr size_t BATCH_SIZE = 64;
+		static constexpr size_t MAX_EVENTS = 512;
 		
-		// Simple lock-free ring buffer (no batching complexity)
-		struct Event {
-			double scanCode;
-			double state;
-			double timestamp;
-		};
-		
-		static std::array<Event, MAX_EVENTS> eventQueue;
+		// Queue: array of arrays of doubles
+		// [0] = scanCode, [1] = state (1.0 = down, 0.0 = up), [2] = timestamp
+		static std::array<std::array<double, 3>, MAX_EVENTS> eventQueue;
 		static std::atomic<size_t> writeIndex{0};
 		static std::atomic<size_t> readIndex{0};
 		static std::atomic<size_t> eventCount{0};
+		static std::mutex queueMutex;
 		
-		// Thread management
 		static std::atomic<bool> running{false};
 		static std::thread workerThread;
 		
@@ -1031,54 +1025,25 @@ namespace lime
 			return AsyncKeyEvent::Timestamp();
 		}
 		
-		// Public API - addEvent
 		static void addEvent(double scanCode, double state, double timestamp) {
-			size_t currentWrite = writeIndex.load(std::memory_order_relaxed);
-			size_t nextWrite = (currentWrite + 1) % MAX_EVENTS;
-			
-			// Check if queue is full - if so, overwrite oldest (drop event)
-			if (nextWrite == readIndex.load(std::memory_order_acquire)) {
-				// Queue full - move read index forward (drop oldest)
-				size_t currentRead = readIndex.load(std::memory_order_relaxed);
-				readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
-				eventCount.fetch_sub(1, std::memory_order_relaxed);
-			}
-			
-			// Write event
-			eventQueue[currentWrite].scanCode = scanCode;
-			eventQueue[currentWrite].state = state;
-			eventQueue[currentWrite].timestamp = timestamp;
-			
-			// Update indices
-			writeIndex.store(nextWrite, std::memory_order_release);
-			eventCount.fetch_add(1, std::memory_order_release);
-		}
-		
-		// Public API - hasEvent
-		static bool hasEvent() {
-			return eventCount.load(std::memory_order_acquire) > 0;
-		}
-		
-		// Public API - getEvent
-		static bool getEvent(double& scanCode, double& state, double& timestamp) {
-			if (eventCount.load(std::memory_order_acquire) == 0) return false;
-			
-			size_t currentRead = readIndex.load(std::memory_order_acquire);
+			std::lock_guard<std::mutex> lock(queueMutex);
 			size_t currentWrite = writeIndex.load(std::memory_order_acquire);
+			eventQueue[currentWrite][0] = scanCode;
+			eventQueue[currentWrite][1] = state;
+			eventQueue[currentWrite][2] = timestamp;
+			writeIndex.store((currentWrite + 1) % MAX_EVENTS, std::memory_order_release);
 			
-			if (currentRead == currentWrite) return false;
-			
-			scanCode = eventQueue[currentRead].scanCode;
-			state = eventQueue[currentRead].state;
-			timestamp = eventQueue[currentRead].timestamp;
-			
-			readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
-			eventCount.fetch_sub(1, std::memory_order_release);
-			
-			return true;
+			size_t count = eventCount.load(std::memory_order_acquire);
+			if (count < MAX_EVENTS) {
+				eventCount.store(count + 1, std::memory_order_release);
+			} else {
+				size_t currentRead = readIndex.load(std::memory_order_acquire);
+				readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
+			}
 		}
 		
 	#ifdef HX_WINDOWS
+		// Windows implementation
 		static HHOOK keyboardHook = nullptr;
 		static HANDLE quitEvent = nullptr;
 		static DWORD processId = 0;
@@ -1088,30 +1053,22 @@ namespace lime
 			if (winKeyCode >= '0' && winKeyCode <= '9') return winKeyCode;
 			
 			switch (winKeyCode) {
-				case VK_BACK: return 0x08; case VK_TAB: return 0x09;
-				case VK_RETURN: return 0x0D; case VK_ESCAPE: return 0x1B;
-				case VK_SPACE: return 0x20; case VK_DELETE: return 0x7F;
-				case VK_INSERT: return 0x40000049; case VK_HOME: return 0x4000004A;
-				case VK_END: return 0x4000004D; case VK_PRIOR: return 0x4000004B;
-				case VK_NEXT: return 0x4000004E; case VK_UP: return 0x40000052;
-				case VK_DOWN: return 0x40000051; case VK_LEFT: return 0x40000050;
-				case VK_RIGHT: return 0x4000004F; case VK_LCONTROL: return 0x400000E0;
-				case VK_RCONTROL: return 0x400000E4; case VK_LSHIFT: return 0x400000E1;
-				case VK_RSHIFT: return 0x400000E5; case VK_LMENU: return 0x400000E2;
-				case VK_RMENU: return 0x400000E6; case VK_LWIN: return 0x400000E3;
-				case VK_RWIN: return 0x400000E7; case VK_CAPITAL: return 0x40000039;
-				case VK_NUMLOCK: return 0x40000053; case VK_SCROLL: return 0x40000047;
-				case VK_F1: return 0x4000003A; case VK_F2: return 0x4000003B;
-				case VK_F3: return 0x4000003C; case VK_F4: return 0x4000003D;
-				case VK_F5: return 0x4000003E; case VK_F6: return 0x4000003F;
-				case VK_F7: return 0x40000040; case VK_F8: return 0x40000041;
-				case VK_F9: return 0x40000042; case VK_F10: return 0x40000043;
-				case VK_F11: return 0x40000044; case VK_F12: return 0x40000045;
-				case VK_OEM_MINUS: return 0x2D; case VK_OEM_PLUS: return 0x3D;
-				case VK_OEM_4: return 0x5B; case VK_OEM_6: return 0x5D;
-				case VK_OEM_5: return 0x5C; case VK_OEM_1: return 0x3B;
-				case VK_OEM_7: return 0x27; case VK_OEM_3: return 0x60;
-				case VK_OEM_COMMA: return 0x2C; case VK_OEM_PERIOD: return 0x2E;
+				case VK_BACK: return 0x08; case VK_TAB: return 0x09; case VK_RETURN: return 0x0D;
+				case VK_ESCAPE: return 0x1B; case VK_SPACE: return 0x20; case VK_DELETE: return 0x7F;
+				case VK_INSERT: return 0x40000049; case VK_HOME: return 0x4000004A; case VK_END: return 0x4000004D;
+				case VK_PRIOR: return 0x4000004B; case VK_NEXT: return 0x4000004E; case VK_UP: return 0x40000052;
+				case VK_DOWN: return 0x40000051; case VK_LEFT: return 0x40000050; case VK_RIGHT: return 0x4000004F;
+				case VK_LCONTROL: return 0x400000E0; case VK_RCONTROL: return 0x400000E4; case VK_LSHIFT: return 0x400000E1;
+				case VK_RSHIFT: return 0x400000E5; case VK_LMENU: return 0x400000E2; case VK_RMENU: return 0x400000E6;
+				case VK_LWIN: return 0x400000E3; case VK_RWIN: return 0x400000E7; case VK_CAPITAL: return 0x40000039;
+				case VK_NUMLOCK: return 0x40000053; case VK_SCROLL: return 0x40000047; case VK_F1: return 0x4000003A;
+				case VK_F2: return 0x4000003B; case VK_F3: return 0x4000003C; case VK_F4: return 0x4000003D;
+				case VK_F5: return 0x4000003E; case VK_F6: return 0x4000003F; case VK_F7: return 0x40000040;
+				case VK_F8: return 0x40000041; case VK_F9: return 0x40000042; case VK_F10: return 0x40000043;
+				case VK_F11: return 0x40000044; case VK_F12: return 0x40000045; case VK_OEM_MINUS: return 0x2D;
+				case VK_OEM_PLUS: return 0x3D; case VK_OEM_4: return 0x5B; case VK_OEM_6: return 0x5D;
+				case VK_OEM_5: return 0x5C; case VK_OEM_1: return 0x3B; case VK_OEM_7: return 0x27;
+				case VK_OEM_3: return 0x60; case VK_OEM_COMMA: return 0x2C; case VK_OEM_PERIOD: return 0x2E;
 				case VK_OEM_2: return 0x2F; default: return 0x00;
 			}
 		}
@@ -1121,8 +1078,9 @@ namespace lime
 				HWND foreground = GetForegroundWindow();
 				DWORD pid = 0;
 				if (foreground) GetWindowThreadProcessId(foreground, &pid);
-				
-				if (pid == processId) {
+				bool isFocused = (pid == processId);
+
+				if (isFocused) {
 					KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
 					
 					if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN || 
@@ -1139,13 +1097,10 @@ namespace lime
 		}
 		
 		static void workerFunction() {
-			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-			
 			quitEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 			processId = GetCurrentProcessId();
 			
-			keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, 
-											GetModuleHandle(NULL), 0);
+			keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
 			if (!keyboardHook) {
 				CloseHandle(quitEvent);
 				return;
@@ -1153,30 +1108,26 @@ namespace lime
 			
 			MSG msg;
 			HANDLE handles[] = { quitEvent };
-			
 			while (running) {
-				// Reduced timeout for better responsiveness
-				DWORD result = MsgWaitForMultipleObjects(1, handles, FALSE, 1, QS_ALLINPUT);
-				
+				DWORD result = MsgWaitForMultipleObjects(1, handles, FALSE, 100, QS_ALLINPUT);
 				if (result == WAIT_OBJECT_0) break;
-				
-				if (result == WAIT_OBJECT_0 + 1 || result == WAIT_TIMEOUT) {
+				else if (result == WAIT_OBJECT_0 + 1) {
 					while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
 						TranslateMessage(&msg);
 						DispatchMessage(&msg);
 					}
 				}
 			}
-			
 			UnhookWindowsHookEx(keyboardHook);
 			CloseHandle(quitEvent);
 		}
-		
-	#elif defined(HX_LINUX) || defined(HX_ANDROID)
+	#elif defined(HX_LINUX)
+		// Linux implementation using SDL_GetKeyboardState with focus check
 		static std::array<int, SDL_NUM_SCANCODES> lastState;
 		static std::once_flag initFlag;
 		
 		static int linuxToLimeKeycode(SDL_Scancode scancode) {
+			// Convert SDL_Scancode to Lime keycodes (matching Windows virtual keycodes)
 			switch (scancode) {
 				case SDL_SCANCODE_A: return 0x61;
 				case SDL_SCANCODE_B: return 0x62;
@@ -1204,6 +1155,7 @@ namespace lime
 				case SDL_SCANCODE_X: return 0x78;
 				case SDL_SCANCODE_Y: return 0x79;
 				case SDL_SCANCODE_Z: return 0x7A;
+				
 				case SDL_SCANCODE_0: return 0x30;
 				case SDL_SCANCODE_1: return 0x31;
 				case SDL_SCANCODE_2: return 0x32;
@@ -1214,60 +1166,143 @@ namespace lime
 				case SDL_SCANCODE_7: return 0x37;
 				case SDL_SCANCODE_8: return 0x38;
 				case SDL_SCANCODE_9: return 0x39;
+				
 				case SDL_SCANCODE_BACKSPACE: return 0x08;
 				case SDL_SCANCODE_TAB: return 0x09;
 				case SDL_SCANCODE_RETURN: return 0x0D;
 				case SDL_SCANCODE_ESCAPE: return 0x1B;
 				case SDL_SCANCODE_SPACE: return 0x20;
+				case SDL_SCANCODE_DELETE: return 0x7F;
+				case SDL_SCANCODE_INSERT: return 0x40000049;
+				case SDL_SCANCODE_HOME: return 0x4000004A;
+				case SDL_SCANCODE_END: return 0x4000004D;
+				case SDL_SCANCODE_PAGEUP: return 0x4000004B;
+				case SDL_SCANCODE_PAGEDOWN: return 0x4000004E;
+				case SDL_SCANCODE_UP: return 0x40000052;
+				case SDL_SCANCODE_DOWN: return 0x40000051;
+				case SDL_SCANCODE_LEFT: return 0x40000050;
+				case SDL_SCANCODE_RIGHT: return 0x4000004F;
+				
+				case SDL_SCANCODE_LCTRL: return 0x400000E0;
+				case SDL_SCANCODE_RCTRL: return 0x400000E4;
+				case SDL_SCANCODE_LSHIFT: return 0x400000E1;
+				case SDL_SCANCODE_RSHIFT: return 0x400000E5;
+				case SDL_SCANCODE_LALT: return 0x400000E2;
+				case SDL_SCANCODE_RALT: return 0x400000E6;
+				case SDL_SCANCODE_LGUI: return 0x400000E3;
+				case SDL_SCANCODE_RGUI: return 0x400000E7;
+				case SDL_SCANCODE_CAPSLOCK: return 0x40000039;
+				case SDL_SCANCODE_NUMLOCKCLEAR: return 0x40000053;
+				case SDL_SCANCODE_SCROLLLOCK: return 0x40000047;
+				
+				case SDL_SCANCODE_F1: return 0x4000003A;
+				case SDL_SCANCODE_F2: return 0x4000003B;
+				case SDL_SCANCODE_F3: return 0x4000003C;
+				case SDL_SCANCODE_F4: return 0x4000003D;
+				case SDL_SCANCODE_F5: return 0x4000003E;
+				case SDL_SCANCODE_F6: return 0x4000003F;
+				case SDL_SCANCODE_F7: return 0x40000040;
+				case SDL_SCANCODE_F8: return 0x40000041;
+				case SDL_SCANCODE_F9: return 0x40000042;
+				case SDL_SCANCODE_F10: return 0x40000043;
+				case SDL_SCANCODE_F11: return 0x40000044;
+				case SDL_SCANCODE_F12: return 0x40000045;
+				
+				case SDL_SCANCODE_MINUS: return 0x2D;
+				case SDL_SCANCODE_EQUALS: return 0x3D;
+				case SDL_SCANCODE_LEFTBRACKET: return 0x5B;
+				case SDL_SCANCODE_RIGHTBRACKET: return 0x5D;
+				case SDL_SCANCODE_BACKSLASH: return 0x5C;
+				case SDL_SCANCODE_SEMICOLON: return 0x3B;
+				case SDL_SCANCODE_APOSTROPHE: return 0x27;
+				case SDL_SCANCODE_GRAVE: return 0x60;
+				case SDL_SCANCODE_COMMA: return 0x2C;
+				case SDL_SCANCODE_PERIOD: return 0x2E;
+				case SDL_SCANCODE_SLASH: return 0x2F;
+				
 				default: return 0x00;
 			}
 		}
 		
+		static void initLastState() {
+			lastState.fill(0);
+		}
+		
 		static void workerFunction() {
-			#ifdef HX_LINUX
-			struct sched_param param;
-			param.sched_priority = sched_get_priority_max(SCHED_FIFO);
-			pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
-			#endif
+			std::call_once(initFlag, initLastState);
 			
 			while (running) {
-				const Uint8* keyboardState = SDL_GetKeyboardState(nullptr);
+				// Check if our window has focus
+				SDL_Window* focusedWindow = SDL_GetKeyboardFocus();
+				bool hasFocus = (focusedWindow != nullptr);
 				
-				for (int i = 0; i < SDL_NUM_SCANCODES; i++) {
-					Uint8 currentState = keyboardState[i];
-					if (currentState != lastState[i]) {
-						double scanCode = (double)linuxToLimeKeycode((SDL_Scancode)i);
-						double state = (double)(currentState ? 1 : 0);
-						double timestamp = getCurrentTimestamp();
-						printf("Keycode: %.3f, state: %.0f, timestamp: %.9f\n", scanCode, state, timestamp);
-						addEvent(scanCode, state, timestamp);
-						lastState[i] = currentState;
+				if (hasFocus) {
+					const Uint8* keyboardState = SDL_GetKeyboardState(nullptr);
+					
+					// Check all possible key scancodes
+					for (int i = 0; i < SDL_NUM_SCANCODES; i++) {
+						Uint8 currentState = keyboardState[i];
+						if (currentState != lastState[i]) {
+							double scanCode = (double)linuxToLimeKeycode((SDL_Scancode)i);
+							double state = (double)(currentState ? 1 : 0);
+							double timestamp = getCurrentTimestamp();
+							addEvent(scanCode, state, timestamp);
+							lastState[i] = currentState;
+						}
 					}
+					
+					// Poll aggressively when focused (1ms sleep)
+					coolSleepUntil10ns(getTime10ns() + (TICKS_PER_SECOND_10NS * 0.001));
+				} else {
+					// When not focused, conserve CPU
+					coolSleepUntil10ns(getTime10ns() + (TICKS_PER_SECOND_10NS * 0.01));
 				}
-				
-				// Reduced sleep for better responsiveness
-				std::this_thread::sleep_for(std::chrono::microseconds(500));
+			}
+		}
+	#else
+		// Empty implementation for other platforms
+		static void workerFunction() {
+			while (running) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 		}
 	#endif
-		
-		// Public API - start
+
 		static void start() {
 			if (running) return;
 			running = true;
-			writeIndex = 0;
-			readIndex = 0;
-			eventCount = 0;
 			workerThread = std::thread(workerFunction);
 		}
 		
-		// Public API - stop
 		static void stop() {
 			if (!running) return;
 			running = false;
 			if (workerThread.joinable()) {
 				workerThread.join();
 			}
+		}
+		
+		bool hasEvent() {
+			return eventCount.load(std::memory_order_acquire) > 0;
+		}
+		
+		bool getEvent(double& scanCode, double& state, double& timestamp) {
+			// Quick check without lock first
+			if (eventCount.load(std::memory_order_acquire) == 0) return false;
+			
+			// Minimal critical section
+			{
+				std::lock_guard<std::mutex> lock(queueMutex);
+				if (eventCount.load(std::memory_order_acquire) == 0) return false;
+				
+				size_t currentRead = readIndex.load(std::memory_order_acquire);
+				scanCode = eventQueue[currentRead][0];
+				state = eventQueue[currentRead][1];
+				timestamp = eventQueue[currentRead][2];
+				readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
+				eventCount.fetch_sub(1, std::memory_order_release);
+			}
+			return true;
 		}
 	}
 

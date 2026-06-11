@@ -113,13 +113,16 @@ namespace lime {
         double seconds = (end.QuadPart - start.QuadPart) / (double)freq.QuadPart;
         cpuFrequency = (uint64_t)((endCycles - startCycles) / seconds);
         #else
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
+        struct timespec start_ts, end_ts;
+        clock_gettime(CLOCK_MONOTONIC, &start_ts);
         uint64_t startCycles = rdtsc();
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        clock_gettime(CLOCK_MONOTONIC, &ts);
+        clock_gettime(CLOCK_MONOTONIC, &end_ts);
         uint64_t endCycles = rdtsc();
-        double seconds = ts.tv_sec + ts.tv_nsec / 1e9;
+
+        double start_sec = start_ts.tv_sec + start_ts.tv_nsec / 1e9;
+        double end_sec = end_ts.tv_sec + end_ts.tv_nsec / 1e9;
+        double seconds = end_sec - start_sec; // Now correctly ~0.05
         cpuFrequency = (uint64_t)((endCycles - startCycles) / seconds);
         #endif
     }
