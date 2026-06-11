@@ -1715,7 +1715,7 @@ namespace lime
 			unsigned int count;
 			if (p_glXGetVideoSyncSGI(&count) == 0) {
 				if (count != lastSgiCounter) {
-					int64_t now = getMonotonicTime10ns();
+					int64_t now = getTime10ns();
 					unsigned int diff = count - lastSgiCounter;
 					
 					if (lastSgiCounter > 0 && diff > 0) {
