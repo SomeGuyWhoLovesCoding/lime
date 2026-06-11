@@ -435,6 +435,7 @@
 
 				<lib name="-lpthread" />
 				<lib name="-ldrm" />
+				<lib name="-lwayland-client" />
 				<lib name="-lX11" />
 				<lib name="-lrt" />
 

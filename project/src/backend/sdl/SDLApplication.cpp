@@ -67,6 +67,7 @@ using namespace std;
 #include <xf86drmMode.h>
 #include <poll.h>
 #include <x86intrin.h>
+#include <wayland-client.h> // <-- ADD THIS
 #endif
 #if HX_ANDROID
 #include <android/choreographer.h>
@@ -695,10 +696,6 @@ namespace lime
 		}
 	}
 
-#ifdef HX_LINUX
-	static bool drmInitialized = false;
-#endif
-
 	void SDLApplication::ProcessWindowEvent(SDL_Event *event)
 	{
 
@@ -745,9 +742,6 @@ namespace lime
 				windowEvent.x = event->window.data1;
 				windowEvent.y = event->window.data2;
 
-#ifdef HX_LINUX
-				drmInitialized = false;
-#endif
 				break;
 
 			case SDL_WINDOWEVENT_SIZE_CHANGED:
@@ -1533,6 +1527,206 @@ namespace lime
 
 	static int sleeptimeclocktimer = 0;
 
+	#if defined(HX_LINUX)
+
+	// --- Wayland Vsync Support ---
+	static bool waylandVsyncFired = false;
+	static int64_t waylandLastCallbackTime10ns = 0;
+	static struct wl_surface* cachedWaylandSurface = nullptr;
+	static struct wl_callback* cachedWaylandCallback = nullptr;
+
+	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
+		waylandVsyncFired = true;
+		
+		int64_t now = getTime10ns();
+		if (waylandLastCallbackTime10ns > 0) {
+			render_timestamp = now - waylandLastCallbackTime10ns;
+		} else {
+			render_timestamp = RENDER_PERIOD_10NS;
+		}
+		waylandLastCallbackTime10ns = now;
+		lastRenderTime = now; // Keep consistent with DRM logic
+		
+		wl_callback_destroy(callback); // One-shot callback, destroy it
+		
+		// Request next frame callback
+		struct wl_surface* surface = (struct wl_surface*)data;
+		cachedWaylandCallback = wl_surface_frame(surface);
+		wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, surface);
+	}
+
+	static const struct wl_callback_listener waylandFrameListener = {
+		waylandFrameCallbackHandler
+	};
+
+	void initWaylandVsync(SDL_Window* sdlWindow) {
+		SDL_SysWMinfo wmInfo;
+		SDL_VERSION(&wmInfo.version);
+		if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
+			if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
+				cachedWaylandSurface = wmInfo.info.wl.surface;
+				if (cachedWaylandSurface && !cachedWaylandCallback) {
+					cachedWaylandCallback = wl_surface_frame(cachedWaylandSurface);
+					wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
+				}
+			}
+		}
+	}
+
+	// --- DRM Vsync Support (Extracted) ---
+	static int drmFd = -1;
+	static uint32_t drmCrtcId = 0;
+	static uint64_t lastVBlankSeq = 0;
+	static int lastWindowX = -1, lastWindowY = -1;
+	static bool drmInitializedLocal = false;
+
+	void updateDrmVsync(SDL_Window* sdlWindow, int64_t now10ns, bool& shouldRender) {
+		int windowX = 0, windowY = 0;
+		SDL_GetWindowPosition(sdlWindow, &windowX, &windowY);
+
+		// Automatically re-initialize if the window moved to a different monitor
+		if (!drmInitializedLocal || windowX != lastWindowX || windowY != lastWindowY) {
+			lastWindowX = windowX;
+			lastWindowY = windowY;
+
+			if (drmFd >= 0) {
+				close(drmFd);
+				drmFd = -1;
+			}
+
+			drmDevicePtr devices[16];
+			int deviceCount = drmGetDevices(devices, 16);
+
+			if (deviceCount > 0) {
+				bool foundDevice = false;
+
+				for (int i = 0; i < deviceCount && !foundDevice; i++) {
+					drmDevicePtr dev = devices[i];
+					if (!dev->nodes[DRM_NODE_PRIMARY]) continue;
+
+					int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
+					if (fd < 0) continue;
+
+					drmModeResPtr res = drmModeGetResources(fd);
+					if (!res) {
+						close(fd);
+						continue;
+					}
+
+					for (int c = 0; c < res->count_crtcs && !foundDevice; c++) {
+						uint32_t crtcId = res->crtcs[c];
+						drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
+
+						if (!crtc) continue;
+
+						if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0) {
+							if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
+								windowY >= crtc->y && windowY < crtc->y + crtc->height) {
+								
+								drmFd = fd;
+								drmCrtcId = crtcId;
+								drmInitializedLocal = true;
+								foundDevice = true;
+
+								drmVBlank primeVbl;
+								memset(&primeVbl, 0, sizeof(primeVbl));
+								primeVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
+	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+								primeVbl.request.type = (drmVBlankSeqType)(primeVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
+	#endif
+								primeVbl.request.sequence = 1;
+								primeVbl.request.signal = 0;
+								drmWaitVBlank(fd, &primeVbl);
+							}
+						}
+						drmModeFreeCrtc(crtc);
+					}
+					drmModeFreeResources(res);
+					if (!foundDevice) close(fd);
+				}
+				drmFreeDevices(devices, deviceCount);
+			}
+		}
+
+		if (drmFd >= 0 && drmCrtcId != 0) {
+			struct pollfd pfd;
+			pfd.fd = drmFd;
+			pfd.events = POLLIN;
+			pfd.revents = 0;
+
+			int pollResult = poll(&pfd, 1, 0);
+
+			if (pollResult > 0 && (pfd.revents & POLLIN)) {
+				drmEventContext evctx;
+				memset(&evctx, 0, sizeof(evctx));
+				evctx.version = DRM_EVENT_CONTEXT_VERSION;
+
+				static uint64_t vblankSequence = 0;
+				evctx.vblank_handler = [](int fd, unsigned int sequence,
+										unsigned int tv_sec, unsigned int tv_usec,
+										void *user_data) {
+					uint64_t *seqPtr = (uint64_t *)user_data;
+					*seqPtr = sequence;
+				};
+
+				drmHandleEvent(drmFd, &evctx);
+
+				if (vblankSequence != lastVBlankSeq) {
+					shouldRender = true;
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					lastVBlankSeq = vblankSequence;
+				}
+			}
+
+			if (shouldRender) {
+				drmVBlank nextVbl;
+				memset(&nextVbl, 0, sizeof(nextVbl));
+				nextVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
+	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+				nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
+	#endif
+				nextVbl.request.sequence = 1;
+				nextVbl.request.signal = 0;
+				drmWaitVBlank(drmFd, &nextVbl);
+			}
+		}
+	}
+
+	// --- Unified Linux Vsync Wrapper ---
+	void handleLinuxVsync(SDL_Window* sdlWindow, int64_t now10ns, int64_t lag, int64_t& nextRenderTime10ns, bool& shouldRender) {
+		shouldRender = false;
+
+		// 1. Try Wayland first
+		if (!cachedWaylandSurface) {
+			initWaylandVsync(sdlWindow);
+		}
+
+		if (cachedWaylandSurface) {
+			if (waylandVsyncFired) {
+				shouldRender = true;
+				waylandVsyncFired = false;
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			}
+		} 
+		// 2. Fallback to DRM if not on Wayland (e.g., X11)
+		else {
+			updateDrmVsync(sdlWindow, now10ns, shouldRender);
+		}
+
+		// 3. Universal timer-based fallback
+		if (!shouldRender) {
+			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+			if (shouldRender) {
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns += RENDER_PERIOD_10NS;
+			}
+		}
+	}
+
+	#endif
+
 	bool SDLApplication::Update()
 	{
 		if (sleeptimeclocktimer > 100) {
@@ -1673,170 +1867,23 @@ namespace lime
 	}
 #elif defined(HX_LINUX)
 		{
-			static int drmFd = -1;
-			static uint32_t drmCrtcId = 0;
-			static uint64_t lastVBlankSeq = 0;
-			static int lastWindowX = -1, lastWindowY = -1;
-
-			// Inner scope: all window-dependent variables are declared here so that
-			// the goto to linux_fallback (which lives outside this scope) never
-			// crosses an initialization.
-			{
-				SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-				if (kbFocus)
-				{
-					uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-					SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-
-					if (focusedWindow && focusedWindow->sdlWindow)
-					{
-						int windowX = 0, windowY = 0;
-						SDL_GetWindowPosition(focusedWindow->sdlWindow, &windowX, &windowY);
-
-						if (!drmInitialized || windowX != lastWindowX || windowY != lastWindowY)
-						{
-							lastWindowX = windowX;
-							lastWindowY = windowY;
-
-							if (drmFd >= 0)
-							{
-								close(drmFd);
-								drmFd = -1;
-							}
-
-							drmDevicePtr devices[16];
-							int deviceCount = drmGetDevices(devices, 16);
-
-							if (deviceCount > 0)
-							{
-								bool foundDevice = false;
-
-								for (int i = 0; i < deviceCount && !foundDevice; i++)
-								{
-									drmDevicePtr dev = devices[i];
-									if (!dev->nodes[DRM_NODE_PRIMARY])
-										continue;
-
-									int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
-									if (fd < 0)
-										continue;
-
-									drmModeResPtr res = drmModeGetResources(fd);
-									if (!res)
-									{
-										close(fd);
-										continue;
-									}
-
-									for (int c = 0; c < res->count_crtcs && !foundDevice; c++)
-									{
-										uint32_t crtcId = res->crtcs[c];
-										drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
-
-										if (!crtc)
-											continue;
-
-										if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0)
-										{
-											if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
-												windowY >= crtc->y && windowY < crtc->y + crtc->height)
-											{
-												drmFd = fd;
-												drmCrtcId = crtcId;
-												drmInitialized = true;
-												foundDevice = true;
-
-												// Prime the event stream so the first poll() has
-												// something to receive. Must use DRM_VBLANK_EVENT
-												// so this returns immediately instead of blocking.
-												drmVBlank primeVbl;
-												memset(&primeVbl, 0, sizeof(primeVbl));
-												primeVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
-#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-												primeVbl.request.type = (drmVBlankSeqType)(primeVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
-#endif
-												primeVbl.request.sequence = 1;
-												primeVbl.request.signal = 0;
-												drmWaitVBlank(fd, &primeVbl);
-											}
-										}
-
-										drmModeFreeCrtc(crtc);
-									}
-
-									drmModeFreeResources(res);
-
-									if (!foundDevice)
-									{
-										close(fd);
-									}
-								}
-
-								drmFreeDevices(devices, deviceCount);
-							}
-						}
-
-						if (drmFd >= 0 && drmCrtcId != 0)
-						{
-							struct pollfd pfd;
-							pfd.fd = drmFd;
-							pfd.events = POLLIN;
-							pfd.revents = 0;
-
-							int pollResult = poll(&pfd, 1, 0);
-
-							if (pollResult > 0 && (pfd.revents & POLLIN))
-							{
-								drmEventContext evctx;
-								memset(&evctx, 0, sizeof(evctx));
-								evctx.version = DRM_EVENT_CONTEXT_VERSION;
-
-								static uint64_t vblankSequence = 0;
-								evctx.vblank_handler = [](int fd, unsigned int sequence,
-														unsigned int tv_sec, unsigned int tv_usec,
-														void *user_data)
-								{
-									uint64_t *seqPtr = (uint64_t *)user_data;
-									*seqPtr = sequence;
-								};
-
-								drmHandleEvent(drmFd, &evctx);
-
-								if (vblankSequence != lastVBlankSeq)
-								{
-									shouldRender = true;
-									render_timestamp = now10ns - lastRenderTime;
-									lastRenderTime = now10ns;
-									lastVBlankSeq = vblankSequence;
-								}
-							}
-
-							if (shouldRender)
-							{
-								// Re-prime for the next frame: request the next vblank event
-								// non-blockingly so poll() will fire again one frame from now.
-								drmVBlank nextVbl;
-								memset(&nextVbl, 0, sizeof(nextVbl));
-								nextVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
-#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
-								nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (drmCrtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
-#endif
-								nextVbl.request.sequence = 1;
-								nextVbl.request.signal = 0;
-								drmWaitVBlank(drmFd, &nextVbl);
-							}
-						}
-					} // end if (focusedWindow && focusedWindow->sdlWindow)
-				} // end if (kbFocus)
-			} // end inner scope — windowX, windowY, focusedWindow, focusedWindowID no longer exist here
-
-			// linux_fallback is outside the inner scope so no goto crosses an initialization.
-			linux_fallback:
-			if (!shouldRender)
-			{
+			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+			if (kbFocus) {
+				uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+				SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+				if (focusedWindow && focusedWindow->sdlWindow) {
+					handleLinuxVsync(focusedWindow->sdlWindow, now10ns, lag, nextRenderTime10ns, shouldRender);
+				} else {
+					shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+					if (shouldRender) {
+						render_timestamp = now10ns - lastRenderTime;
+						lastRenderTime = now10ns;
+						nextRenderTime10ns += RENDER_PERIOD_10NS;
+					}
+				}
+			} else {
 				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-				if (shouldRender)
-				{
+				if (shouldRender) {
 					render_timestamp = now10ns - lastRenderTime;
 					lastRenderTime = now10ns;
 					nextRenderTime10ns += RENDER_PERIOD_10NS;
