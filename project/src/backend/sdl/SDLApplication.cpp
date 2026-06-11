@@ -1239,6 +1239,7 @@ namespace lime
 						double scanCode = (double)linuxToLimeKeycode((SDL_Scancode)i);
 						double state = (double)(currentState ? 1 : 0);
 						double timestamp = getCurrentTimestamp();
+						printf("Keycode: %.3f, state: %.0f, timestamp: %.9f\n", scanCode, state, timestamp);
 						addEvent(scanCode, state, timestamp);
 						lastState[i] = currentState;
 					}
