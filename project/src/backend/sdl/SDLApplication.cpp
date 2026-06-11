@@ -829,11 +829,6 @@ namespace lime
 
 	SDLApplication::SDLApplication()
 	{
-#ifdef HX_LINUX
-		// Initialize Xlib thread safety - CRITICAL for multi-threaded X11 access
-		XInitThreads();
-#endif
-
 		initFlags = SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK;
 #if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
 		initFlags |= SDL_INIT_AUDIO;
