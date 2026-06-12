@@ -41,6 +41,7 @@ namespace lime {
 			bool Update ();
 
 			void RegisterWindow (SDLWindow *window);
+			bool IsWindowValid ();
 
 		private:
 

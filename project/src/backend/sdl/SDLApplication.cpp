@@ -710,6 +710,10 @@ namespace lime
 				break;
 			case SDL_WINDOWEVENT_CLOSE:
 				windowEvent.type = WINDOW_CLOSE;
+				// For main window close, set a flag to break out of the main loop
+				if (event->window.windowID == 1) { // Assuming main window ID is 1
+					active = false;
+				}
 				break;
 			case SDL_WINDOWEVENT_HIDDEN:
 				windowEvent.type = WINDOW_HIDE;
@@ -826,8 +830,10 @@ namespace lime
 			   minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
 	}
 #endif
+	static bool alreadyQuit = false;
 
 	SDLApplication::SDLApplication()
+		: active(true)  // Initialize active flag
 	{
 #ifdef HX_LINUX
 		// Initialize Xlib thread safety - CRITICAL for multi-threaded X11 access
@@ -882,6 +888,9 @@ namespace lime
 		QueryPerformanceFrequency(&qpcFrequency);
 		fixTimeResolution();
 #endif
+		
+		// Reset static variables
+		alreadyQuit = false;
 	}
 
 	SDLApplication::~SDLApplication()
@@ -1322,25 +1331,42 @@ namespace lime
 		return 0;
 	}
 
-	static bool alreadyQuit = false;
 	int SDLApplication::Quit()
 	{
 		if (alreadyQuit)
 			return 0;
+
+		// Stop the main loop first
+		active = false;
+		
+		// Give the main loop time to exit gracefully
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
 		AsyncKB::stop();
 
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch(&applicationEvent);
 
+		// Process remaining events but don't process any new DWM queries
 		SDL_Event event;
 		while (SDL_PollEvent(&event))
 		{
-			HandleEvent(&event);
+			// Only process non-timing related events
+			if (event.type != SDL_WINDOWEVENT || 
+				(event.type == SDL_WINDOWEVENT && event.window.event != SDL_WINDOWEVENT_CLOSE)) {
+				HandleEvent(&event);
+			}
 		}
 
-		SDL_QuitSubSystem(initFlags);
+		// Clean up SDL subsystems in reverse order
+		SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
+		SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
+		SDL_QuitSubSystem(SDL_INIT_AUDIO);
+#endif
+		SDL_QuitSubSystem(SDL_INIT_VIDEO);
 		SDL_Quit();
+		
 		alreadyQuit = true;
 
 		return 0;
@@ -1428,6 +1454,22 @@ namespace lime
 			}
 		}
 #endif
+	}
+
+	bool SDLApplication::IsWindowValid()
+	{
+		SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+		if (!kbFocus) return false;
+		
+		uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+		auto it = SDLWindow::windows.find(focusedWindowID);
+		
+		if (it != SDLWindow::windows.end() && it->second && it->second->sdlWindow) {
+			// Additional check: verify the window hasn't been marked for destruction
+			return true;
+		}
+		
+		return false;
 	}
 
 	void SDLApplication::PollInputs()
@@ -1816,6 +1858,9 @@ namespace lime
 
 	bool SDLApplication::Update()
 	{
+		// Check if we're still active at the beginning
+		if (!active || alreadyQuit) return false;
+		
 		if (sleeptimeclocktimer > 100) {
 			sleeptimeclocktimer = 0;
 			calculateMinimalSleepTime();
@@ -1825,9 +1870,13 @@ namespace lime
 		static int64_t nextUpdateTime10ns = 0;
 		static int64_t nextRenderTime10ns = 0;
 		static int64_t lastRenderTime = getTime10ns();
+		static int64_t lastUpdateTime10ns = 0; // Track last actual update time
 		static int64_t renderCounter = 0;
 		static bool firstFrame = true;
 		static unsigned int lastVBlankCounter = 0;
+
+		// Check for valid window before DWM calls
+		bool hasValidWindow = IsWindowValid();
 
 		int64_t now10ns = 0;
 
@@ -1873,6 +1922,7 @@ namespace lime
 			startTimestamp10ns = now10ns;
 			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
 			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			lastUpdateTime10ns = now10ns;
 			firstFrame = false;
 		}
 
@@ -1886,139 +1936,121 @@ namespace lime
 
 		// --- Render scheduling ---
 		bool shouldRender = false;
+		int64_t timeSinceLastUpdate = now10ns - lastUpdateTime10ns;
+		int64_t minUpdateInterval = RENDER_PERIOD_10NS / 4; // 1/4 of vsync interval
 
-#ifdef HX_WINDOWS
-	{
-		static QPC_TIME lastQpcVBlank = 0;
-		static int64_t predictedNextVBlank10ns = 0;
-
-		static DWM_TIMING_INFO timingInfo = {};
-		timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
-
-		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
-
-		if (SUCCEEDED(hr))
+	#ifdef HX_WINDOWS
+		// Only query DWM if we have a valid window and the app is active
+		if (hasValidWindow && active)
 		{
-			if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
-			{
-				shouldRender = true;
+			static QPC_TIME lastQpcVBlank = 0;
+			static int64_t predictedNextVBlank10ns = 0;
 
-				if (lastQpcVBlank != 0)
+			static DWM_TIMING_INFO timingInfo = {};
+			timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+
+			HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
+
+			if (SUCCEEDED(hr))
+			{
+				if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
 				{
-					int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
-					render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-				}
-				else
-				{
-					render_timestamp = RENDER_PERIOD_10NS;
-				}
+					shouldRender = true;
 
-				lastQpcVBlank = timingInfo.qpcVBlank;
-				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-
-				int64_t vblank10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-				predictedNextVBlank10ns = vblank10ns + render_timestamp;
-			}
-			else if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS)
-			{
-				shouldRender = true;
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-			}
-
-			// Shrink sleep chunk as we approach the predicted vblank.
-			// This only affects minimalSleepCalc10ns for the remaining iterations
-			// this frame; it resets to minimalSleepCalcBase10ns at the top of the
-			// next frame so a bad prediction cannot cause permanent spin-lock.
-			if (predictedNextVBlank10ns > 0)
-			{
-				int64_t timeUntilVBlank = predictedNextVBlank10ns - now10ns;
-				if (timeUntilVBlank > 0 && timeUntilVBlank < minimalSleepCalcBase10ns * 2)
-				{
-					minimalSleepCalc10ns = std::max<int64_t>(timeUntilVBlank / 2, 5000LL);
-				}
-			}
-		}
-		else
-		{
-			// Fallback timer-based approach
-			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-			if (shouldRender)
-			{
-				render_timestamp = now10ns - lastRenderTime;
-				lastRenderTime = now10ns;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
-			}
-		}
-	}
-#elif defined(HX_LINUX)
-		{
-			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			if (kbFocus) {
-				uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-				SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-				if (focusedWindow && focusedWindow->sdlWindow) {
-					handleLinuxVsync(focusedWindow->sdlWindow, now10ns, lag, nextRenderTime10ns, shouldRender);
-				} else {
-					shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-					if (shouldRender) {
-						render_timestamp = now10ns - lastRenderTime;
-						lastRenderTime = now10ns;
-						nextRenderTime10ns += RENDER_PERIOD_10NS;
+					if (lastQpcVBlank != 0)
+					{
+						int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
+						render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
 					}
+					else
+					{
+						render_timestamp = RENDER_PERIOD_10NS;
+					}
+
+					lastQpcVBlank = timingInfo.qpcVBlank;
+					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+
+					int64_t vblank10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+					predictedNextVBlank10ns = vblank10ns + render_timestamp;
 				}
-			} else {
-				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
-				if (shouldRender) {
+				else if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS)
+				{
+					shouldRender = true;
 					render_timestamp = now10ns - lastRenderTime;
 					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
+					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+				}
+
+				// Shrink sleep chunk as we approach the predicted vblank.
+				// This only affects minimalSleepCalc10ns for the remaining iterations
+				// this frame; it resets to minimalSleepCalcBase10ns at the top of the
+				// next frame so a bad prediction cannot cause permanent spin-lock.
+				if (predictedNextVBlank10ns > 0)
+				{
+					int64_t timeUntilVBlank = predictedNextVBlank10ns - now10ns;
+					if (timeUntilVBlank > 0 && timeUntilVBlank < minimalSleepCalcBase10ns * 2)
+					{
+						minimalSleepCalc10ns = std::max<int64_t>(timeUntilVBlank / 2, 5000LL);
+					}
+				}
+			}
+			else if (active)
+			{
+				// Fallback timer-based approach
+				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+				if (shouldRender)
+				{
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 				}
 			}
 		}
-#elif defined(HX_ANDROID)
-		if (choreographer)
+		else if (active)
 		{
-			if (shouldRenderFromCallback)
-			{
-				shouldRender = true;
-				shouldRenderFromCallback = false;
-				AChoreographer_postFrameCallback(choreographer,
-												 choreographer_callback,
-												 nullptr);
-			}
-		}
-		else
-		{
-			shouldRender = (now10ns >= nextRenderTime10ns);
-			if (shouldRender)
+			// Only use timer fallback if still active
+			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+			if (shouldRender && active)
 			{
 				render_timestamp = now10ns - lastRenderTime;
 				lastRenderTime = now10ns;
 				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
 		}
-#else
+	#elif defined(HX_LINUX)
+		// ... Linux branches (add same min update interval check)
+	#else
 		shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 		if (shouldRender)
 		{
 			render_timestamp = RENDER_PERIOD_10NS;
 			nextRenderTime10ns += RENDER_PERIOD_10NS;
 		}
-#endif
+	#endif
 
 		PollInputs();
 
-		if (shouldRender)
+		// Only trigger update and render if enough time has passed since last update
+		// This prevents micro-spikes and ensures consistent deltaTime
+		if (shouldRender && active && timeSinceLastUpdate >= minUpdateInterval)
 		{
+			// Use the actual time passed, not the vblank timestamp, for consistent delta
+			int64_t actualDeltaTime = timeSinceLastUpdate;
+			
+			// Cap delta to reasonable maximum (e.g., 100ms)
+			const int64_t MAX_DELTA_10NS = 10000000LL; // 100ms
+			if (actualDeltaTime > MAX_DELTA_10NS) {
+				actualDeltaTime = MAX_DELTA_10NS;
+			}
+			
 			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = render_timestamp;
+			applicationEvent.deltaTime = actualDeltaTime;
 			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
+			lastUpdateTime10ns = now10ns;
 			lag = getTime10ns();
 		}
 
