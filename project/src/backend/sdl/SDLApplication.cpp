@@ -948,12 +948,12 @@ namespace lime
 		}
 #endif
 
-		const int64_t SPIN_WINDOW_10NS = 20000LL; // 200µs spin window
+		const int64_t SPIN_WINDOW_10NS = 2000LL; // 20µs spin window
 
 		// Per-call overshoot estimate — starts at a conservative 0.5ms.
 		// Not static: we don't want a bad sleep from one frame (or one session startup)
 		// to permanently shrink all future sleeps into a spin loop.
-		int64_t localOvershootNs = 400000LL;
+		int64_t localOvershootNs = 50000LL;
 
 		// --- Coarse sleep pass ---
 		while (true) {
