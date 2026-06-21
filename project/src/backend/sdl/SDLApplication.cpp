@@ -1047,108 +1047,90 @@ namespace lime
     // sleeps and eventually collapse the loop into a pure spin.
     // The EMA still tracks within a single sleep call, which is all it needs to do.
 
-
 #if HX_WINDOWS
     static bool hasHighRes = false;
 #endif
 
-void coolSleepUntil10ns(int64_t wakeTime10ns)
-{
-    int64_t current_value = getTime10ns();
-    const int64_t target_value = wakeTime10ns;
-    if (current_value >= target_value)
-        return;
+    void coolSleepUntil10ns(int64_t wakeTime10ns)
+    {
+        int64_t current_value = getTime10ns();
+        const int64_t target_value = wakeTime10ns;
 
-#if HX_WINDOWS
-    static HANDLE localTimer = nullptr;
-    static bool triedHighRes = false;
-    if (!triedHighRes) {
-        localTimer = CreateWaitableTimerEx(nullptr, nullptr,
-            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
-        hasHighRes = (localTimer != nullptr);
-        triedHighRes = true;
-        if (!hasHighRes)
-            printf("High-res waitable timer unavailable, falling back to Sleep()\n");
-    }
-#endif
-
-    // Spin window now only covers jitter, not overshoot magnitude.
-    const int64_t SPIN_WINDOW_10NS = 500LL;  // 5µs
-
-    // Persistent overshoot estimate — slow EMA, bounded, outlier-rejecting.
-    // Converges across calls so we don't pay the 500µs seed penalty every call.
-    static int64_t overshootEstimateNs = 500000LL;
-
-    while (true) {
-        current_value = getTime10ns();
-        int64_t remaining_10ns = target_value - current_value;
-        if (remaining_10ns <= SPIN_WINDOW_10NS)
-            break;
-
-        // Subtract BOTH the spin window AND the estimated overshoot.
-        int64_t sleep_10ns = remaining_10ns - SPIN_WINDOW_10NS
-                           - (overshootEstimateNs / 10LL);
-        if (sleep_10ns < 0) sleep_10ns = 0;
-
-        int64_t sleep_ns      = sleep_10ns * 10LL;
-        int64_t before_sleep  = current_value;
-
-#if HX_WINDOWS
-        if (hasHighRes) {
-            LARGE_INTEGER due;
-            due.QuadPart = -(LONGLONG)(sleep_ns / 100LL);
-            if (due.QuadPart == 0) due.QuadPart = -1;
-            if (!SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)
-                || WaitForSingleObject(localTimer, INFINITE) != WAIT_OBJECT_0)
-                Sleep(0);
-        } else {
-            DWORD ms = (DWORD)(sleep_ns / 1000000LL);
-            Sleep(ms > 0 ? ms : 0);
-        }
-#else
-        struct timespec ts;
-        ts.tv_sec  = sleep_ns / 1000000000LL;
-        ts.tv_nsec = sleep_ns % 1000000000LL;
-        nanosleep(&ts, nullptr);
-#endif
-
-        int64_t now          = getTime10ns();
-        int64_t actual_ns    = (now - before_sleep) * 10LL;
-        int64_t overshoot_ns = actual_ns - sleep_ns;
-
-        // Reject outliers: a single measurement >2× current estimate
-        // is likely a scheduling glitch, not a timer characteristic.
-        int64_t absEst = overshootEstimateNs < 0 ? -overshootEstimateNs
-                                                  : overshootEstimateNs;
-        bool outlier = (overshoot_ns > 2 * absEst + 100000LL);
-
-        if (!outlier) {
-            // Slow EMA — one bad measurement moves estimate by ~8%.
-            overshootEstimateNs = (int64_t)(overshootEstimateNs * 0.92
-                                           + overshoot_ns       * 0.08);
-            if (overshootEstimateNs < 0)        overshootEstimateNs = 0;
-            if (overshootEstimateNs > 500000LL) overshootEstimateNs = 500000LL;
-        }
-
-        if (now >= target_value)
+        if (current_value >= target_value)
             return;
-    }
 
-    // Final spin — batched pauses to reduce getTime10ns() overhead.
-    while (true) {
-        int64_t now = getTime10ns();
-        if (now >= target_value) break;
-        if (target_value - now > 1000) {
-            for (int i = 0; i < 16; i++) {
-#if defined(_MSC_VER)
-                _mm_pause();
-#elif defined(__x86_64__) || defined(__i386__)
-                __builtin_ia32_pause();
-#elif defined(__aarch64__) || defined(__arm__)
-                __asm__ __volatile__("yield" ::: "memory");
+#if HX_WINDOWS
+        static HANDLE localTimer = nullptr;
+        static bool triedHighRes = false;
+
+        if (!triedHighRes) {
+            localTimer = CreateWaitableTimerEx(nullptr, nullptr,
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+            hasHighRes = (localTimer != nullptr);
+            triedHighRes = true;
+            if (!hasHighRes)
+                printf("High-res waitable timer unavailable, falling back to Sleep()\n");
+        }
 #endif
+
+        const int64_t SPIN_WINDOW_10NS = 2000LL; // 20µs spin window
+
+        // Per-call overshoot estimate — starts at a conservative 0.5ms.
+        // Not static: we don't want a bad sleep from one frame (or one session startup)
+        // to permanently shrink all future sleeps into a spin loop.
+        int64_t localOvershootNs = 500000LL;
+
+        // --- Coarse sleep pass ---
+        while (true) {
+            current_value = getTime10ns();
+            int64_t remaining_10ns = target_value - current_value;
+
+            if (remaining_10ns <= SPIN_WINDOW_10NS)
+                break;
+
+            int64_t sleep_10ns = remaining_10ns - SPIN_WINDOW_10NS;
+            int64_t sleep_ns   = sleep_10ns * 10LL;
+            int64_t before_sleep = current_value;
+
+#if HX_WINDOWS
+            if (hasHighRes) {
+                LARGE_INTEGER due;
+                due.QuadPart = -(LONGLONG)(sleep_ns / 100LL);
+                if (due.QuadPart == 0) due.QuadPart = -1;
+                if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
+                    WaitForSingleObject(localTimer, INFINITE);
+                } else {
+                    Sleep(0);
+                }
+            } else {
+                DWORD ms = (DWORD)(sleep_ns / 1000000LL);
+                if (ms > 0) Sleep(ms); else Sleep(0);
             }
-        } else {
+#else
+            struct timespec ts;
+            ts.tv_sec  = sleep_ns / 1000000000LL;
+            ts.tv_nsec = sleep_ns % 1000000000LL;
+            nanosleep(&ts, nullptr);
+#endif
+
+            int64_t now = getTime10ns();
+            int64_t actual_ns    = (now - before_sleep) * 10LL;
+            int64_t overshoot_ns = actual_ns - sleep_ns;
+
+            if (overshoot_ns > 25000LL) {
+                // EMA within this call only — tracks the trend for the remaining
+                // sleep iterations without persisting across frames.
+                localOvershootNs = (int64_t)(localOvershootNs * 0.75 + overshoot_ns * 0.25);
+                if (localOvershootNs <= 25000LL)   localOvershootNs = 25000LL;
+                if (localOvershootNs >= 2000000LL) localOvershootNs = 2000000LL;
+
+                if (now >= target_value)
+                    return;
+            }
+        }
+
+        // --- Final spin: only covers SPIN_WINDOW_10NS = 200µs ---
+        while (getTime10ns() < target_value) {
 #if defined(_MSC_VER)
             _mm_pause();
 #elif defined(__x86_64__) || defined(__i386__)
@@ -1158,7 +1140,6 @@ void coolSleepUntil10ns(int64_t wakeTime10ns)
 #endif
         }
     }
-}
 
     namespace AsyncKB {
         static constexpr size_t MAX_EVENTS = 512;
