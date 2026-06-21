@@ -1862,7 +1862,6 @@ namespace lime
 	#endif
 
     static bool schedulerUnthrottled = false;
-    static double lastUpdate = 0.0;
     static double currentUpdate = 0.0;
     static double nextUpdate = 0.0;
     static double framePeriod = 0.0;
@@ -1889,145 +1888,86 @@ namespace lime
         }
     }
 
+    // --- Static anchors for precise 10ns pacing using frame units ---
+    static int64_t startAnchor10ns = 0;
+    static int64_t nextUpdateFrame = 0;
+    static int64_t nextRenderFrame = 0;
+    static double lastUpdate = 0.0;
+    static bool firstFrame = true;
+
     bool SDLApplication::Update()
     {
         if (!active)
             return false;
 
-        // Get high-precision timestamp
         int64_t now10ns = getTime10ns();
-        double nowMs = (double)now10ns / 100000.0;
-        currentUpdate = nowMs;
 
-        // Calculate frame period from UPDATE_PERIOD_10NS (in ms)
-        if (UPDATE_PERIOD_10NS > 0) {
-            framePeriod = (double)UPDATE_PERIOD_10NS / 100000.0;
-            schedulerUnthrottled = false;
-        } else {
-            framePeriod = 0.0;
-            schedulerUnthrottled = true;
+        // Initialize absolute anchors and frame counters on the very first frame
+        if (firstFrame)
+        {
+            startAnchor10ns = now10ns;
+            nextUpdateFrame = 1;
+            nextRenderFrame = 1;
+            lastUpdate = (double)now10ns / 100000.0;
+            firstFrame = false;
         }
 
-        // Calculate sleep granularity for this display
-        calculateMinimalSleepTime();
+        // Reset chunked sleep base at the start of every 1ms iteration
+        if (minimalSleepCalcBase10ns > 0)
+            minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 
-        // --- Vsync Detection ---
-        bool vsyncFired = false;
-        bool useVsync = !uncappedFramerate && RENDER_PERIOD_10NS > 0;
+        // --- 1. Sleep in a SINGLE chunk and return to Exec() ---
+        // This is the core reason Update_Vsync never freezes on lag.
+        // By sleeping 1ms and returning, the main loop stays highly responsive.
+        int64_t targetTime = now10ns + minimalSleepCalc10ns;
+        coolSleepUntil10ns(targetTime);
 
-    #if HX_WINDOWS
-        if (useVsync) {
-            DWM_TIMING_INFO dti = {};
-            dti.cbSize = sizeof(DWM_TIMING_INFO);
-            if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &dti))) {
-                static int64_t lastRefreshCount = 0;
-                static int64_t lastRefreshTime10ns = 0;
-                
-                if (dti.cRefresh != lastRefreshCount) {
-                    lastRefreshCount = dti.cRefresh;
-                    vsyncFired = true;
-                    
-                    if (lastRefreshTime10ns > 0) {
-                        render_timestamp = now10ns - lastRefreshTime10ns;
-                    }
-                    lastRefreshTime10ns = now10ns;
-                }
-            }
-        }
-    #endif
+        now10ns = getTime10ns();
 
-    #if HX_LINUX
-        if (useVsync) {
-            SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-            if (kbFocus) {
-                uint32_t windowID = SDL_GetWindowID(kbFocus);
-                SDLWindow* focusedWindow = SDLWindow::windows[windowID];
-                if (focusedWindow && focusedWindow->sdlWindow) {
-                    bool drmShouldRender = false;
-                    updateDrmVsync(focusedWindow->sdlWindow, now10ns, drmShouldRender);
-                    vsyncFired = drmShouldRender || waylandVsyncFired;
-                    if (waylandVsyncFired) waylandVsyncFired = false;
-                    initWaylandVsync(focusedWindow->sdlWindow);
-                }
-            }
-        }
-    #endif
+        // --- 2. SubLoopTick (Fires every 1ms chunk, preventing any freeze) ---
+        subLoopTickEvent.timestamp = now10ns;
+        SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
-    #if HX_ANDROID
-        if (useVsync && shouldRenderFromCallback) {
-            vsyncFired = true;
-            shouldRenderFromCallback = false;
-        }
-    #endif
-
-        // --- Subloop Tick Logic ---
-        static int64_t lastSubLoopTime10ns = now10ns;
-        int64_t subLoopElapsed = now10ns - lastSubLoopTime10ns;
-        bool ranSubLoopTick = false;
-
-        // Process accumulated update time in fixed steps
-        while (subLoopElapsed >= UPDATE_PERIOD_10NS) {
-		    subLoopTickEvent.timestamp = now10ns;
-            SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-
-            lastSubLoopTime10ns += UPDATE_PERIOD_10NS;
-            subLoopElapsed = now10ns - lastSubLoopTime10ns;
-            ranSubLoopTick = true;
-
-            // Prevent spiral of death
-            if (subLoopElapsed > UPDATE_PERIOD_10NS * 4) {
-                lastSubLoopTime10ns = now10ns - UPDATE_PERIOD_10NS;
-                break;
-            }
-        }
-
-        // --- Poll All Inputs ---
+        // --- 3. Poll Inputs ---
         PollInputs();
 
-        // --- Main Update Frame (Legacy Compatibility) ---
-        bool frameDue = schedulerUnthrottled || IsFrameDueLocal(nowMs);
-        
-        if (frameDue || ranSubLoopTick) {
-            double delta = currentUpdate - lastUpdate;
-            if (delta < 0.0) delta = 0.0;
+        // --- 4. Convert frame units back to 10ns timestamps for separate conditions ---
+        int64_t nextUpdateTarget10ns = startAnchor10ns + (nextUpdateFrame * UPDATE_PERIOD_10NS);
+        int64_t nextRenderTarget10ns = startAnchor10ns + (nextRenderFrame * RENDER_PERIOD_10NS);
 
+        // --- 5. Update Condition ---
+        if (now10ns >= nextUpdateTarget10ns)
+        {
             applicationEvent.type = UPDATE;
-            applicationEvent.deltaTime = UPDATE_PERIOD_10NS;
-            lastUpdate = currentUpdate;
-            
-            AdvanceNextUpdateLocal();
+            applicationEvent.deltaTime = (int64_t)((now10ns / 100000.0 - lastUpdate) * 100000.0);
+            if (applicationEvent.deltaTime < 0) applicationEvent.deltaTime = 0;
+            lastUpdate = now10ns / 100000.0;
+
             ApplicationEvent::Dispatch(&applicationEvent);
-        }
 
-        // --- Render Frame ---
-        bool shouldRender = uncappedFramerate || vsyncFired;
-        
-        // Fallback timer-based render if no vsync signal
-        if (!shouldRender && !uncappedFramerate && RENDER_PERIOD_10NS > 0) {
-            static int64_t lastRenderTimeLocal = 0;
-            int64_t elapsed = now10ns - lastRenderTimeLocal;
-            int64_t targetPeriod = (render_timestamp > 0) ? render_timestamp : RENDER_PERIOD_10NS;
-            
-            if (elapsed >= targetPeriod * 0.95) {
-                shouldRender = true;
-                lastRenderTimeLocal = now10ns;
+            // Advance update frame unit
+            nextUpdateFrame++;
+
+            // If a lag spike caused us to miss multiple update frames, 
+            // skip them instantly to prevent a spiral-of-death freeze.
+            while ((startAnchor10ns + (nextUpdateFrame * UPDATE_PERIOD_10NS)) <= now10ns) {
+                nextUpdateFrame++;
             }
         }
 
-        if (shouldRender) {
+        // --- 6. Render Condition (Operates completely separate from Update) ---
+        if (RENDER_PERIOD_10NS > 0 && now10ns >= nextRenderTarget10ns)
+        {
+            renderEvent.type = RENDER;
             RenderEvent::Dispatch(&renderEvent);
-        }
 
-        // --- Sleep Until Next Frame ---
-        if (!uncappedFramerate) {
-            int64_t sleepTarget = now10ns + minimalSleepCalc10ns;
-            
-            // After rendering, sleep to next vsync estimate
-            if (shouldRender && render_timestamp > 0) {
-                sleepTarget = now10ns + (render_timestamp * 3) / 4;
+            // Advance render frame unit
+            nextRenderFrame++;
+
+            // Skip missed render frames
+            while ((startAnchor10ns + (nextRenderFrame * RENDER_PERIOD_10NS)) <= now10ns) {
+                nextRenderFrame++;
             }
-            
-            coolSleepUntil10ns(sleepTarget);
         }
 
         return active;
