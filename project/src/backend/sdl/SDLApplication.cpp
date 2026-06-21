@@ -710,10 +710,6 @@ namespace lime
 				break;
 			case SDL_WINDOWEVENT_CLOSE:
 				windowEvent.type = WINDOW_CLOSE;
-				// For main window close, set a flag to break out of the main loop
-				if (event->window.windowID == 1) { // Assuming main window ID is 1
-					active = false;
-				}
 				break;
 			case SDL_WINDOWEVENT_HIDDEN:
 				windowEvent.type = WINDOW_HIDE;
@@ -830,10 +826,8 @@ namespace lime
 			   minRes / 10000.0, maxRes / 10000.0, curRes / 10000.0);
 	}
 #endif
-	static bool alreadyQuit = false;
 
 	SDLApplication::SDLApplication()
-		: active(true)  // Initialize active flag
 	{
 #ifdef HX_LINUX
 		// Initialize Xlib thread safety - CRITICAL for multi-threaded X11 access
@@ -888,9 +882,6 @@ namespace lime
 		QueryPerformanceFrequency(&qpcFrequency);
 		fixTimeResolution();
 #endif
-		
-		// Reset static variables
-		alreadyQuit = false;
 	}
 
 	SDLApplication::~SDLApplication()
@@ -953,7 +944,7 @@ namespace lime
 		// Per-call overshoot estimate — starts at a conservative 0.5ms.
 		// Not static: we don't want a bad sleep from one frame (or one session startup)
 		// to permanently shrink all future sleeps into a spin loop.
-		int64_t localOvershootNs = 50000LL;
+		int64_t localOvershootNs = 500000LL;
 
 		// --- Coarse sleep pass ---
 		while (true) {
@@ -1331,42 +1322,25 @@ namespace lime
 		return 0;
 	}
 
+	static bool alreadyQuit = false;
 	int SDLApplication::Quit()
 	{
 		if (alreadyQuit)
 			return 0;
-
-		// Stop the main loop first
-		active = false;
-		
-		// Give the main loop time to exit gracefully
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
 		AsyncKB::stop();
 
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch(&applicationEvent);
 
-		// Process remaining events but don't process any new DWM queries
 		SDL_Event event;
 		while (SDL_PollEvent(&event))
 		{
-			// Only process non-timing related events
-			if (event.type != SDL_WINDOWEVENT || 
-				(event.type == SDL_WINDOWEVENT && event.window.event != SDL_WINDOWEVENT_CLOSE)) {
-				HandleEvent(&event);
-			}
+			HandleEvent(&event);
 		}
 
-		// Clean up SDL subsystems in reverse order
-		SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
-		SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
-#if defined(LIME_MOJOAL) || defined(LIME_OPENALSOFT)
-		SDL_QuitSubSystem(SDL_INIT_AUDIO);
-#endif
-		SDL_QuitSubSystem(SDL_INIT_VIDEO);
+		SDL_QuitSubSystem(initFlags);
 		SDL_Quit();
-		
 		alreadyQuit = true;
 
 		return 0;
@@ -1456,22 +1430,6 @@ namespace lime
 #endif
 	}
 
-	bool SDLApplication::IsWindowValid()
-	{
-		SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-		if (!kbFocus) return false;
-		
-		uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-		auto it = SDLWindow::windows.find(focusedWindowID);
-		
-		if (it != SDLWindow::windows.end() && it->second && it->second->sdlWindow) {
-			// Additional check: verify the window hasn't been marked for destruction
-			return true;
-		}
-		
-		return false;
-	}
-
 	void SDLApplication::PollInputs()
 	{
 		// Process async keyboard events first
@@ -1539,99 +1497,71 @@ namespace lime
 	static int cachedRefreshRate = 0;
 
 	static void calculateMinimalSleepTime()
-    {
-        SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-        if (!kbFocus) {
-            minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
-            return;
-        }
-        uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-        SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+	{
+		SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+		if (!kbFocus) {
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+			return;
+		}
+		uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
 
-        if (!focusedWindow || !focusedWindow->sdlWindow) {
-            minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
-            return;
-        }
+		if (!focusedWindow || !focusedWindow->sdlWindow) {
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+			return;
+		}
 
-        SDL_DisplayMode mode;
-        if (SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode) != 0) {
-            minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
-            return;
-        }
+		SDL_DisplayMode mode;
+		if (SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode) != 0) {
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+			return;
+		}
 
-        if (mode.refresh_rate == cachedRefreshRate && minimalSleepCalc10ns != 0)
-            return;
+		if (mode.refresh_rate == cachedRefreshRate && minimalSleepCalc10ns != 0)
+			return;
 
-        cachedRefreshRate = mode.refresh_rate;
+		cachedRefreshRate = mode.refresh_rate;
 
-        if (cachedRefreshRate == 0) {
-            minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
-            return;
-        }
+		if (cachedRefreshRate == 0) {
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+			return;
+		}
 
-    // Check if framerate is 0 (use vsync counter implementation)
-    if (UPDATE_PERIOD_10NS == 0) {
-        // Vsync counter implementation - use refresh rate based timing
-        // Sub-frame sleep chunks sized so N fit cleanly in one frame period.
-        if (cachedRefreshRate % 50 == 0) {
-            minimalSleepCalcBase10ns = 100000;
-        } else if (cachedRefreshRate % 60 == 0) {
-            minimalSleepCalcBase10ns = 104167;
-        } else if (cachedRefreshRate % 75 == 0) {
-            minimalSleepCalcBase10ns = 102564;
-        } else if (cachedRefreshRate % 85 == 0) {
-            minimalSleepCalcBase10ns = 106951;
-        } else if (cachedRefreshRate % 144 == 0) {
-            minimalSleepCalcBase10ns = 115741;
-        } else if (cachedRefreshRate % 165 == 0) {
-            minimalSleepCalcBase10ns = 101010;
-        } else {
-            minimalSleepCalcBase10ns = 100000;
-        }
+		// Sub-frame sleep chunks sized so N fit cleanly in one frame period.
+		// 50Hz:  100000  (20 chunks, 1.0ms each)
+		// 60Hz:  104167  (16 chunks, ~1.0417ms)
+		// 75Hz:  102564  (13 chunks, ~1.0256ms)
+		// 85Hz:  106951  (11 chunks, ~1.0695ms)
+		// 144Hz: 115741  ( 7 chunks, ~1.1574ms)
+		// 165Hz: 101010  ( 6 chunks, ~1.0101ms)
+		if (cachedRefreshRate % 50 == 0) {
+			minimalSleepCalcBase10ns = 100000;
+		} else if (cachedRefreshRate % 60 == 0) {
+			minimalSleepCalcBase10ns = 104167;
+		} else if (cachedRefreshRate % 75 == 0) {
+			minimalSleepCalcBase10ns = 102564;
+		} else if (cachedRefreshRate % 85 == 0) {
+			minimalSleepCalcBase10ns = 106951;
+		} else if (cachedRefreshRate % 144 == 0) {
+			minimalSleepCalcBase10ns = 115741;
+		} else if (cachedRefreshRate % 165 == 0) {
+			minimalSleepCalcBase10ns = 101010;
+		} else {
+			minimalSleepCalcBase10ns = 100000;
+		}
 
-        // Platform-specific adjustments for vsync implementation
-        #if HX_WINDOWS
-        if (hasHighRes) {
-            // Windows with high-res timer: divide by 2
-            minimalSleepCalcBase10ns /= 2;
-        } else {
-            // Windows without high-res timer: also divide by 2
-            minimalSleepCalcBase10ns /= 2;
-        }
-        #elif HX_LINUX || HX_MACOS
-        // Linux and macOS: divide by 2 like Windows
-        minimalSleepCalcBase10ns /= 2;
-        #else
-        // Other platforms: divide by 2 as well
-        minimalSleepCalcBase10ns /= 2;
-        #endif
-    } else {
-        // Framerate is 1 or more - use vague timer implementation
-        // Set minimalSleepCalcBase10ns to 100000 (default for Windows)
-        minimalSleepCalcBase10ns = 100000;
-        
-        // Platform-specific adjustments for vague timer
-        #if HX_WINDOWS
-        if (hasHighRes) {
-            // Windows with high-res timer: divide by 2
-            minimalSleepCalcBase10ns /= 2;
-        } else {
-            // Windows without high-res timer: also divide by 2
-            minimalSleepCalcBase10ns /= 2;
-        }
-        #elif HX_LINUX || HX_MACOS
-        // Linux and macOS: divide by 2 like Windows
-        minimalSleepCalcBase10ns /= 2;
-        #else
-        // Other platforms: divide by 2
-        minimalSleepCalcBase10ns /= 2;
-        #endif
-    }
+		#if HX_WINDOWS
+		if (hasHighRes) {
+			minimalSleepCalcBase10ns /= 2;
+		}
+		#else
+		minimalSleepCalcBase10ns /= 4;
+		#endif
 
-    minimalSleepCalc10ns = minimalSleepCalcBase10ns;
-}
+		minimalSleepCalc10ns = minimalSleepCalcBase10ns;
+	}
 
-    int sleeptimeclocktimer = 0;
+	static int sleeptimeclocktimer = 0;
 
 	#if defined(HX_LINUX)
 
@@ -1681,6 +1611,14 @@ namespace lime
 	static struct wl_surface* cachedWaylandSurface = nullptr;
 	static struct wl_callback* cachedWaylandCallback = nullptr;
 
+	// FIX 1: Forward declare the *function* instead of the const struct variable
+	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time);
+
+	// Now we can initialize the listener struct immediately
+	static const struct wl_callback_listener waylandFrameListener = {
+		waylandFrameCallbackHandler
+	};
+
 	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
 		waylandVsyncFired = true;
 		
@@ -1702,16 +1640,9 @@ namespace lime
 		}
 	}
 
-    static const struct wl_callback_listener waylandFrameListener = nullptr:
-
-
 	void initWaylandVsync(SDL_Window* sdlWindow) {
 		loadWaylandDynamically();
 		if (!p_wl_surface_frame || !p_wl_callback_add_listener) return;
-
-		waylandFrameListener = {
-			waylandFrameCallbackHandler
-		};
 
 		// FIX 2: Guard the SDL2 Wayland info access. 
 		// If the user's SDL2 was compiled without Wayland support, this safely skips.
@@ -1883,6 +1814,10 @@ namespace lime
 
 	#endif
 
+	bool isVsyncRate() {
+		return UPDATE_PERIOD_10NS == 0;
+	}
+
 	bool SDLApplication::Update()
 	{
 		if (sleeptimeclocktimer > 100) {
@@ -1955,8 +1890,6 @@ namespace lime
 
 		// --- Render scheduling ---
 		bool shouldRender = false;
-		int64_t timeSinceLastRender = now10ns - lastRenderTime;
-		int64_t vsyncThreshold = RENDER_PERIOD_10NS / 4; // 1/4 of vsync interval
 
 #ifdef HX_WINDOWS
 	{
@@ -1968,40 +1901,34 @@ namespace lime
 
 		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
 
-		if (SUCCEEDED(hr) && UPDATE_PERIOD_10NS == 0)
+		if (SUCCEEDED(hr) && isVsyncRate())
 		{
 			if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
 			{
-				// Only render if enough time has passed since last render
-				if (timeSinceLastRender >= vsyncThreshold) {
-					shouldRender = true;
+				shouldRender = true;
 
-					if (lastQpcVBlank != 0)
-					{
-						int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
-						render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-					}
-					else
-					{
-						render_timestamp = RENDER_PERIOD_10NS;
-					}
-
-					lastQpcVBlank = timingInfo.qpcVBlank;
-					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-
-					int64_t vblank10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-					predictedNextVBlank10ns = vblank10ns + render_timestamp;
+				if (lastQpcVBlank != 0)
+				{
+					int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
+					render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
 				}
+				else
+				{
+					render_timestamp = RENDER_PERIOD_10NS;
+				}
+
+				lastQpcVBlank = timingInfo.qpcVBlank;
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+
+				int64_t vblank10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+				predictedNextVBlank10ns = vblank10ns + render_timestamp;
 			}
 			else if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS)
 			{
-				// Only render if enough time has passed since last render
-				if (timeSinceLastRender >= vsyncThreshold) {
-					shouldRender = true;
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-				}
+				shouldRender = true;
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 			}
 
 			// Shrink sleep chunk as we approach the predicted vblank.
@@ -2023,72 +1950,47 @@ namespace lime
 			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 			if (shouldRender)
 			{
-				// Only render if enough time has passed since last render
-				if (timeSinceLastRender >= vsyncThreshold) {
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
-				} else {
-					shouldRender = false;
-				}
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
 		}
 	}
 #elif defined(HX_LINUX)
 		{
 			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			if (kbFocus && UPDATE_PERIOD_10NS == 0) {
+			if (kbFocus && isVsyncRate()) {
 				uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
 				SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
 				if (focusedWindow && focusedWindow->sdlWindow) {
 					handleLinuxVsync(focusedWindow->sdlWindow, now10ns, lag, nextRenderTime10ns, shouldRender);
-					// Check if we should skip rendering due to too small delta
-					if (shouldRender && timeSinceLastRender < vsyncThreshold) {
-						shouldRender = false;
-					}
 				} else {
 					shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 					if (shouldRender) {
-						// Only render if enough time has passed since last render
-						if (timeSinceLastRender >= vsyncThreshold) {
-							render_timestamp = now10ns - lastRenderTime;
-							lastRenderTime = now10ns;
-							nextRenderTime10ns += RENDER_PERIOD_10NS;
-						} else {
-							shouldRender = false;
-						}
+						render_timestamp = now10ns - lastRenderTime;
+						lastRenderTime = now10ns;
+						nextRenderTime10ns += RENDER_PERIOD_10NS;
 					}
 				}
 			} else {
 				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 				if (shouldRender) {
-					// Only render if enough time has passed since last render
-					if (timeSinceLastRender >= vsyncThreshold) {
-						render_timestamp = now10ns - lastRenderTime;
-						lastRenderTime = now10ns;
-						nextRenderTime10ns += RENDER_PERIOD_10NS;
-					} else {
-						shouldRender = false;
-					}
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns += RENDER_PERIOD_10NS;
 				}
 			}
 		}
 #elif defined(HX_ANDROID)
-		if (choreographer && UPDATE_PERIOD_10NS == 0)
+		if (choreographer && isVsyncRate())
 		{
 			if (shouldRenderFromCallback)
 			{
-				// Only render if enough time has passed since last render
-				if (timeSinceLastRender >= vsyncThreshold) {
-					shouldRender = true;
-					shouldRenderFromCallback = false;
-					AChoreographer_postFrameCallback(choreographer,
-													 choreographer_callback,
-													 nullptr);
-				} else {
-					shouldRenderFromCallback = false;
-					shouldRender = false;
-				}
+				shouldRender = true;
+				shouldRenderFromCallback = false;
+				AChoreographer_postFrameCallback(choreographer,
+												 choreographer_callback,
+												 nullptr);
 			}
 		}
 		else
@@ -2096,27 +1998,17 @@ namespace lime
 			shouldRender = (now10ns >= nextRenderTime10ns);
 			if (shouldRender)
 			{
-				// Only render if enough time has passed since last render
-				if (timeSinceLastRender >= vsyncThreshold) {
-					render_timestamp = now10ns - lastRenderTime;
-					lastRenderTime = now10ns;
-					nextRenderTime10ns += RENDER_PERIOD_10NS;
-				} else {
-					shouldRender = false;
-				}
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns += RENDER_PERIOD_10NS;
 			}
 		}
 #else
 		shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
 		if (shouldRender)
 		{
-			// Only render if enough time has passed since last render
-			if (timeSinceLastRender >= vsyncThreshold) {
-				render_timestamp = RENDER_PERIOD_10NS;
-				nextRenderTime10ns += RENDER_PERIOD_10NS;
-			} else {
-				shouldRender = false;
-			}
+			render_timestamp = RENDER_PERIOD_10NS;
+			nextRenderTime10ns += RENDER_PERIOD_10NS;
 		}
 #endif
 
@@ -2135,7 +2027,7 @@ namespace lime
 		}
 
 		return active;
-    }
+	}
 
 	Application *CreateApplication()
 	{
