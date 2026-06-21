@@ -22,3 +22,5 @@ package-lock.json
 node_modules
 !templates/**/node_modules
 .vscode/
+ndll/Windows64/old/
+ndll/Windows/old/
