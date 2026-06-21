@@ -1539,69 +1539,97 @@ namespace lime
 	static int cachedRefreshRate = 0;
 
 	static void calculateMinimalSleepTime()
-	{
-		SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-		if (!kbFocus) {
-			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
-			return;
-		}
-		uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+    {
+        SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+        if (!kbFocus) {
+            minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+            return;
+        }
+        uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+        SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
 
-		if (!focusedWindow || !focusedWindow->sdlWindow) {
-			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
-			return;
-		}
+        if (!focusedWindow || !focusedWindow->sdlWindow) {
+            minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+            return;
+        }
 
-		SDL_DisplayMode mode;
-		if (SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode) != 0) {
-			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
-			return;
-		}
+        SDL_DisplayMode mode;
+        if (SDL_GetWindowDisplayMode(focusedWindow->sdlWindow, &mode) != 0) {
+            minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+            return;
+        }
 
-		if (mode.refresh_rate == cachedRefreshRate && minimalSleepCalc10ns != 0)
-			return;
+        if (mode.refresh_rate == cachedRefreshRate && minimalSleepCalc10ns != 0)
+            return;
 
-		cachedRefreshRate = mode.refresh_rate;
+        cachedRefreshRate = mode.refresh_rate;
 
-		if (cachedRefreshRate == 0) {
-			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
-			return;
-		}
+        if (cachedRefreshRate == 0) {
+            minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+            return;
+        }
 
-		// Sub-frame sleep chunks sized so N fit cleanly in one frame period.
-		// 50Hz:  100000  (20 chunks, 1.0ms each)
-		// 60Hz:  104167  (16 chunks, ~1.0417ms)
-		// 75Hz:  102564  (13 chunks, ~1.0256ms)
-		// 85Hz:  106951  (11 chunks, ~1.0695ms)
-		// 144Hz: 115741  ( 7 chunks, ~1.1574ms)
-		// 165Hz: 101010  ( 6 chunks, ~1.0101ms)
-		if (cachedRefreshRate % 50 == 0) {
-			minimalSleepCalcBase10ns = 100000;
-		} else if (cachedRefreshRate % 60 == 0) {
-			minimalSleepCalcBase10ns = 104167;
-		} else if (cachedRefreshRate % 75 == 0) {
-			minimalSleepCalcBase10ns = 102564;
-		} else if (cachedRefreshRate % 85 == 0) {
-			minimalSleepCalcBase10ns = 106951;
-		} else if (cachedRefreshRate % 144 == 0) {
-			minimalSleepCalcBase10ns = 115741;
-		} else if (cachedRefreshRate % 165 == 0) {
-			minimalSleepCalcBase10ns = 101010;
-		} else {
-			minimalSleepCalcBase10ns = 100000;
-		}
+    // Check if framerate is 0 (use vsync counter implementation)
+    if (UPDATE_PERIOD_10NS == 0) {
+        // Vsync counter implementation - use refresh rate based timing
+        // Sub-frame sleep chunks sized so N fit cleanly in one frame period.
+        if (cachedRefreshRate % 50 == 0) {
+            minimalSleepCalcBase10ns = 100000;
+        } else if (cachedRefreshRate % 60 == 0) {
+            minimalSleepCalcBase10ns = 104167;
+        } else if (cachedRefreshRate % 75 == 0) {
+            minimalSleepCalcBase10ns = 102564;
+        } else if (cachedRefreshRate % 85 == 0) {
+            minimalSleepCalcBase10ns = 106951;
+        } else if (cachedRefreshRate % 144 == 0) {
+            minimalSleepCalcBase10ns = 115741;
+        } else if (cachedRefreshRate % 165 == 0) {
+            minimalSleepCalcBase10ns = 101010;
+        } else {
+            minimalSleepCalcBase10ns = 100000;
+        }
 
-		#if HX_WINDOWS
-		if (hasHighRes) {
-			minimalSleepCalcBase10ns /= 2;
-		}
-		#else
-		minimalSleepCalcBase10ns /= 4;
-		#endif
+        // Platform-specific adjustments for vsync implementation
+        #if HX_WINDOWS
+        if (hasHighRes) {
+            // Windows with high-res timer: divide by 2
+            minimalSleepCalcBase10ns /= 2;
+        } else {
+            // Windows without high-res timer: also divide by 2
+            minimalSleepCalcBase10ns /= 2;
+        }
+        #elif HX_LINUX || HX_MACOS
+        // Linux and macOS: divide by 2 like Windows
+        minimalSleepCalcBase10ns /= 2;
+        #else
+        // Other platforms: divide by 2 as well
+        minimalSleepCalcBase10ns /= 2;
+        #endif
+    } else {
+        // Framerate is 1 or more - use vague timer implementation
+        // Set minimalSleepCalcBase10ns to 100000 (default for Windows)
+        minimalSleepCalcBase10ns = 100000;
+        
+        // Platform-specific adjustments for vague timer
+        #if HX_WINDOWS
+        if (hasHighRes) {
+            // Windows with high-res timer: divide by 2
+            minimalSleepCalcBase10ns /= 2;
+        } else {
+            // Windows without high-res timer: also divide by 2
+            minimalSleepCalcBase10ns /= 2;
+        }
+        #elif HX_LINUX || HX_MACOS
+        // Linux and macOS: divide by 2 like Windows
+        minimalSleepCalcBase10ns /= 2;
+        #else
+        // Other platforms: divide by 2
+        minimalSleepCalcBase10ns /= 2;
+        #endif
+    }
 
-		minimalSleepCalc10ns = minimalSleepCalcBase10ns;
-	}
+    minimalSleepCalc10ns = minimalSleepCalcBase10ns;
+}
 
     int sleeptimeclocktimer = 0;
 
@@ -1940,7 +1968,7 @@ namespace lime
 
 		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
 
-		if (SUCCEEDED(hr))
+		if (SUCCEEDED(hr) && UPDATE_PERIOD_10NS == 0)
 		{
 			if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
 			{
@@ -2009,7 +2037,7 @@ namespace lime
 #elif defined(HX_LINUX)
 		{
 			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			if (kbFocus) {
+			if (kbFocus && UPDATE_PERIOD_10NS == 0) {
 				uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
 				SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
 				if (focusedWindow && focusedWindow->sdlWindow) {
@@ -2046,7 +2074,7 @@ namespace lime
 			}
 		}
 #elif defined(HX_ANDROID)
-		if (choreographer)
+		if (choreographer && UPDATE_PERIOD_10NS == 0)
 		{
 			if (shouldRenderFromCallback)
 			{
