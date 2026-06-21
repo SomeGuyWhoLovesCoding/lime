@@ -38,10 +38,13 @@ namespace lime {
 			void SetRenderFrameRate (double renderFrameRate);
 			void SetUncappedFrameRate (bool value);
 			void PollInputs ();
+			bool Update_Vsync ();
 			bool Update ();
 
 			void RegisterWindow (SDLWindow *window);
 			bool IsWindowValid ();
+
+			int64_t currentUpdate;
 
 		private:
 
