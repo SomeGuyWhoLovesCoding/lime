@@ -1929,12 +1929,13 @@ namespace lime
         // --- 3. Poll Inputs ---
         PollInputs();
 
-        // --- 4. Convert frame units back to 10ns timestamps for separate conditions ---
-        int64_t nextUpdateTarget10ns = startAnchor10ns + (nextUpdateFrame * UPDATE_PERIOD_10NS);
-        int64_t nextRenderTarget10ns = startAnchor10ns + (nextRenderFrame * RENDER_PERIOD_10NS);
+        // --- 4. Round down to frame time units (Your exact logic) ---
+        // Integer division automatically snaps 'now10ns' down to the exact grid boundary
+        int64_t to_units_update = (now10ns - startAnchor10ns) / UPDATE_PERIOD_10NS;
+        int64_t to_units_render = (now10ns - startAnchor10ns) / RENDER_PERIOD_10NS;
 
         // --- 5. Update Condition ---
-        if (now10ns >= nextUpdateTarget10ns)
+        if (to_units_update >= nextUpdateFrame)
         {
             applicationEvent.type = UPDATE;
             applicationEvent.deltaTime = (int64_t)((now10ns / 100000.0 - lastUpdate) * 100000.0);
@@ -1943,27 +1944,27 @@ namespace lime
 
             ApplicationEvent::Dispatch(&applicationEvent);
 
-            // Advance update frame unit
+            // Advance update frame unit (+ 1)
             nextUpdateFrame++;
 
             // If a lag spike caused us to miss multiple update frames, 
             // skip them instantly to prevent a spiral-of-death freeze.
-            while ((startAnchor10ns + (nextUpdateFrame * UPDATE_PERIOD_10NS)) <= now10ns) {
+            while (to_units_update >= nextUpdateFrame) {
                 nextUpdateFrame++;
             }
         }
 
         // --- 6. Render Condition (Operates completely separate from Update) ---
-        if (RENDER_PERIOD_10NS > 0 && now10ns >= nextRenderTarget10ns)
+        if (RENDER_PERIOD_10NS > 0 && to_units_render >= nextRenderFrame)
         {
             renderEvent.type = RENDER;
             RenderEvent::Dispatch(&renderEvent);
 
-            // Advance render frame unit
+            // Advance render frame unit (+ 1)
             nextRenderFrame++;
 
             // Skip missed render frames
-            while ((startAnchor10ns + (nextRenderFrame * RENDER_PERIOD_10NS)) <= now10ns) {
+            while (to_units_render >= nextRenderFrame) {
                 nextRenderFrame++;
             }
         }
