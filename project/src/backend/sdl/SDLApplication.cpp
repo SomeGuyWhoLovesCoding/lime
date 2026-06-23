@@ -1657,6 +1657,13 @@ namespace lime
 	static struct wl_surface* cachedWaylandSurface = nullptr;
 	static struct wl_callback* cachedWaylandCallback = nullptr;
 
+    // 1. FORWARD DECLARATION: Tell the compiler this function exists
+    static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time);
+
+    static const struct wl_callback_listener waylandFrameListener = {
+		waylandFrameCallbackHandler
+	};
+
 	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
 		waylandVsyncFired = true;
 		
@@ -1677,10 +1684,6 @@ namespace lime
 			p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, surface);
 		}
 	}
-
-    static const struct wl_callback_listener waylandFrameListener = {
-		waylandFrameCallbackHandler
-	};
 
 	void initWaylandVsync(SDL_Window* sdlWindow) {
 		loadWaylandDynamically();
