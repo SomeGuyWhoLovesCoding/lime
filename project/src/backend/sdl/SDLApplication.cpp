@@ -1651,60 +1651,60 @@ namespace lime
 		}
 	}
 
-	// --- Wayland Vsync Support ---
-	static bool waylandVsyncFired = false;
-	static int64_t waylandLastCallbackTime10ns = 0;
-	static struct wl_surface* cachedWaylandSurface = nullptr;
-	static struct wl_callback* cachedWaylandCallback = nullptr;
+	    // --- Wayland Vsync Support ---
+    static bool waylandVsyncFired = false;
+    static int64_t waylandLastCallbackTime10ns = 0;
+    static struct wl_surface* cachedWaylandSurface = nullptr;
+    static struct wl_callback* cachedWaylandCallback = nullptr;
 
-    // 1. FORWARD DECLARATION: Tell the compiler this function exists
-    static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time);
+    // 1. Define the struct FIRST, but leave the function pointer null
+    static struct wl_callback_listener waylandFrameListener = { nullptr };
 
-    static const struct wl_callback_listener waylandFrameListener = {
-		waylandFrameCallbackHandler
-	};
+    // 2. Define the function SECOND (it can now see the struct above it)
+    static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
+        waylandVsyncFired = true;
+        
+        int64_t now = getTime10ns();
+        if (waylandLastCallbackTime10ns > 0) {
+            render_timestamp = now - waylandLastCallbackTime10ns;
+        } else {
+            render_timestamp = RENDER_PERIOD_10NS;
+        }
+        waylandLastCallbackTime10ns = now;
+        lastRenderTime = now; // Keep consistent with DRM logic
+        
+        if (p_wl_callback_destroy) p_wl_callback_destroy(callback); // One-shot callback, destroy it
+        
+        // We can just use the global cachedWaylandSurface here directly
+        if (p_wl_surface_frame && p_wl_callback_add_listener && cachedWaylandSurface) {
+            cachedWaylandCallback = p_wl_surface_frame(cachedWaylandSurface);
+            p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
+        }
+    }
 
-	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
-		waylandVsyncFired = true;
-		
-		int64_t now = getTime10ns();
-		if (waylandLastCallbackTime10ns > 0) {
-			render_timestamp = now - waylandLastCallbackTime10ns;
-		} else {
-			render_timestamp = RENDER_PERIOD_10NS;
-		}
-		waylandLastCallbackTime10ns = now;
-		lastRenderTime = now; // Keep consistent with DRM logic
-		
-		if (p_wl_callback_destroy) p_wl_callback_destroy(callback); // One-shot callback, destroy it
-		
-		struct wl_surface* surface = (struct wl_surface*)data;
-		if (p_wl_surface_frame && p_wl_callback_add_listener) {
-			cachedWaylandCallback = p_wl_surface_frame(surface);
-			p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, surface);
-		}
-	}
+    void initWaylandVsync(SDL_Window* sdlWindow) {
+        loadWaylandDynamically();
+        if (!p_wl_surface_frame || !p_wl_callback_add_listener) return;
 
-	void initWaylandVsync(SDL_Window* sdlWindow) {
-		loadWaylandDynamically();
-		if (!p_wl_surface_frame || !p_wl_callback_add_listener) return;
+        // 3. Wire them together HERE at runtime (no forward declarations needed!)
+        waylandFrameListener.done = waylandFrameCallbackHandler;
 
-		// FIX 2: Guard the SDL2 Wayland info access. 
-		// If the user's SDL2 was compiled without Wayland support, this safely skips.
-	#if defined(SDL_VIDEO_DRIVER_WAYLAND)
-		SDL_SysWMinfo wmInfo;
-		SDL_VERSION(&wmInfo.version);
-		if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
-			if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
-				cachedWaylandSurface = wmInfo.info.wl.surface;
-				if (cachedWaylandSurface && !cachedWaylandCallback) {
-					cachedWaylandCallback = p_wl_surface_frame(cachedWaylandSurface);
-					p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
-				}
-			}
-		}
-	#endif
-	}
+        // FIX 2: Guard the SDL2 Wayland info access. 
+        // If the user's SDL2 was compiled without Wayland support, this safely skips.
+    #if defined(SDL_VIDEO_DRIVER_WAYLAND)
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
+            if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
+                cachedWaylandSurface = wmInfo.info.wl.surface;
+                if (cachedWaylandSurface && !cachedWaylandCallback) {
+                    cachedWaylandCallback = p_wl_surface_frame(cachedWaylandSurface);
+                    p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
+                }
+            }
+        }
+    #endif
+    }
 
 	// --- DRM Vsync Support (Extracted) ---
 	static int drmFd = -1;
