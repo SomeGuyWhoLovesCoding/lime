@@ -1656,9 +1656,6 @@ namespace lime
 	static int64_t waylandLastCallbackTime10ns = 0;
 	static struct wl_surface* cachedWaylandSurface = nullptr;
 	static struct wl_callback* cachedWaylandCallback = nullptr;
-    static const struct wl_callback_listener waylandFrameListener = {
-		waylandFrameCallbackHandler
-	};
 
 	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
 		waylandVsyncFired = true;
@@ -1681,6 +1678,9 @@ namespace lime
 		}
 	}
 
+    static const struct wl_callback_listener waylandFrameListener = {
+		waylandFrameCallbackHandler
+	};
 
 	void initWaylandVsync(SDL_Window* sdlWindow) {
 		loadWaylandDynamically();
