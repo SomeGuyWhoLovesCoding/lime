@@ -1656,6 +1656,7 @@ namespace lime
 	static int64_t waylandLastCallbackTime10ns = 0;
 	static struct wl_surface* cachedWaylandSurface = nullptr;
 	static struct wl_callback* cachedWaylandCallback = nullptr;
+    static const struct wl_callback_listener waylandFrameListener = nullptr;
 
 	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
 		waylandVsyncFired = true;
@@ -1677,8 +1678,6 @@ namespace lime
 			p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, surface);
 		}
 	}
-
-    static const struct wl_callback_listener waylandFrameListener = nullptr:
 
 
 	void initWaylandVsync(SDL_Window* sdlWindow) {
@@ -1914,10 +1913,29 @@ namespace lime
         if (minimalSleepCalcBase10ns > 0)
             minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 
+        // --- PREDICT TARGETS (Using your exact grid math to avoid truncation) ---
+        // We multiply by the full second first so it stays perfectly synced with the division logic below
+        int64_t nextUpdateTarget10ns = startAnchor10ns + ((nextUpdateFrame * TICKS_PER_SECOND_10NS) / 120LL);
+        int64_t nextRenderTarget10ns = startAnchor10ns + ((nextRenderFrame * TICKS_PER_SECOND_10NS) / 60LL);
+
+        // Find the soonest upcoming boundary
+        int64_t nextBoundary10ns = nextUpdateTarget10ns;
+        if (RENDER_PERIOD_10NS > 0 && nextRenderTarget10ns < nextBoundary10ns) {
+            nextBoundary10ns = nextRenderTarget10ns;
+        }
+
         // --- 1. Sleep in a SINGLE chunk and return to Exec() ---
         // This is the core reason Update_Vsync never freezes on lag.
         // By sleeping 1ms and returning, the main loop stays highly responsive.
         int64_t targetTime = now10ns + minimalSleepCalc10ns;
+        
+        // JITTER FIX: If our standard 1ms chunk is going to overshoot the upcoming 
+        // frame boundary, shrink this specific chunk to hit the boundary exactly.
+        // (If we are lagging, the boundary is in the past, so this safely ignores it)
+        if (nextBoundary10ns > now10ns && targetTime > nextBoundary10ns) {
+            targetTime = nextBoundary10ns;
+        }
+        
         coolSleepUntil10ns(targetTime);
 
         now10ns = getTime10ns();
@@ -1929,8 +1947,7 @@ namespace lime
         // --- 3. Poll Inputs ---
         PollInputs();
 
-        // --- 4. Round down to frame time units (Your exact logic) ---
-        // Integer division automatically snaps 'now10ns' down to the exact grid boundary
+        // --- 4. Round down to frame time units (Your phase-lock logic) ---
         int64_t to_units_update = (now10ns - startAnchor10ns) / UPDATE_PERIOD_10NS;
         int64_t to_units_render = (now10ns - startAnchor10ns) / RENDER_PERIOD_10NS;
 
@@ -1944,7 +1961,7 @@ namespace lime
 
             ApplicationEvent::Dispatch(&applicationEvent);
 
-            // Advance update frame unit (+ 1)
+            // Advance update frame unit
             nextUpdateFrame++;
 
             // If a lag spike caused us to miss multiple update frames, 
@@ -1960,7 +1977,7 @@ namespace lime
             renderEvent.type = RENDER;
             RenderEvent::Dispatch(&renderEvent);
 
-            // Advance render frame unit (+ 1)
+            // Advance render frame unit
             nextRenderFrame++;
 
             // Skip missed render frames
