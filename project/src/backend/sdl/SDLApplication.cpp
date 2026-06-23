@@ -1656,7 +1656,9 @@ namespace lime
 	static int64_t waylandLastCallbackTime10ns = 0;
 	static struct wl_surface* cachedWaylandSurface = nullptr;
 	static struct wl_callback* cachedWaylandCallback = nullptr;
-    static const struct wl_callback_listener waylandFrameListener = nullptr;
+    static const struct wl_callback_listener waylandFrameListener = {
+		waylandFrameCallbackHandler
+	};
 
 	static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
 		waylandVsyncFired = true;
@@ -1683,10 +1685,6 @@ namespace lime
 	void initWaylandVsync(SDL_Window* sdlWindow) {
 		loadWaylandDynamically();
 		if (!p_wl_surface_frame || !p_wl_callback_add_listener) return;
-
-		waylandFrameListener = {
-			waylandFrameCallbackHandler
-		};
 
 		// FIX 2: Guard the SDL2 Wayland info access. 
 		// If the user's SDL2 was compiled without Wayland support, this safely skips.
