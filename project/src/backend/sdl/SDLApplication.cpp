@@ -1383,8 +1383,6 @@ namespace lime
 		if (hasHighRes) {
 			minimalSleepCalcBase10ns /= 2;
 		}
-		#else
-		minimalSleepCalcBase10ns /= 4;
 		#endif
 
 		minimalSleepCalc10ns = minimalSleepCalcBase10ns;
