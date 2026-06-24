@@ -39,6 +39,7 @@ namespace lime {
 			void SetUncappedFrameRate (bool value);
 			void PollInputs ();
 			bool RunVsyncCounter (int64_t now10ns);
+			bool Update_Vsync ();
 			bool Update ();
 
 			void RegisterWindow (SDLWindow *window);
