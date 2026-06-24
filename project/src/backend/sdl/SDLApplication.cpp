@@ -1517,9 +1517,6 @@ namespace lime
                 active = true;
                 lag = getTime10ns();
 
-#if HX_WINDOWS
-                SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-#endif
                 AsyncKB::start();
 
 #ifdef HX_ANDROID
@@ -1890,13 +1887,13 @@ namespace lime
     {
 #ifdef HX_WINDOWS
         {
-                // Only query DWM within ±2 ms of the predicted VBlank.
+                // Only query DWM within ±3 ms of the predicted VBlank.
                 // At 120 fps on a 60 Hz monitor this skips ~58 of every 60
                 // calls, avoiding DWM composition cadence interference.
                 if (predictedNextVBlank10ns > 0)
                 {
                         int64_t dt = predictedNextVBlank10ns - now10ns;
-                        if (dt < -200000 || dt > 200000)
+                        if (dt < -300000 || dt > 300000)
                                 return false;
                 }
 
