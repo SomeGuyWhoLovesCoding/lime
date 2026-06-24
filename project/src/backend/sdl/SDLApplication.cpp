@@ -1886,261 +1886,73 @@ namespace lime
         }
     }
 
-static int64_t updateAnchor10ns = 0;
-    static int64_t renderAnchor10ns = 0;
+    // --- Static anchors for precise 10ns pacing using frame units ---
+    static int64_t startAnchor10ns = 0;
     static int64_t nextUpdateFrame = 0;
     static int64_t nextRenderFrame = 0;
     static double lastUpdate = 0.0;
-    static bool updateFirstFrame = true;
-
-    // --- VSync hybrid state ---
-    static QPC_TIME lastQpcVBlank = 0;
-    static int64_t predictedNextVBlank10ns = 0;
-    static int64_t measuredVBlankPeriod10ns = 0;
-    static int64_t lastRenderTime10ns = 0;
-    // 1/N of drift applied per VBlank.  1/16 ≈ 6 % — at 60 Hz the
-    // phase-lock converges 90 % in ~35 frames (~0.6 s) with no visible jump.
-    static const int64_t VSYNC_CORRECTION_DIVISOR = 16;
-    // If no VBlank arrives for this long, fall back to phase-lock render.
-    static const int64_t VSYNC_FALLBACK_10NS = 20000000; // 200 ms
-
-    /**
-     * RunVsyncCounter — Called every frame.  On Windows it reads DWM's
-     * VBlank counter (an integer compare, no kernel transition) and:
-     *   • returns true when a new VBlank just fired
-     *   • EMA-smooths the measured monitor period for prediction
-     *   • proportionally nudges renderAnchor10ns toward the real VBlank
-     *     so the phase-lock gradually converges to the display clock
-     *   • shrinks the sleep chunk near the predicted VBlank
-     */
-    bool SDLApplication::RunVsyncCounter(int64_t now10ns)
-    {
-#ifdef HX_WINDOWS
-        {
-                // Only query DWM within ±3 ms of the predicted VBlank.
-                // At 120 fps on a 60 Hz monitor this skips ~58 of every 60
-                // calls, avoiding DWM composition cadence interference.
-                if (predictedNextVBlank10ns > 0)
-                {
-                        int64_t dt = predictedNextVBlank10ns - now10ns;
-                        if (dt < -300000 || dt > 300000)
-                                return false;
-                }
-
-                DWM_TIMING_INFO timingInfo = {};
-                timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
-                HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
-
-                if (SUCCEEDED(hr))
-                {
-                        bool newVBlank = (timingInfo.qpcVBlank != lastQpcVBlank);
-
-                        if (newVBlank)
-                        {
-                                int64_t vblank10ns = ((int64_t)timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-
-                                if (lastQpcVBlank != 0)
-                                {
-                                        int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
-                                        int64_t period10ns = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
-
-                                        // EMA smooth (90 % old / 10 % new) for stable prediction
-                                        if (measuredVBlankPeriod10ns > 0)
-                                                measuredVBlankPeriod10ns = (measuredVBlankPeriod10ns * 9 + period10ns) / 10;
-                                        else
-                                                measuredVBlankPeriod10ns = period10ns;
-
-                                        render_timestamp = period10ns;
-                                }
-                                else
-                                {
-                                        render_timestamp = RENDER_PERIOD_10NS;
-                                        measuredVBlankPeriod10ns = RENDER_PERIOD_10NS;
-                                }
-
-                                lastQpcVBlank = timingInfo.qpcVBlank;
-                                predictedNextVBlank10ns = vblank10ns + measuredVBlankPeriod10ns;
-
-                                // --- Proportional correction (the core anti-drift mechanism) ---
-                                // Where we EXPECTED the current render frame to land:
-                                int64_t expectedRender = renderAnchor10ns
-                                        + nextRenderFrame * RENDER_PERIOD_10NS;
-                                // How far the real VBlank is from our expectation:
-                                int64_t drift = vblank10ns - expectedRender;
-                                // Nudge the anchor by 1/N so future frames converge smoothly.
-                                renderAnchor10ns += drift / VSYNC_CORRECTION_DIVISOR;
-
-                                return true;
-                        }
-
-                        // No new VBlank this iteration — shrink sleep chunk if
-                        // we're approaching the predicted next one.
-                        if (predictedNextVBlank10ns > 0)
-                        {
-                                int64_t timeUntilVBlank = predictedNextVBlank10ns - now10ns;
-                                if (timeUntilVBlank > 0 && timeUntilVBlank < minimalSleepCalcBase10ns * 2)
-                                        minimalSleepCalc10ns = std::max<int64_t>(timeUntilVBlank / 2, 5000LL);
-                        }
-                }
-        }
-#elif defined(HX_LINUX)
-                {
-                        SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-                        if (kbFocus) {
-                                uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
-                                SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
-                                if (focusedWindow && focusedWindow->sdlWindow) {
-                                        bool shouldRender = false;
-                                        int64_t nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
-                                        handleLinuxVsync(focusedWindow->sdlWindow, now10ns, lag, nextRenderTime10ns, shouldRender);
-                                        int64_t timeSinceLastRender = now10ns - lastRenderTime10ns;
-                                        int64_t vsyncThreshold = RENDER_PERIOD_10NS / 4;
-                                        if (shouldRender && timeSinceLastRender >= vsyncThreshold)
-                                        {
-                                                render_timestamp = now10ns - lastRenderTime10ns;
-                                                lastRenderTime10ns = now10ns;
-                                                return true;
-                                        }
-                                }
-                        }
-                }
-#elif defined(HX_ANDROID)
-                if (choreographer && shouldRenderFromCallback)
-                {
-                        int64_t timeSinceLastRender = now10ns - lastRenderTime10ns;
-                        int64_t vsyncThreshold = RENDER_PERIOD_10NS / 4;
-                        if (timeSinceLastRender >= vsyncThreshold)
-                        {
-                                shouldRenderFromCallback = false;
-                                AChoreographer_postFrameCallback(choreographer, choreographer_callback, nullptr);
-                                lastRenderTime10ns = now10ns;
-                                return true;
-                        }
-                        shouldRenderFromCallback = false;
-                }
-#endif
-                return false;
-    }
+    static bool firstFrame = true;
 
     bool SDLApplication::Update()
     {
         if (!active)
             return false;
 
-        // --- Uncapped fast path ---
-        if (uncappedFramerate)
-        {
-                PollInputs();
-
-                int64_t now10ns = getTime10ns();
-
-                subLoopTickEvent.timestamp = now10ns;
-                SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-
-                now10ns = getTime10ns();
-
-                applicationEvent.type = UPDATE;
-                applicationEvent.deltaTime = now10ns - lag;
-                ApplicationEvent::Dispatch(&applicationEvent);
-
-                lag = now10ns;
-
-                renderEvent.type = RENDER;
-                RenderEvent::Dispatch(&renderEvent);
-
-                lag = getTime10ns();
-                return active;
-        }
-
         int64_t now10ns = getTime10ns();
 
-        // --- First-frame init ---
-        if (updateFirstFrame)
+        // Initialize absolute anchors and frame counters on the very first frame
+        if (firstFrame)
         {
-                updateAnchor10ns = now10ns;
-                renderAnchor10ns = now10ns;
-                nextUpdateFrame = 1;
-                nextRenderFrame = 1;
-                lastUpdate = (double)now10ns / 100000.0;
-                lastRenderTime10ns = now10ns;
-                updateFirstFrame = false;
-                // Prime the VBlank counter (reads first VBlank, doesn't fire render)
-                RunVsyncCounter(now10ns);
+            startAnchor10ns = now10ns;
+            nextUpdateFrame = 1;
+            nextRenderFrame = 1;
+            lastUpdate = (double)now10ns / 100000.0;
+            firstFrame = false;
         }
 
-        // Reset chunked sleep base — VBlank shrink is transient and resets here.
+        // Reset chunked sleep base at the start of every 1ms iteration
         if (minimalSleepCalcBase10ns > 0)
             minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 
-        // --- Derive actual FPS from periods (avoids hardcoded /60 /120) ---
-        int64_t updateFPS = (UPDATE_PERIOD_10NS > 0) ? (TICKS_PER_SECOND_10NS / UPDATE_PERIOD_10NS) : 120;
-        int64_t renderFPS = (RENDER_PERIOD_10NS > 0) ? (TICKS_PER_SECOND_10NS / RENDER_PERIOD_10NS) : 60;
+        // --- PREDICT TARGETS (Using your exact grid math to avoid truncation) ---
+        // We multiply by the full second first so it stays perfectly synced with the division logic below
+        int64_t nextUpdateTarget10ns = startAnchor10ns + ((nextUpdateFrame * TICKS_PER_SECOND_10NS) / 120LL);
+        int64_t nextRenderTarget10ns = startAnchor10ns + ((nextRenderFrame * TICKS_PER_SECOND_10NS) / 60LL);
 
-        // --- Compute frame targets (full-multiply to avoid truncation drift) ---
-        int64_t nextUpdateTarget10ns = updateAnchor10ns + ((nextUpdateFrame * TICKS_PER_SECOND_10NS) / updateFPS);
-        int64_t nextRenderTarget10ns = 0;
-        if (RENDER_PERIOD_10NS > 0)
-            nextRenderTarget10ns = renderAnchor10ns + ((nextRenderFrame * TICKS_PER_SECOND_10NS) / renderFPS);
-
-        // Soonest boundary: update target or render target.
-        // VBlank is NOT a spin-wait target — it's only for anchor correction.
+        // Find the soonest upcoming boundary
         int64_t nextBoundary10ns = nextUpdateTarget10ns;
-        if (RENDER_PERIOD_10NS > 0 && nextRenderTarget10ns < nextBoundary10ns)
+        if (RENDER_PERIOD_10NS > 0 && nextRenderTarget10ns < nextBoundary10ns) {
             nextBoundary10ns = nextRenderTarget10ns;
-
-        // --- PHASE 1: Coarse sleep (1 ms chunk, returns to Exec for responsiveness) ---
-        int64_t targetTime = now10ns + minimalSleepCalc10ns;
-        int64_t gap = nextBoundary10ns - now10ns;
-        if (gap > 0 && targetTime > nextBoundary10ns - 50000)
-            targetTime = nextBoundary10ns - 50000;
-        if (targetTime > now10ns)
-            coolSleepUntil10ns(targetTime);
-
-        // --- PHASE 2: Spin-wait for precise boundary ---
-        now10ns = getTime10ns();
-        gap = nextBoundary10ns - now10ns;
-        if (gap > 0 && gap <= 50000)
-        {
-#ifdef _WIN32
-                while (getTime10ns() < nextBoundary10ns)
-                        _mm_pause();
-#else
-                while (getTime10ns() < nextBoundary10ns) {}
-#endif
-                now10ns = getTime10ns();
         }
 
-        // --- SubLoopTick (every 1 ms chunk, prevents freeze) ---
+        // --- 1. Sleep in a SINGLE chunk and return to Exec() ---
+        // This is the core reason Update_Vsync never freezes on lag.
+        // By sleeping 1ms and returning, the main loop stays highly responsive.
+        int64_t targetTime = now10ns + minimalSleepCalc10ns;
+        
+        // JITTER FIX: If our standard 1ms chunk is going to overshoot the upcoming 
+        // frame boundary, shrink this specific chunk to hit the boundary exactly.
+        // (If we are lagging, the boundary is in the past, so this safely ignores it)
+        if (nextBoundary10ns > now10ns && targetTime > nextBoundary10ns) {
+            targetTime = nextBoundary10ns;
+        }
+        
+        coolSleepUntil10ns(targetTime);
+
+        now10ns = getTime10ns();
+
+        // --- 2. SubLoopTick (Fires every 1ms chunk, preventing any freeze) ---
         subLoopTickEvent.timestamp = now10ns;
         SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
-        // --- Poll Inputs (after precise timing) ---
+        // --- 3. Poll Inputs ---
         PollInputs();
 
-        // --- VSync anchor correction (every frame, nudges renderAnchor10ns) ---
-        RunVsyncCounter(now10ns);
+        // --- 4. Round down to frame time units (Your phase-lock logic) ---
+        int64_t to_units_update = (now10ns - startAnchor10ns) / UPDATE_PERIOD_10NS;
+        int64_t to_units_render = (now10ns - startAnchor10ns) / RENDER_PERIOD_10NS;
 
-        // --- Render phase-lock (fires at requested rate, timing corrected by VSync) ---
-        //     Render BEFORE Update: display shows current state, then update prepares next.
-        if (RENDER_PERIOD_10NS > 0)
-        {
-            int64_t to_units_render = (now10ns - renderAnchor10ns) / RENDER_PERIOD_10NS;
-            if (to_units_render >= nextRenderFrame)
-            {
-                renderEvent.type = RENDER;
-                RenderEvent::Dispatch(&renderEvent);
-
-                lag = getTime10ns();
-                lastRenderTime10ns = now10ns;
-
-                nextRenderFrame++;
-                while (to_units_render >= nextRenderFrame)
-                    nextRenderFrame++;
-            }
-        }
-
-        // --- Update phase-lock (independent of render / VSync) ---
-        int64_t to_units_update = (now10ns - updateAnchor10ns) / UPDATE_PERIOD_10NS;
+        // --- 5. Update Condition ---
         if (to_units_update >= nextUpdateFrame)
         {
             applicationEvent.type = UPDATE;
@@ -2150,9 +1962,29 @@ static int64_t updateAnchor10ns = 0;
 
             ApplicationEvent::Dispatch(&applicationEvent);
 
+            // Advance update frame unit
             nextUpdateFrame++;
-            while (to_units_update >= nextUpdateFrame)
+
+            // If a lag spike caused us to miss multiple update frames, 
+            // skip them instantly to prevent a spiral-of-death freeze.
+            while (to_units_update >= nextUpdateFrame) {
                 nextUpdateFrame++;
+            }
+        }
+
+        // --- 6. Render Condition (Operates completely separate from Update) ---
+        if (RENDER_PERIOD_10NS > 0 && to_units_render >= nextRenderFrame)
+        {
+            renderEvent.type = RENDER;
+            RenderEvent::Dispatch(&renderEvent);
+
+            // Advance render frame unit
+            nextRenderFrame++;
+
+            // Skip missed render frames
+            while (to_units_render >= nextRenderFrame) {
+                nextRenderFrame++;
+            }
         }
 
         return active;
