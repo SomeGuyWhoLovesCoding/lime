@@ -885,7 +885,6 @@ namespace lime
 #endif
 
 #if HX_WINDOWS
-		QueryPerformanceFrequency(&qpcFrequency);
 		fixTimeResolution();
 #endif
 		
@@ -906,7 +905,11 @@ namespace lime
 #ifdef HX_WINDOWS
 		LARGE_INTEGER now;
 		QueryPerformanceCounter(&now);
-		return (now.QuadPart * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+		if (qpcFrequency2.QuadPart == 0)
+			QueryPerformanceFrequency(&qpcFrequency);
+		int64_t wholeSeconds = now.QuadPart / qpcFrequency.QuadPart;
+		int64_t remainder   = now.QuadPart % qpcFrequency.QuadPart;
+		return wholeSeconds * TICKS_PER_SECOND_10NS + (remainder * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
 #else
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);

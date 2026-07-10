@@ -61,7 +61,11 @@ inline int64_t getTime10ns2()
 #ifdef HX_WINDOWS
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    return (now.QuadPart * 100000000LL) / qpcFrequency2.QuadPart;
+    if (qpcFrequency2.QuadPart == 0)
+        QueryPerformanceFrequency(&qpcFrequency2);
+    int64_t wholeSec = now.QuadPart / qpcFrequency2.QuadPart;
+    int64_t rem      = now.QuadPart % qpcFrequency2.QuadPart;
+    return wholeSec * 100000000LL + (rem * 100000000LL) / qpcFrequency2.QuadPart;
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -91,11 +95,10 @@ inline int64_t GetMonitorPeriod10ns() {
     ti.cbSize = sizeof(ti);
     if (FAILED(DwmGetCompositionTimingInfo(nullptr, &ti)))
         return 0;
-    static LARGE_INTEGER freq = []{
-        LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f;
-    }();
     if (ti.qpcRefreshPeriod == 0) return 0;
-    return (int64_t)((ti.qpcRefreshPeriod * 100000000LL) / freq.QuadPart);
+    if (qpcFrequency2.QuadPart == 0)
+        QueryPerformanceFrequency(&qpcFrequency2);
+    return (int64_t)((ti.qpcRefreshPeriod * 100000000LL) / qpcFrequency2.QuadPart);
 }
 
 inline int64_t GetCurrentVblank10ns() {
