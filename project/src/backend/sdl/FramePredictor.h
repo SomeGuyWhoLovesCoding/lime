@@ -1,35 +1,26 @@
 // ============================================================================
-// FramePredictor.h — frame rate predictor with background thread and
-// atomic isTime flag for the main loop.
+// FramePredictor.h — synchronous frame rate predictor.
 //
-// DESIGN (simplified — no swap, no glFinish, no DWM/DRM/Choreographer):
+// DESIGN (synchronous — no background thread, no atomics):
 //
-// 1. INIT — caller passes a frameRate (Hz). The predictor captures
-//    getTime10ns2() as the anchor and computes framePeriod10ns from
-//    the rate. No calibration swaps, no vblank polling.
+// 1. INIT — caller passes a frameRate (Hz). The predictor blocks until the
+//    next real vblank and uses that timestamp as the anchor. No calibration
+//    swaps, no glFinish.
 //
-// 2. PREDICTION — a background thread walks forward by framePeriod10ns
-//    each frame, sleeping until just before the next predicted frame
-//    boundary, then spinning the last ~50µs for precision. When the
-//    boundary arrives:
+// 2. PREDICTION — the main loop calls PredictorRun() each frame. It sleeps
+//    until just before the next predicted frame boundary, spins the last
+//    ~50µs for precision, then returns the exact frame time:
 //      - Computes exact frameTime = thisFrame - lastFrame
-//      - Sets isTime = true
-//      - Waits for the main loop to consume (Consume clears the flag)
+//      - Advances frame counter
+//      - Returns frameTime (10ns units)
 //
-// 3. MAIN LOOP — spins on isTime(). When true:
-//      int64_t ft = predictor.Consume();
-//      dispatch UPDATE with ft
-//      dispatch RENDER with ft
+// 3. RESYNC — call RequestResync() from the main loop periodically. The
+//    next PredictorRun() call re-queries the platform's vblank source and
+//    corrects the anchor if crystal drift > ~500µs. Only fires when the
+//    predictor's rate matches the monitor's rate.
 //
-// 4. RESYNC — periodically (every ~5s) the main loop calls RequestResync().
-//    The predictor thread re-queries the platform's vblank source (DWM on
-//    Windows, DRM on Linux, AChoreographer on Android) and corrects the
-//    anchor if crystal drift has accumulated beyond ~500µs. Only fires when
-//    the predictor's rate matches the monitor's rate.
-//
-// 5. SETFRAMERATE — call SetFrameRate() to reset the predictor with a new
-//    frame period. Useful when the game's target frame rate changes at
-//    runtime. The anchor is re-captured to now.
+// 4. SETFRAMERATE — call SetFrameRate() to reset with a new frame rate.
+//    Re-anchors to the next vblank.
 //
 // All times are in 10ns units (matching getTime10ns2()).
 // ============================================================================
@@ -170,6 +161,7 @@ typedef int (*wl_callback_add_listener_t)(struct wl_callback*, const struct wl_c
 typedef void (*wl_callback_destroy_t)(struct wl_callback*);
 typedef int (*wl_display_dispatch_t)(void* display);
 typedef int (*wl_display_flush_t)(void* display);
+typedef int (*wl_display_get_fd_t)(void* display);
 
 // --- Wayland state ---
 struct WaylandState {
@@ -182,6 +174,7 @@ struct WaylandState {
     wl_callback_destroy_t p_destroy = nullptr;
     wl_display_dispatch_t p_dispatch = nullptr;
     wl_display_flush_t p_flush = nullptr;
+    wl_display_get_fd_t p_get_fd = nullptr;
     std::mutex mtx;
     int64_t lastFrameTime10ns = 0;
     bool fired = false;
@@ -221,8 +214,9 @@ inline bool InitWayland() {
     s.p_destroy      = (wl_callback_destroy_t)dlsym(s.lib_handle, "wl_callback_destroy");
     s.p_dispatch     = (wl_display_dispatch_t)dlsym(s.lib_handle, "wl_display_dispatch");
     s.p_flush        = (wl_display_flush_t)dlsym(s.lib_handle, "wl_display_flush");
+    s.p_get_fd       = (wl_display_get_fd_t)dlsym(s.lib_handle, "wl_display_get_fd");
 
-    if (!s.p_frame || !s.p_add_listener || !s.p_destroy || !s.p_dispatch || !s.p_flush) {
+    if (!s.p_frame || !s.p_add_listener || !s.p_destroy || !s.p_dispatch || !s.p_flush || !s.p_get_fd) {
         dlclose(s.lib_handle);
         s.lib_handle = nullptr;
         return false;
@@ -249,8 +243,9 @@ inline bool IsWaylandAvailable() {
     return GetWaylandState().available;
 }
 
-// Blocks until the next Wayland frame callback fires.
+// Blocks until the next Wayland frame callback fires, with a 200ms timeout.
 // MUST be called from the main thread (Wayland display is not thread-safe).
+// Returns 0 on timeout/failure (caller falls back to DRM or getTime10ns2).
 inline int64_t WaitWaylandFrame10ns() {
     WaylandState& s = GetWaylandState();
     if (!s.available) return 0;
@@ -266,13 +261,38 @@ inline int64_t WaitWaylandFrame10ns() {
     s.p_add_listener(cb, &s.listener, nullptr);
     s.p_flush(s.display);
 
-    // Dispatch events until the callback fires.
-    // wl_display_dispatch blocks until at least one event is processed.
+    // --- Wait for the callback with a 200ms timeout ---
+    // Use poll() on the display fd instead of blocking wl_display_dispatch.
+    // Without this timeout, wl_display_dispatch blocks FOREVER if the
+    // surface isn't mapped yet or the compositor hasn't sent a frame event.
+    int fd = s.p_get_fd(s.display);
+    int64_t deadline = getTime10ns2() + 20000000;  // 200ms in 10ns units
+
     while (!s.fired) {
+        int64_t now = getTime10ns2();
+        if (now > deadline) break;  // timed out
+
+        int remaining_ms = (int)((deadline - now) / 100000);  // 10ns -> ms
+        if (remaining_ms <= 0) remaining_ms = 1;
+
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+
+        int pr = poll(&pfd, 1, remaining_ms);
+        if (pr < 0) break;   // error
+        if (pr == 0) break;  // timed out
+
+        // Data available — dispatch events (non-blocking since we know
+        // data is ready, but wl_display_dispatch may still block if
+        // the event isn't ours. Use wl_display_dispatch_pending first
+        // to process already-queued events, then dispatch for new ones.)
         if (s.p_dispatch(s.display) < 0) break;
     }
 
     std::lock_guard<std::mutex> lk(s.mtx);
+    if (!s.fired) return 0;  // timed out
     return s.lastFrameTime10ns;
 }
 
@@ -582,7 +602,6 @@ inline int64_t WaitForNextVblank10ns() { return 0; }
 #endif
 
 } // namespace VblankSource
-
 class FramePredictor {
 public:
     struct InitResult {
@@ -596,12 +615,12 @@ public:
     // ---------------------------------------------------------------------
     // Init with a frame rate (Hz). BLOCKS until the next real vblank and
     // uses that timestamp as the anchor. This ensures the predictor's grid
-    // is phase-locked to the monitor's vblank — critical when running at
+    // is phase-locked to the monitor's vblank -- critical when running at
     // a multiple of the monitor rate (e.g., 120Hz update on 60Hz monitor:
     // every 2nd frame lands exactly on vblank).
     //
-    // Call this on the main thread. Then call Start() to launch the
-    // predictor thread.
+    // Call this on the main thread. Then call Configure() -- no Start()
+    // needed (synchronous design).
     // ---------------------------------------------------------------------
     static InitResult Init(double frameRate) {
         InitResult r;
@@ -620,11 +639,6 @@ public:
         r.framePeriod10ns = (int64_t)(100000000.0 / frameRate);
 
         // --- Anchor to a real vblank ---
-        // Blocks until the next vblank on all platforms:
-        //   Windows : polls DWM qpcVBlank until it advances (~17ms max @ 60Hz)
-        //   Linux   : drmWaitVBlank (blocks in kernel)
-        //   Android : AChoreographer + condition variable
-        // If the vblank source is unavailable, falls back to getTime10ns2().
         int64_t vblankAnchor = VblankSource::WaitForNextVblank10ns();
         if (vblankAnchor > 0) {
             r.anchor10ns = vblankAnchor;
@@ -636,140 +650,43 @@ public:
         return r;
     }
 
-    // Start the predictor background thread. Returns false if already running.
-    bool Start() {
-        bool expected = false;
-        if (!running_.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-            return false;
-
-        frameCounter_    = 0;
-        lastVblank10ns_  = anchor10ns_;
-        nextVblank10ns_.store(anchor10ns_ + framePeriod10ns_, std::memory_order_release);
-
-        thread_ = std::thread([this]{ PredictorLoop(); });
-        return true;
-    }
-
-    // Stop the predictor background thread. Joins.
-    void Stop() {
-        running_.store(false, std::memory_order_release);
-        if (thread_.joinable())
-            thread_.join();
-    }
-
-    // ---------------------------------------------------------------------
-    // Reset the predictor with a new frame rate. Stops the thread if
-    // running, RE-ANCHORS to the next vblank, recomputes the period,
-    // restarts.
-    //
-    // Safe to call from the main loop at any time. The next isTime() will
-    // fire one frame period after the next vblank.
-    // ---------------------------------------------------------------------
-    void SetFrameRate(double frameRate) {
-        if (frameRate < 1.0 || frameRate > 1000.0) return;
-
-        bool wasRunning = running_.load(std::memory_order_acquire);
-        if (wasRunning) Stop();
-
-        refreshRateHz_   = frameRate;
-        framePeriod10ns_ = (int64_t)(100000000.0 / frameRate);
-
-        // Re-anchor to a real vblank (same as Init)
-        int64_t vblankAnchor = VblankSource::WaitForNextVblank10ns();
-        if (vblankAnchor > 0) {
-            anchor10ns_ = vblankAnchor;
-        } else {
-            anchor10ns_ = getTime10ns2();  // fallback
-        }
-        frameCounter_    = 0;
-        lastVblank10ns_  = anchor10ns_;
-        nextVblank10ns_.store(anchor10ns_ + framePeriod10ns_, std::memory_order_release);
-
-        if (wasRunning) Start();
-    }
-
-    // Main-loop interface. Acquire-load keeps the flag visible promptly.
-    bool isTime() const noexcept {
-        return isTime_.load(std::memory_order_acquire);
-    }
-
-    // Consume the pending frame. Returns the exact frame time in 10ns
-    // units, or 0 if no frame was pending.
-    int64_t Consume() noexcept {
-        if (!isTime_.exchange(false, std::memory_order_acq_rel)) {
-            return 0;
-        }
-        return lastFrameTime10ns_.load(std::memory_order_acquire);
-    }
-
     // Configure the predictor with values from Init(). Call after Init()
-    // returns ok=true, before Start().
+    // returns ok=true. Resets internal state for a fresh start.
     void Configure(const InitResult& ir) {
         anchor10ns_      = ir.anchor10ns;
         framePeriod10ns_ = ir.framePeriod10ns;
         refreshRateHz_   = ir.refreshRateHz;
+        frameCounter_    = 0;
+        lastVblank10ns_  = anchor10ns_;
+        framesDispatched_ = 0;
+        framesMissed_     = 0;
+        resyncsDone_      = 0;
+        resyncRequested_  = false;
+        nextVblank10ns_   = anchor10ns_ + framePeriod10ns_;
     }
 
-    // Request a DWM re-anchoring on the next predictor iteration.
-    void RequestResync() noexcept {
-        resyncRequested_.store(true, std::memory_order_release);
-    }
-
-    // Diagnostics
-    int64_t  NextVblank10ns()   const noexcept { return nextVblank10ns_.load(std::memory_order_acquire); }
-    int64_t  Anchor10ns()       const noexcept { return anchor10ns_; }
-    int64_t  FramePeriod10ns()  const noexcept { return framePeriod10ns_; }
-    double   RefreshRateHz()    const noexcept { return refreshRateHz_; }
-    uint64_t FramesDispatched() const noexcept { return framesDispatched_.load(std::memory_order_acquire); }
-    uint64_t FramesMissed()     const noexcept { return framesMissed_.load(std::memory_order_acquire); }
-    uint64_t ResyncsDone()      const noexcept { return resyncsDone_.load(std::memory_order_acquire); }
-
-private:
-    void PredictorLoop();
-    bool DoResync();
-
-    // --- Thread state ---
-    std::atomic<bool> running_{false};
-    std::thread       thread_;
-
-    // --- Communication with main loop ---
-    std::atomic<bool>      isTime_{false};
-    std::atomic<int64_t>   lastFrameTime10ns_{0};
-    std::atomic<int64_t>   nextVblank10ns_{0};
-    std::atomic<bool>      resyncRequested_{false};
-
-    // --- Counters ---
-    std::atomic<uint64_t>  framesDispatched_{0};
-    std::atomic<uint64_t>  framesMissed_{0};
-    std::atomic<uint64_t>  resyncsDone_{0};
-
-    // --- Predictor-thread-private (no sync needed) ---
-    int64_t anchor10ns_       = 0;
-    int64_t framePeriod10ns_  = 0;
-    double  refreshRateHz_    = 0;
-    int64_t frameCounter_     = 0;
-    int64_t lastVblank10ns_   = 0;
-
-    // --- Constants ---
-    static constexpr int64_t SPIN_WINDOW_10NS      = 5000;    // 50µs spin window
-    static constexpr int64_t RESYNC_THRESHOLD_10NS = 50000;  // 500µs drift tolerance
-};
-
-// ---------------------------------------------------------------------------
-// IMPLEMENTATION
-// ---------------------------------------------------------------------------
-
-inline void FramePredictor::PredictorLoop() {
-    while (running_.load(std::memory_order_acquire)) {
+    // ---------------------------------------------------------------------
+    // Synchronous predictor run. Called from the main loop each frame.
+    //
+    // Blocks until the next predicted frame boundary, then returns the
+    // exact frame time in 10ns units. Returns 0 on error.
+    //
+    // The main loop should:
+    //   1. Call PredictorRun()
+    //   2. If frameTime > 0, dispatch UPDATE + RENDER with frameTime
+    //   3. Loop back to step 1
+    // ---------------------------------------------------------------------
+    int64_t PredictorRun() {
         // --- Compute next frame boundary on the absolute timeline ---
         int64_t nextVblank = anchor10ns_ + (frameCounter_ + 1) * framePeriod10ns_;
-        nextVblank10ns_.store(nextVblank, std::memory_order_release);
+        nextVblank10ns_ = nextVblank;
 
         // --- Handle resync request ---
-        if (resyncRequested_.exchange(false, std::memory_order_acq_rel)) {
+        if (resyncRequested_) {
+            resyncRequested_ = false;
             if (DoResync()) {
                 nextVblank = anchor10ns_ + (frameCounter_ + 1) * framePeriod10ns_;
-                nextVblank10ns_.store(nextVblank, std::memory_order_release);
+                nextVblank10ns_ = nextVblank;
             }
         }
 
@@ -789,7 +706,9 @@ inline void FramePredictor::PredictorLoop() {
             due.QuadPart = -(LONGLONG)(sleep_ns / 100);
             if (due.QuadPart == 0) due.QuadPart = -1;
             if (hTimer && SetWaitableTimer(hTimer, &due, 0, nullptr, nullptr, FALSE)) {
-                WaitForSingleObject(hTimer, INFINITE);
+                // Finite timeout prevents permanent freeze if timer fails
+                DWORD timeoutMs = (DWORD)(sleep_ns / 1000000LL) + 50;
+                WaitForSingleObject(hTimer, timeoutMs);
             } else {
                 DWORD ms = (DWORD)(sleep_ns / 1000000LL);
                 if (ms > 0) Sleep(ms); else Sleep(0);
@@ -812,7 +731,6 @@ inline void FramePredictor::PredictorLoop() {
 #elif defined(__aarch64__) || defined(__arm__)
             __asm__ __volatile__("yield" ::: "memory");
 #endif
-            if (!running_.load(std::memory_order_relaxed)) return;
         }
 
         // --- Frame boundary arrived. Compute exact frame time. ---
@@ -820,36 +738,84 @@ inline void FramePredictor::PredictorLoop() {
         int64_t frameTime = actualNow - lastVblank10ns_;
         lastVblank10ns_ = actualNow;
 
-        // --- Publish to main loop ---
-        lastFrameTime10ns_.store(frameTime, std::memory_order_release);
-        isTime_.store(true, std::memory_order_release);
-
         frameCounter_++;
-        framesDispatched_.fetch_add(1, std::memory_order_acq_rel);
+        framesDispatched_++;
 
-        // --- Wait for main loop to consume ---
-        while (isTime_.load(std::memory_order_acquire) &&
-               running_.load(std::memory_order_acquire))
-        {
-            std::this_thread::yield();
-        }
-
-        // --- Miss detection ---
-        int64_t afterConsume = getTime10ns2();
+        // --- Miss detection: did we fall behind? ---
         int64_t nextPredicted = anchor10ns_ + (frameCounter_ + 1) * framePeriod10ns_;
-        if (afterConsume > nextPredicted) {
-            int64_t framesBehind = (afterConsume - nextPredicted) / framePeriod10ns_;
+        if (actualNow > nextPredicted) {
+            int64_t framesBehind = (actualNow - nextPredicted) / framePeriod10ns_;
             frameCounter_ += framesBehind;
-            framesMissed_.fetch_add((uint64_t)framesBehind, std::memory_order_acq_rel);
+            framesMissed_ += (uint64_t)framesBehind;
         }
+
+        return frameTime;
     }
-}
+
+    // ---------------------------------------------------------------------
+    // Reset the predictor with a new frame rate. RE-ANCHORS to the next
+    // vblank, recomputes the period, resets counters.
+    // ---------------------------------------------------------------------
+    void SetFrameRate(double frameRate) {
+        if (frameRate < 1.0 || frameRate > 1000.0) return;
+
+        refreshRateHz_   = frameRate;
+        framePeriod10ns_ = (int64_t)(100000000.0 / frameRate);
+
+        // Re-anchor to a real vblank (same as Init)
+        int64_t vblankAnchor = VblankSource::WaitForNextVblank10ns();
+        if (vblankAnchor > 0) {
+            anchor10ns_ = vblankAnchor;
+        } else {
+            anchor10ns_ = getTime10ns2();  // fallback
+        }
+        frameCounter_    = 0;
+        lastVblank10ns_  = anchor10ns_;
+        nextVblank10ns_  = anchor10ns_ + framePeriod10ns_;
+    }
+
+    // Request a vblank re-anchoring on the next PredictorRun() call.
+    void RequestResync() noexcept {
+        resyncRequested_ = true;
+    }
+
+    // Diagnostics
+    int64_t  NextVblank10ns()   const noexcept { return nextVblank10ns_; }
+    int64_t  Anchor10ns()       const noexcept { return anchor10ns_; }
+    int64_t  FramePeriod10ns()  const noexcept { return framePeriod10ns_; }
+    double   RefreshRateHz()    const noexcept { return refreshRateHz_; }
+    uint64_t FramesDispatched() const noexcept { return framesDispatched_; }
+    uint64_t FramesMissed()     const noexcept { return framesMissed_; }
+    uint64_t ResyncsDone()      const noexcept { return resyncsDone_; }
+
+private:
+    bool DoResync();
+
+    // --- State (all accessed from main thread only -- no atomics needed) ---
+    int64_t  anchor10ns_       = 0;
+    int64_t  framePeriod10ns_  = 0;
+    double   refreshRateHz_    = 0;
+    int64_t  frameCounter_     = 0;
+    int64_t  lastVblank10ns_   = 0;
+    int64_t  nextVblank10ns_   = 0;
+    bool     resyncRequested_  = false;
+
+    // --- Counters ---
+    uint64_t framesDispatched_ = 0;
+    uint64_t framesMissed_     = 0;
+    uint64_t resyncsDone_      = 0;
+
+    // --- Constants ---
+    static constexpr int64_t SPIN_WINDOW_10NS      = 5000;    // 50us spin window
+    static constexpr int64_t RESYNC_THRESHOLD_10NS = 50000;  // 500us drift tolerance
+};
+
+// ---------------------------------------------------------------------------
+// IMPLEMENTATION
+// ---------------------------------------------------------------------------
 
 inline bool FramePredictor::DoResync() {
     // --- Read the monitor's actual refresh period (cached after first call). ---
-    // If our predictor's framePeriod doesn't match the monitor's refresh rate
-    // (within RATE_MATCH_TOLERANCE), re-anchoring to vblank would yank us
-    // onto the WRONG grid. So we skip resync entirely when rates don't match.
     static int64_t monitorPeriod10ns = 0;
     static bool monitorPeriodMeasured = false;
     constexpr double RATE_MATCH_TOLERANCE = 0.02;  // 2%
@@ -862,12 +828,12 @@ inline bool FramePredictor::DoResync() {
             double monitorHz = 100000000.0 / (double)monitorPeriod10ns;
             double ourHz     = 100000000.0 / (double)framePeriod10ns_;
             double ratio     = ourHz / monitorHz;
-            printf("[FramePredictor] monitor ~%.2f Hz, predictor %.2f Hz, ratio %.3f — resync %s\n",
+            printf("[FramePredictor] monitor ~%.2f Hz, predictor %.2f Hz, ratio %.3f -- resync %s\n",
                    monitorHz, ourHz, ratio,
                    (ratio > 1.0 - RATE_MATCH_TOLERANCE && ratio < 1.0 + RATE_MATCH_TOLERANCE)
                        ? "ENABLED" : "DISABLED (rates don't match)");
         } else {
-            printf("[FramePredictor] could not read monitor refresh period — resync ENABLED by default\n");
+            printf("[FramePredictor] could not read monitor refresh period -- resync ENABLED by default\n");
         }
     }
 
@@ -875,20 +841,20 @@ inline bool FramePredictor::DoResync() {
     if (monitorPeriod10ns > 0) {
         double ratio = (double)framePeriod10ns_ / (double)monitorPeriod10ns;
         if (ratio < 1.0 - RATE_MATCH_TOLERANCE || ratio > 1.0 + RATE_MATCH_TOLERANCE) {
-            return false;  // different grids — leave the predictor alone
+            return false;
         }
     }
 
-    // --- Rates match (or we couldn't measure) — correct drift. ---
+    // --- Rates match (or we couldn't measure) -- correct drift. ---
     int64_t currentVblank10ns = VblankSource::GetCurrentVblank10ns();
     if (currentVblank10ns == 0)
-        return false;  // vblank source unavailable
+        return false;
 
     int64_t ourLastVblank = anchor10ns_ + frameCounter_ * framePeriod10ns_;
     int64_t drift = currentVblank10ns - ourLastVblank;
     if (std::abs(drift) > RESYNC_THRESHOLD_10NS) {
         anchor10ns_ = currentVblank10ns - frameCounter_ * framePeriod10ns_;
-        resyncsDone_.fetch_add(1, std::memory_order_acq_rel);
+        resyncsDone_++;
         return true;
     }
     return false;

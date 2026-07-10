@@ -7,7 +7,6 @@
 **/
 
 #include "FramePredictor.h"
-#include "LoopProfile.h"
 #include "SDLApplication.h"
 #include "SDLGamepad.h"
 #include "SDLJoystick.h"
@@ -64,9 +63,6 @@ using namespace std;
 #include <immintrin.h>
 #else
 #include <sched.h>
-#if HX_LINUX
-#include <x86intrin.h>
-#endif
 #ifdef __APPLE__
 #include <thread>
 #include <mach/thread_policy.h>
@@ -977,7 +973,12 @@ namespace lime
 				due.QuadPart = -(LONGLONG)(sleep_ns / 100LL);
 				if (due.QuadPart == 0) due.QuadPart = -1;
 				if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
-					WaitForSingleObject(localTimer, INFINITE);
+					// Finite timeout: sleep_ms + 50ms grace. If the timer
+					// fails to fire (system sleep/resume, driver issue),
+					// WaitForSingleObject returns WAIT_TIMEOUT instead of
+					// blocking forever.
+					DWORD timeoutMs = (DWORD)(sleep_ns / 1000000LL) + 50;
+					WaitForSingleObject(localTimer, timeoutMs);
 				} else {
 					Sleep(0);
 				}
@@ -1420,14 +1421,12 @@ namespace lime
 		// Stop FramePredictor FIRST so it doesn't dispatch into a
 		// tearing-down app.
 		if (useFramePredictor) {
-			g_predictor.Stop();
 			printf("[FramePredictor] stats: dispatched=%llu missed=%llu resyncs=%llu\n",
 				(unsigned long long)g_predictor.FramesDispatched(),
 				(unsigned long long)g_predictor.FramesMissed(),
 				(unsigned long long)g_predictor.ResyncsDone());
 			useFramePredictor = false;
 		}
-		LoopProfile::dumpToFile("F:/p99Loop.txt");
 
 		if (alreadyQuit)
 			return 0;
@@ -1586,10 +1585,6 @@ namespace lime
 			(long long)ir.framePeriod10ns, (double)ir.framePeriod10ns / 100.0);
 
 		g_predictor.Configure(ir);
-		if (!g_predictor.Start()) {
-			printf("[FramePredictor] Failed to start predictor thread\n");
-			return;
-		}
 
 		useFramePredictor = true;
 		printf("[FramePredictor] active - Update() will use predictor path\n");
@@ -1711,71 +1706,44 @@ namespace lime
 		// ================================================================
 		if (useFramePredictor)
 		{
-			// The subloop still runs every iteration: SubLoopTick + PollInputs
-			// stay responsive even between vblanks.
+			// ================================================================
+			// Synchronous FramePredictor path.
+			//
+			// PredictorRun() blocks until the next predicted frame boundary,
+			// then returns the exact frame time. No polling, no chunked sleep
+			// -- the predictor handles all timing internally.
+			// ================================================================
+
+			// --- SubLoopTick + PollInputs (keep input responsive) ---
 			int64_t subNow = getTime10ns();
 			subLoopTickEvent.timestamp = subNow;
 			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
 			PollInputs();
 
-			// --- Restore chunked sleep base for this iteration ---
-			if (minimalSleepCalcBase10ns > 0)
-				minimalSleepCalc10ns = minimalSleepCalcBase10ns;
+			// --- Block until next frame boundary ---
+			int64_t frameTime10ns = g_predictor.PredictorRun();
 
-			if (g_predictor.isTime())
+			if (frameTime10ns > 0)
 			{
-				int64_t frameTime10ns = g_predictor.Consume();
-				if (frameTime10ns > 0)
-				{
-					// --- Dispatch UPDATE with exact frame time ---
-					applicationEvent.type = UPDATE;
-					applicationEvent.deltaTime = frameTime10ns;
-					ApplicationEvent::Dispatch(&applicationEvent);
+				// --- Dispatch UPDATE with exact frame time ---
+				applicationEvent.type = UPDATE;
+				applicationEvent.deltaTime = frameTime10ns;
+				ApplicationEvent::Dispatch(&applicationEvent);
 
-					// --- Dispatch RENDER with exact frame time ---
-					renderEvent.type = RENDER;
-					RenderEvent::Dispatch(&renderEvent);
+				// --- Dispatch RENDER with exact frame time ---
+				renderEvent.type = RENDER;
+				RenderEvent::Dispatch(&renderEvent);
 
-					// --- Periodic DWM resync ---
-					if (++framePredictorResyncCounter >= FRAME_PREDICTOR_RESYNC_EVERY) {
-						g_predictor.RequestResync();
-						framePredictorResyncCounter = 0;
-					}
-				}
-			}
-			else
-			{
-				// --- Vblank hasn't arrived yet. Sleep in a chunked 1ms
-				// interval (same as the legacy path) so the subloop stays
-				// responsive AND the predictor thread doesn't starve.
-				//
-				// Without this chunked sleep, the tight _mm_pause() spin
-				// monopolizes the core, the predictor thread can't publish
-				// isTime, and rendering freezes after ~5 seconds.
-				int64_t now10 = getTime10ns();
-				int64_t nextVblank = g_predictor.NextVblank10ns();
-				int64_t targetTime = now10 + minimalSleepCalc10ns;
-
-				// JITTER FIX: if our standard 1ms chunk would overshoot the
-				// predicted vblank, shrink this chunk to hit vblank exactly.
-				if (nextVblank > now10 && targetTime > nextVblank) {
-					targetTime = nextVblank;
-				}
-
-				if (targetTime > now10) {
-					coolSleepUntil10ns(targetTime);
+				// --- Periodic resync ---
+				if (++framePredictorResyncCounter >= FRAME_PREDICTOR_RESYNC_EVERY) {
+					g_predictor.RequestResync();
+					framePredictorResyncCounter = 0;
 				}
 			}
 
 			return active;
 		}
-
-		// === LoopProfile: start (legacy path) ===
-		int64_t profStart10    = getTime10ns();
-		int64_t profPrevRet10  = LoopProfile::lastReturn10();
-		int64_t execGap10      = (profPrevRet10 > 0)
-								? (profStart10 - profPrevRet10) : 0;
 
 		int64_t now10ns = getTime10ns();
 
@@ -1804,24 +1772,14 @@ namespace lime
 			targetTime = nextBoundary10ns;
 		}
 
-		// === Bracket the sleep ===
-		int64_t sleepStart10 = getTime10ns();
 		coolSleepUntil10ns(targetTime);
-		int64_t sleepEnd10   = getTime10ns();
-		int64_t wakeErr10    = sleepEnd10 - targetTime;
 
-		now10ns = sleepEnd10;
+		now10ns = getTime10ns();
 
-		// === Bracket SubLoopTick ===
-		int64_t subStart10 = getTime10ns();
 		subLoopTickEvent.timestamp = now10ns;
 		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-		int64_t subDur10 = getTime10ns() - subStart10;
 
-		// === Bracket PollInputs ===
-		int64_t pollStart10 = getTime10ns();
 		PollInputs();
-		int64_t pollDur10 = getTime10ns() - pollStart10;
 
 		int64_t to_units_update = (now10ns - startAnchor10ns) / UPDATE_PERIOD_10NS;
 		int64_t to_units_render = (now10ns - startAnchor10ns) / RENDER_PERIOD_10NS;
@@ -1866,41 +1824,6 @@ namespace lime
 			while (to_units_render >= nextRenderFrame) {
 				nextRenderFrame++;
 			}
-		}
-
-		int64_t profEnd10 = getTime10ns();
-
-		// === Record ===
-		int64_t total10 = profEnd10 - profStart10;
-		int64_t sleep10 = sleepEnd10 - sleepStart10;
-
-		LoopProfile::Sample s;
-		s.totalUs        = total10 / 100;
-		s.sleepUs        = sleep10 / 100;
-		s.workUs         = (total10 - sleep10) / 100;
-		s.wakeErrUs      = wakeErr10 / 100;
-		s.updatePhaseUs  = updatePhaseErr10 / 100;
-		s.interArrivalUs = execGap10 / 100;   // this is the gap BEFORE this call
-		s.renderFired    = renderFired;
-		s.renderDurUs    = renderDur10 / 100;
-		s.subLoopDurUs   = subDur10 / 100;
-		s.pollDurUs      = pollDur10 / 100;
-		s.updateDurUs    = updateDur10 / 100;
-		s.execGapUs      = execGap10 / 100;
-		LoopProfile::record(s);
-		LoopProfile::setLastReturn10(profEnd10);
-
-		static size_t dumpCounter = 0;
-		bool shouldDump = false;
-		if (++dumpCounter >= LoopProfile::CAP) {
-			shouldDump = true;
-			dumpCounter = 0;
-		} else if (LoopProfile::shouldPeriodicDump()) {
-			shouldDump = true;
-		}
-		if (shouldDump) {
-			LoopProfile::dumpToFile("F:/p99loop.txt");
-			LoopProfile::reset();
 		}
 
 		return active;
