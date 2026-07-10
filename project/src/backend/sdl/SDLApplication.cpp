@@ -1496,23 +1496,17 @@ namespace lime
 
 	void SDLApplication::SetFrameRate(double frameRate)
 	{
-		if (frameRate > 0)
-		{
-			UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / frameRate;
-			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
+		if (frameRate <= 0) frameRate = 60;
 
-			// If the FramePredictor is active, reset it with the new rate.
-			// The anchor is re-captured to now; the next isTime() fires one
-			// frame period after this call.
-			if (useFramePredictor && UPDATE_PERIOD_10NS != 0) {
-				g_predictor.SetFrameRate(frameRate);
-				printf("[FramePredictor] reset to %.4f Hz\n", frameRate);
-			}
-		}
-		else
-		{
-			UPDATE_PERIOD_10NS = 0;
-			RENDER_PERIOD_10NS = 0;
+		UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / frameRate;
+		RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
+
+		// If the FramePredictor is active, reset it with the new rate.
+		// The anchor is re-captured to now; the next isTime() fires one
+		// frame period after this call.
+		if (useFramePredictor) {
+			g_predictor.SetFrameRate(frameRate);
+			printf("[FramePredictor] reset to %.4f Hz\n", frameRate);
 		}
 	}
 
