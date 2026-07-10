@@ -1554,11 +1554,13 @@ namespace lime
 				SDL_SysWMinfo wmInfo;
 				SDL_VERSION(&wmInfo.version);
 				if (SDL_GetWindowWMInfo(kbFocus, &wmInfo)) {
+					#if defined(SDL_VIDEO_DRIVER_WAYLAND).
 					if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
 						VblankSource::SetWaylandSurface(
 							wmInfo.info.wl.surface,
 							wmInfo.info.wl.display);
 					}
+					#endif
 				}
 			}
 		}
