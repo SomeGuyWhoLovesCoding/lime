@@ -6,6 +6,8 @@
  so that meant doing it in the first place to compensate. How about I make a literal main loop library out of this?
 **/
 
+#include "FramePredictor.h"
+#include "LoopProfile.h"
 #include "SDLApplication.h"
 #include "SDLGamepad.h"
 #include "SDLJoystick.h"
@@ -767,7 +769,7 @@ namespace lime
 
 	// ---------- Timing configuration in 10ns ticks ----------
 	// 1 second = 100000000 ticks of 10ns
-	constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
+	static constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
 
 	// Default target frame rates
 	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL;
@@ -775,6 +777,15 @@ namespace lime
 
 	static int64_t lastRenderTime = 0;
 	static int64_t render_timestamp = 0;
+
+	// ---------- FramePredictor integration ----------
+	// When true, Update() uses the FramePredictor's isTime() flag to dispatch
+	// both UPDATE and RENDER together at the monitor's actual vblank, with
+	// the exact measured frame time. Bypasses the 120Hz/60Hz grid math.
+	static bool useFramePredictor = false;
+	static FramePredictor g_predictor;
+	static int framePredictorResyncCounter = 0;
+	constexpr int FRAME_PREDICTOR_RESYNC_EVERY = 300;  // ~5s @ 60Hz
 
 #if HX_ANDROID
 	static AChoreographer *choreographer = nullptr;
@@ -1414,6 +1425,18 @@ namespace lime
 
 	int SDLApplication::Quit()
 	{
+		// Stop FramePredictor FIRST so it doesn't dispatch into a
+		// tearing-down app.
+		if (useFramePredictor) {
+			g_predictor.Stop();
+			printf("[FramePredictor] stats: dispatched=%llu missed=%llu resyncs=%llu\n",
+				(unsigned long long)g_predictor.FramesDispatched(),
+				(unsigned long long)g_predictor.FramesMissed(),
+				(unsigned long long)g_predictor.ResyncsDone());
+			useFramePredictor = false;
+		}
+		LoopProfile::dumpToFile("F:/p99Loop.txt");
+
 		if (alreadyQuit)
 			return 0;
 
@@ -1486,6 +1509,14 @@ namespace lime
 		{
 			UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / frameRate;
 			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
+
+			// If the FramePredictor is active, reset it with the new rate.
+			// The anchor is re-captured to now; the next isTime() fires one
+			// frame period after this call.
+			if (useFramePredictor && UPDATE_PERIOD_10NS != 0) {
+				g_predictor.SetFrameRate(frameRate);
+				printf("[FramePredictor] reset to %.4f Hz\n", frameRate);
+			}
 		}
 		else
 		{
@@ -1513,6 +1544,45 @@ namespace lime
 	static int64_t lag = 0;
 	int64_t startTimestamp10ns = 0;
 
+	// ------------------------------------------------------------------
+	// FramePredictor bootstrap.
+	//
+	// Captures getTime10ns2() as the anchor and uses the current
+	// UPDATE_PERIOD_10NS to derive the frame rate. No swaps, no
+	// glFinish, no DWM/DRM/Choreographer polling — just a plain
+	// spin-wait predictor driven by the caller-supplied rate.
+	// ------------------------------------------------------------------
+	void InitFramePredictor()
+	{
+		if (UPDATE_PERIOD_10NS <= 0) {
+			printf("[FramePredictor] UPDATE_PERIOD_10NS is 0 — cannot init (no frame rate)\n");
+			return;
+		}
+
+		double frameRate = (double)TICKS_PER_SECOND_10NS / (double)UPDATE_PERIOD_10NS;
+
+		FramePredictor::InitResult ir = FramePredictor::Init(frameRate);
+		if (!ir.ok) {
+			printf("[FramePredictor] Init FAILED: %s\n", ir.error ? ir.error : "(unknown)");
+			return;
+		}
+
+		printf("[FramePredictor] initialized:\n");
+		printf("  anchor       : %lld (10ns)\n", (long long)ir.anchor10ns);
+		printf("  refresh rate : %.4f Hz\n", ir.refreshRateHz);
+		printf("  frame period : %lld (10ns) = %.3f us\n",
+			(long long)ir.framePeriod10ns, (double)ir.framePeriod10ns / 100.0);
+
+		g_predictor.Configure(ir);
+		if (!g_predictor.Start()) {
+			printf("[FramePredictor] Failed to start predictor thread\n");
+			return;
+		}
+
+		useFramePredictor = true;
+		printf("[FramePredictor] active - Update() will use predictor path\n");
+	}
+
 	void SDLApplication::Init()
 	{
 		active = true;
@@ -1535,6 +1605,8 @@ namespace lime
 			}
 		}
 #endif
+
+		InitFramePredictor();
 	}
 
 	bool SDLApplication::IsWindowValid()
@@ -1893,102 +1965,211 @@ namespace lime
     static double lastUpdate = 0.0;
     static bool firstFrame = true;
 
-    bool SDLApplication::Update()
-    {
-        if (!active)
-            return false;
+	bool SDLApplication::Update()
+	{
+		if (!active)
+			return false;
 
-        int64_t now10ns = getTime10ns();
+		// ================================================================
+		// FramePredictor path - when active, dispatch UPDATE+RENDER together
+		// at the monitor's actual vblank with the exact measured frame time.
+		// ================================================================
+		if (useFramePredictor)
+		{
+			// The subloop still runs every iteration: SubLoopTick + PollInputs
+			// stay responsive even between vblanks.
+			int64_t subNow = getTime10ns();
+			subLoopTickEvent.timestamp = subNow;
+			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
-        // Initialize absolute anchors and frame counters on the very first frame
-        if (firstFrame)
-        {
-            startAnchor10ns = now10ns;
-            nextUpdateFrame = 1;
-            nextRenderFrame = 1;
-            lastUpdate = (double)now10ns / 100000.0;
-            firstFrame = false;
-        }
+			PollInputs();
 
-        // Reset chunked sleep base at the start of every 1ms iteration
-        if (minimalSleepCalcBase10ns > 0)
-            minimalSleepCalc10ns = minimalSleepCalcBase10ns;
+			// --- Restore chunked sleep base for this iteration ---
+			if (minimalSleepCalcBase10ns > 0)
+				minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 
-        // --- PREDICT TARGETS (Using your exact grid math to avoid truncation) ---
-        // We multiply by the full second first so it stays perfectly synced with the division logic below
-        int64_t nextUpdateTarget10ns = startAnchor10ns + ((nextUpdateFrame * TICKS_PER_SECOND_10NS) / 120LL);
-        int64_t nextRenderTarget10ns = startAnchor10ns + ((nextRenderFrame * TICKS_PER_SECOND_10NS) / 60LL);
+			if (g_predictor.isTime())
+			{
+				int64_t frameTime10ns = g_predictor.Consume();
+				if (frameTime10ns > 0)
+				{
+					// --- Dispatch UPDATE with exact frame time ---
+					applicationEvent.type = UPDATE;
+					applicationEvent.deltaTime = frameTime10ns;
+					ApplicationEvent::Dispatch(&applicationEvent);
 
-        // Find the soonest upcoming boundary
-        int64_t nextBoundary10ns = nextUpdateTarget10ns;
-        if (RENDER_PERIOD_10NS > 0 && nextRenderTarget10ns < nextBoundary10ns) {
-            nextBoundary10ns = nextRenderTarget10ns;
-        }
+					// --- Dispatch RENDER with exact frame time ---
+					renderEvent.type = RENDER;
+					RenderEvent::Dispatch(&renderEvent);
 
-        // --- 1. Sleep in a SINGLE chunk and return to Exec() ---
-        // This is the core reason Update_Vsync never freezes on lag.
-        // By sleeping 1ms and returning, the main loop stays highly responsive.
-        int64_t targetTime = now10ns + minimalSleepCalc10ns;
-        
-        // JITTER FIX: If our standard 1ms chunk is going to overshoot the upcoming 
-        // frame boundary, shrink this specific chunk to hit the boundary exactly.
-        // (If we are lagging, the boundary is in the past, so this safely ignores it)
-        if (nextBoundary10ns > now10ns && targetTime > nextBoundary10ns) {
-            targetTime = nextBoundary10ns;
-        }
-        
-        coolSleepUntil10ns(targetTime);
+					// --- Periodic DWM resync ---
+					if (++framePredictorResyncCounter >= FRAME_PREDICTOR_RESYNC_EVERY) {
+						g_predictor.RequestResync();
+						framePredictorResyncCounter = 0;
+					}
+				}
+			}
+			else
+			{
+				// --- Vblank hasn't arrived yet. Sleep in a chunked 1ms
+				// interval (same as the legacy path) so the subloop stays
+				// responsive AND the predictor thread doesn't starve.
+				//
+				// Without this chunked sleep, the tight _mm_pause() spin
+				// monopolizes the core, the predictor thread can't publish
+				// isTime, and rendering freezes after ~5 seconds.
+				int64_t now10 = getTime10ns();
+				int64_t nextVblank = g_predictor.NextVblank10ns();
+				int64_t targetTime = now10 + minimalSleepCalc10ns;
 
-        now10ns = getTime10ns();
+				// JITTER FIX: if our standard 1ms chunk would overshoot the
+				// predicted vblank, shrink this chunk to hit vblank exactly.
+				if (nextVblank > now10 && targetTime > nextVblank) {
+					targetTime = nextVblank;
+				}
 
-        // --- 2. SubLoopTick (Fires every 1ms chunk, preventing any freeze) ---
-        subLoopTickEvent.timestamp = now10ns;
-        SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+				if (targetTime > now10) {
+					coolSleepUntil10ns(targetTime);
+				}
+			}
 
-        // --- 3. Poll Inputs ---
-        PollInputs();
+			return active;
+		}
 
-        // --- 4. Round down to frame time units (Your phase-lock logic) ---
-        int64_t to_units_update = (now10ns - startAnchor10ns) / UPDATE_PERIOD_10NS;
-        int64_t to_units_render = (now10ns - startAnchor10ns) / RENDER_PERIOD_10NS;
+		// === LoopProfile: start (legacy path) ===
+		int64_t profStart10    = getTime10ns();
+		int64_t profPrevRet10  = LoopProfile::lastReturn10();
+		int64_t execGap10      = (profPrevRet10 > 0)
+								? (profStart10 - profPrevRet10) : 0;
 
-        // --- 5. Update Condition ---
-        if (to_units_update >= nextUpdateFrame)
-        {
-            applicationEvent.type = UPDATE;
-            applicationEvent.deltaTime = (int64_t)((now10ns / 100000.0 - lastUpdate) * 100000.0);
-            if (applicationEvent.deltaTime < 0) applicationEvent.deltaTime = 0;
-            lastUpdate = now10ns / 100000.0;
+		int64_t now10ns = getTime10ns();
 
-            ApplicationEvent::Dispatch(&applicationEvent);
+		if (firstFrame)
+		{
+			startAnchor10ns = now10ns;
+			nextUpdateFrame = 1;
+			nextRenderFrame = 1;
+			lastUpdate = (double)now10ns / 100000.0;
+			firstFrame = false;
+		}
 
-            // Advance update frame unit
-            nextUpdateFrame++;
+		if (minimalSleepCalcBase10ns > 0)
+			minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 
-            // If a lag spike caused us to miss multiple update frames, 
-            // skip them instantly to prevent a spiral-of-death freeze.
-            while (to_units_update >= nextUpdateFrame) {
-                nextUpdateFrame++;
-            }
-        }
+		int64_t nextUpdateTarget10ns = startAnchor10ns + ((nextUpdateFrame * TICKS_PER_SECOND_10NS) / 120LL);
+		int64_t nextRenderTarget10ns = startAnchor10ns + ((nextRenderFrame * TICKS_PER_SECOND_10NS) / 60LL);
 
-        // --- 6. Render Condition (Operates completely separate from Update) ---
-        if (RENDER_PERIOD_10NS > 0 && to_units_render >= nextRenderFrame)
-        {
-            renderEvent.type = RENDER;
-            RenderEvent::Dispatch(&renderEvent);
+		int64_t nextBoundary10ns = nextUpdateTarget10ns;
+		if (RENDER_PERIOD_10NS > 0 && nextRenderTarget10ns < nextBoundary10ns) {
+			nextBoundary10ns = nextRenderTarget10ns;
+		}
 
-            // Advance render frame unit
-            nextRenderFrame++;
+		int64_t targetTime = now10ns + minimalSleepCalc10ns;
+		if (nextBoundary10ns > now10ns && targetTime > nextBoundary10ns) {
+			targetTime = nextBoundary10ns;
+		}
 
-            // Skip missed render frames
-            while (to_units_render >= nextRenderFrame) {
-                nextRenderFrame++;
-            }
-        }
+		// === Bracket the sleep ===
+		int64_t sleepStart10 = getTime10ns();
+		coolSleepUntil10ns(targetTime);
+		int64_t sleepEnd10   = getTime10ns();
+		int64_t wakeErr10    = sleepEnd10 - targetTime;
 
-        return active;
-    }
+		now10ns = sleepEnd10;
+
+		// === Bracket SubLoopTick ===
+		int64_t subStart10 = getTime10ns();
+		subLoopTickEvent.timestamp = now10ns;
+		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+		int64_t subDur10 = getTime10ns() - subStart10;
+
+		// === Bracket PollInputs ===
+		int64_t pollStart10 = getTime10ns();
+		PollInputs();
+		int64_t pollDur10 = getTime10ns() - pollStart10;
+
+		int64_t to_units_update = (now10ns - startAnchor10ns) / UPDATE_PERIOD_10NS;
+		int64_t to_units_render = (now10ns - startAnchor10ns) / RENDER_PERIOD_10NS;
+
+		int64_t updatePhaseErr10 = 0;
+		bool     renderFired     = false;
+		int64_t renderDur10      = 0;
+		int64_t updateDur10      = 0;
+
+		// --- Update Condition ---
+		if (to_units_update >= nextUpdateFrame)
+		{
+			updatePhaseErr10 = now10ns - nextUpdateTarget10ns;
+
+			applicationEvent.type = UPDATE;
+			applicationEvent.deltaTime = (int64_t)((now10ns / 100000.0 - lastUpdate) * 100000.0);
+			if (applicationEvent.deltaTime < 0) applicationEvent.deltaTime = 0;
+			lastUpdate = now10ns / 100000.0;
+
+			int64_t updStart10 = getTime10ns();
+			ApplicationEvent::Dispatch(&applicationEvent);
+			updateDur10 = getTime10ns() - updStart10;
+
+			nextUpdateFrame++;
+			while (to_units_update >= nextUpdateFrame) {
+				nextUpdateFrame++;
+			}
+		}
+
+		// --- Render Condition ---
+		if (RENDER_PERIOD_10NS > 0 && to_units_render >= nextRenderFrame)
+		{
+			renderFired = true;
+			int64_t renderStart10 = getTime10ns();
+
+			renderEvent.type = RENDER;
+			RenderEvent::Dispatch(&renderEvent);
+
+			renderDur10 = getTime10ns() - renderStart10;
+
+			nextRenderFrame++;
+			while (to_units_render >= nextRenderFrame) {
+				nextRenderFrame++;
+			}
+		}
+
+		int64_t profEnd10 = getTime10ns();
+
+		// === Record ===
+		int64_t total10 = profEnd10 - profStart10;
+		int64_t sleep10 = sleepEnd10 - sleepStart10;
+
+		LoopProfile::Sample s;
+		s.totalUs        = total10 / 100;
+		s.sleepUs        = sleep10 / 100;
+		s.workUs         = (total10 - sleep10) / 100;
+		s.wakeErrUs      = wakeErr10 / 100;
+		s.updatePhaseUs  = updatePhaseErr10 / 100;
+		s.interArrivalUs = execGap10 / 100;   // this is the gap BEFORE this call
+		s.renderFired    = renderFired;
+		s.renderDurUs    = renderDur10 / 100;
+		s.subLoopDurUs   = subDur10 / 100;
+		s.pollDurUs      = pollDur10 / 100;
+		s.updateDurUs    = updateDur10 / 100;
+		s.execGapUs      = execGap10 / 100;
+		LoopProfile::record(s);
+		LoopProfile::setLastReturn10(profEnd10);
+
+		static size_t dumpCounter = 0;
+		bool shouldDump = false;
+		if (++dumpCounter >= LoopProfile::CAP) {
+			shouldDump = true;
+			dumpCounter = 0;
+		} else if (LoopProfile::shouldPeriodicDump()) {
+			shouldDump = true;
+		}
+		if (shouldDump) {
+			LoopProfile::dumpToFile("F:/p99loop.txt");
+			LoopProfile::reset();
+		}
+
+		return active;
+	}
 
 	bool SDLApplication::Update_Vsync()
 	{
