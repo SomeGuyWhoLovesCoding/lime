@@ -756,10 +756,6 @@ namespace lime
 		}
 	}
 
-	// ---------- Timing configuration in 10ns ticks ----------
-	// 1 second = 100000000 ticks of 10ns
-	static constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
-
 	// Default target frame rates
 	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL;
 	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;
@@ -908,7 +904,7 @@ namespace lime
 		if (qpcFrequency2.QuadPart == 0)
 			QueryPerformanceFrequency(&qpcFrequency);
 		int64_t wholeSeconds = now.QuadPart / qpcFrequency.QuadPart;
-		int64_t remainder   = now.QuadPart % qpcFrequency.QuadPart;
+		int64_t remainder    = now.QuadPart % qpcFrequency.QuadPart;
 		return wholeSeconds * TICKS_PER_SECOND_10NS + (remainder * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
 #else
 		struct timespec ts;

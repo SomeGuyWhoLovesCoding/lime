@@ -56,6 +56,9 @@
 static LARGE_INTEGER qpcFrequency2 = {};
 #endif
 
+// 1 second = 100000000 ticks of 10ns
+static constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
+
 inline int64_t getTime10ns2()
 {
 #ifdef HX_WINDOWS
@@ -65,11 +68,11 @@ inline int64_t getTime10ns2()
         QueryPerformanceFrequency(&qpcFrequency2);
     int64_t wholeSec = now.QuadPart / qpcFrequency2.QuadPart;
     int64_t rem      = now.QuadPart % qpcFrequency2.QuadPart;
-    return wholeSec * 100000000LL + (rem * 100000000LL) / qpcFrequency2.QuadPart;
+    return wholeSec * TICKS_PER_SECOND_10NS + (rem * TICKS_PER_SECOND_10NS) / qpcFrequency2.QuadPart;
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 100000000LL + (ts.tv_nsec / 10LL);
+    return ts.tv_sec * TICKS_PER_SECOND_10NS + (ts.tv_nsec / 10LL);
 #endif
 }
 
@@ -98,7 +101,7 @@ inline int64_t GetMonitorPeriod10ns() {
     if (ti.qpcRefreshPeriod == 0) return 0;
     if (qpcFrequency2.QuadPart == 0)
         QueryPerformanceFrequency(&qpcFrequency2);
-    return (int64_t)((ti.qpcRefreshPeriod * 100000000LL) / qpcFrequency2.QuadPart);
+    return (int64_t)((ti.qpcRefreshPeriod * TICKS_PER_SECOND_10NS) / qpcFrequency2.QuadPart);
 }
 
 inline int64_t GetCurrentVblank10ns() {
@@ -109,7 +112,7 @@ inline int64_t GetCurrentVblank10ns() {
     static LARGE_INTEGER freq = []{
         LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f;
     }();
-    return (int64_t)((ti.qpcVBlank * 100000000LL) / freq.QuadPart);
+    return (int64_t)((ti.qpcVBlank * TICKS_PER_SECOND_10NS) / freq.QuadPart);
 }
 
 // Blocks until the next vblank. Polls DWM's qpcVBlank until it advances.
@@ -131,10 +134,16 @@ inline int64_t WaitForNextVblank10ns() {
         if (getTime10ns2() > deadline) break;
         if (FAILED(DwmGetCompositionTimingInfo(nullptr, &ti))) break;
         v2 = ti.qpcVBlank;
-        Sleep(1);  // yield to the OS, ~1ms granularity
+#if defined(_MSC_VER)
+            _mm_pause();
+#elif defined(__x86_64__) || defined(__i386__)
+            __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+            __asm__ __volatile__("yield" ::: "memory");
+#endif
     }
     if (v2 == v1) return 0;  // timed out
-    return (int64_t)((v2 * 100000000LL) / freq.QuadPart);
+    return (int64_t)((v2 * TICKS_PER_SECOND_10NS) / freq.QuadPart);
 }
 
 #elif defined(__linux__) && !defined(__ANDROID__)
