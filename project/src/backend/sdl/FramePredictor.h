@@ -757,8 +757,20 @@ public:
         int64_t nextPredicted = anchor10ns_ + (frameCounter_ + 1) * framePeriod10ns_;
         if (actualNow > nextPredicted) {
             int64_t framesBehind = (actualNow - nextPredicted) / framePeriod10ns_;
-            frameCounter_ += framesBehind;
-            framesMissed_ += (uint64_t)framesBehind;
+
+            if (framesBehind > 10) {
+                // Absurd gap (minimize, breakpoint, suspend, etc.)
+                // Don't try to skip millions of frames — just re-anchor
+                // to right now and keep going.
+
+                // dispatched=17007 missed=63087970 resyncs=56 i mean seriously? that's not a flaw. it's an honest help me
+                anchor10ns_      = actualNow - (frameCounter_ + 1) * framePeriod10ns_;
+                lastVblank10ns_  = actualNow;
+                frameTime        = framePeriod10ns_;  // pretend it was a normal frame
+            } else {
+                frameCounter_ += framesBehind;
+                framesMissed_ += (uint64_t)framesBehind;
+            }
         }
 
         return frameTime;
