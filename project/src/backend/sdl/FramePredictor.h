@@ -930,3 +930,565 @@ inline bool FramePredictor::DoResync() {
     }
     return false;
 }
+
+
+// ============================================================================
+// VsyncCounter — non-blocking per-frame vsync polling for the main loop.
+//
+// Unlike VblankSource (which blocks until the next vblank for the
+// FramePredictor), VsyncCounter uses event-driven detection:
+//   Windows  : DWM qpcVBlank polling
+//   Linux    : Wayland callback flag, or DRM event-based (DRM_VBLANK_EVENT)
+//   Android  : AChoreographer callback flag
+//   Fallback : timer-based
+//
+// All times in 10ns units (matching getTime10ns2()).
+//
+// Usage (from the main loop, once per frame):
+//   // One-time, Linux only — call before first Poll():
+//   VsyncCounter::SetWaylandInfo(surface, display);
+//
+//   // Each frame:
+//   auto r = VsyncCounter::Poll(now10ns, RENDER_PERIOD_10NS, windowX, windowY);
+//   if (r.shouldRender) { dispatch UPDATE/RENDER with r.frameTime10ns }
+//
+// On frame-rate change:
+//   VsyncCounter::NotifyFrameRateChange();
+// ============================================================================
+
+namespace VsyncCounter {
+
+struct Result {
+    bool shouldRender = false;
+    int64_t frameTime10ns = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Internal state (file-scope statics inside an anonymous namespace)
+// ---------------------------------------------------------------------------
+namespace {
+
+int64_t vc_lastRenderTime_ = 0;
+int64_t vc_nextRenderTime10ns_ = 0;
+bool   vc_firstFrame_ = true;
+int64_t vc_lag_ = 0;           // time of last NotifyFrameRateChange()
+
+// ---- Timer fallback ----
+inline Result TimerFallback(int64_t now10ns, int64_t renderPeriod10ns) {
+    Result r;
+    if (vc_firstFrame_) {
+        vc_lastRenderTime_ = now10ns;
+        vc_nextRenderTime10ns_ = now10ns + renderPeriod10ns;
+        vc_firstFrame_ = false;
+        return r;
+    }
+    int64_t vsyncThreshold = renderPeriod10ns / 4;
+    int64_t timeSinceLastRender = now10ns - vc_lastRenderTime_;
+    int64_t elapsed = now10ns - vc_lag_;
+    int64_t threshold = std::max<int64_t>(elapsed, renderPeriod10ns / 2);
+
+    if (now10ns >= (vc_nextRenderTime10ns_ - threshold)) {
+        if (timeSinceLastRender >= vsyncThreshold) {
+            r.shouldRender = true;
+            r.frameTime10ns = now10ns - vc_lastRenderTime_;
+            vc_lastRenderTime_ = now10ns;
+            vc_nextRenderTime10ns_ += renderPeriod10ns;
+        }
+    }
+    return r;
+}
+
+// =========================================================================
+#ifdef _WIN32
+// =========================================================================
+// Windows: DWM qpcVBlank polling
+
+int64_t  vc_lastQpcVBlank_ = 0;
+int64_t  vc_predictedNextVblank10ns_ = 0;
+
+} // anonymous namespace
+
+inline Result Poll(int64_t now10ns, int64_t renderPeriod10ns,
+                   int windowX = 0, int windowY = 0) {
+    Result r;
+    int64_t vsyncThreshold = renderPeriod10ns / 4;
+    int64_t timeSinceLastRender = now10ns - vc_lastRenderTime_;
+
+    if (vc_firstFrame_) {
+        vc_lastRenderTime_ = now10ns;
+        vc_nextRenderTime10ns_ = now10ns + renderPeriod10ns;
+        vc_firstFrame_ = false;
+    }
+
+    DWM_TIMING_INFO ti = {};
+    ti.cbSize = sizeof(ti);
+    HRESULT hr = DwmGetCompositionTimingInfo(nullptr, &ti);
+
+    if (SUCCEEDED(hr)) {
+        if (vc_lastQpcVBlank_ == 0 || vc_lastQpcVBlank_ != (int64_t)ti.qpcVBlank) {
+            if (timeSinceLastRender >= vsyncThreshold) {
+                r.shouldRender = true;
+                if (vc_lastQpcVBlank_ != 0) {
+                    int64_t qpcDelta = (int64_t)(ti.qpcVBlank - vc_lastQpcVBlank_);
+                    r.frameTime10ns = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency2.QuadPart;
+                } else {
+                    r.frameTime10ns = renderPeriod10ns;
+                }
+                vc_lastQpcVBlank_ = (int64_t)ti.qpcVBlank;
+                vc_nextRenderTime10ns_ = now10ns + renderPeriod10ns;
+
+                int64_t vblank10ns = (int64_t)((ti.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency2.QuadPart);
+                vc_predictedNextVblank10ns_ = vblank10ns + r.frameTime10ns;
+            }
+        } else if (now10ns >= vc_nextRenderTime10ns_ + renderPeriod10ns) {
+            if (timeSinceLastRender >= vsyncThreshold) {
+                r.shouldRender = true;
+                r.frameTime10ns = now10ns - vc_lastRenderTime_;
+                vc_lastRenderTime_ = now10ns;
+                vc_nextRenderTime10ns_ = now10ns + renderPeriod10ns;
+            }
+        }
+    } else {
+        r = TimerFallback(now10ns, renderPeriod10ns);
+    }
+
+    if (r.shouldRender) {
+        vc_lastRenderTime_ = now10ns;
+    }
+    return r;
+}
+
+inline int64_t GetPredictedNextVblank10ns() { return vc_predictedNextVblank10ns_; }
+
+// =========================================================================
+#elif defined(__linux__) && !defined(__ANDROID__)
+// =========================================================================
+// Linux: Wayland (non-blocking callback) -> DRM event-based -> timer fallback
+
+// --- Minimal Wayland types (no libwayland-dev at compile time) ---
+struct wl_surface_vc;
+struct wl_callback_vc;
+
+struct wl_callback_listener_vc {
+    void (*done)(void *data, struct wl_callback_vc *callback, uint32_t time);
+};
+
+typedef struct wl_callback_vc* (*wl_surface_frame_vc_t)(struct wl_surface_vc*);
+typedef int  (*wl_callback_add_listener_vc_t)(struct wl_callback_vc*, const struct wl_callback_listener_vc*, void*);
+typedef void (*wl_callback_destroy_vc_t)(struct wl_callback_vc*);
+
+// --- Wayland state (separate from VblankSource's blocking Wayland) ---
+static void*  wl_vc_lib = nullptr;
+static wl_surface_frame_vc_t        p_vc_wl_frame = nullptr;
+static wl_callback_add_listener_vc_t p_vc_wl_add_listener = nullptr;
+static wl_callback_destroy_vc_t     p_vc_wl_destroy = nullptr;
+
+static bool   wl_vc_loaded = false;
+static bool   wl_vc_available = false;
+static struct wl_surface_vc* wl_vc_surface = nullptr;
+static struct wl_callback_vc* wl_vc_callback = nullptr;
+static bool   wl_vc_fired = false;
+static int64_t wl_vc_lastTime10ns = 0;
+static struct wl_callback_listener_vc wl_vc_listener = {};
+
+// --- DRM event-based types and state ---
+
+// drmDevice - we only need nodes[DRM_NODE_PRIMARY] (index 0).
+// In all libdrm 2.4.x versions, nodes[] is the very first field.
+#define VC_DRM_NODE_PRIMARY 0
+#define VC_DRM_NODE_MAX     6
+
+struct VcDrmDevice {
+    char *nodes[VC_DRM_NODE_MAX];
+    // Remaining fields not accessed - padding for ABI safety
+    void *_pad[20];
+};
+
+// drmModeCrtc - we need mode_valid, width, height, x, y.
+// Layout matches xf86drmMode.h (all uint32_t/int, no padding issues).
+struct VcDrmModeCrtc {
+    uint32_t crtc_id;
+    uint32_t buffer_id;
+    uint32_t x, y;
+    uint32_t width, height;
+    int mode_valid;
+    void *_mode_pad[32]; // drmModeModeInfo is large
+    int gamma_size;
+    uint32_t *gamma;
+};
+
+// drmVBlank - matches the kernel's union drm_wait_vblank ABI exactly.
+// On x86-64: request.type(int,4) request.sequence(uint,4) request.signal(ulong,8)
+struct VcDrmVBlank {
+    union {
+        struct {
+            int type;
+            unsigned int sequence;
+            unsigned long signal;
+        } request;
+        struct {
+            int type;
+            unsigned int sequence;
+            long tv_sec;
+            long tv_usec;
+        } reply;
+    };
+};
+
+// drmEventContext - we only use vblank_handler (version 1 compatible).
+struct VcDrmEventContext {
+    int version;
+    void (*vblank_handler)(int fd, unsigned int sequence,
+                           unsigned int tv_sec, unsigned int tv_usec,
+                           void *user_data);
+    void (*page_flip_handler)(int fd, unsigned int sequence,
+                              unsigned int tv_sec, unsigned int tv_usec,
+                              void *user_data);
+};
+
+#define VC_DRM_VBLANK_RELATIVE       0x1
+#define VC_DRM_VBLANK_EVENT          0x2
+#define VC_DRM_VBLANK_HIGH_CRTC_MASK 0x0000003C
+#define VC_DRM_VBLANK_HIGH_CRTC_SHIFT 2
+#define VC_DRM_EVENT_CONTEXT_VERSION 1
+
+// DRM function pointer types (additional to VblankSource's set)
+typedef int  (*vc_drmGetDevices_t)(VcDrmDevice**, int);
+typedef void (*vc_drmFreeDevices_t)(VcDrmDevice**, int);
+typedef VcDrmModeCrtc* (*vc_drmModeGetCrtc_t)(int fd, uint32_t crtc_id);
+typedef void (*vc_drmModeFreeCrtc_t)(VcDrmModeCrtc* ptr);
+typedef int  (*vc_drmHandleEvent_t)(int fd, VcDrmEventContext*);
+
+// DRM event-based state
+static int  drm_vc_fd = -1;
+static uint32_t drm_vc_crtc_id = 0;
+static uint64_t drm_vc_last_seq = 0;
+static int  drm_vc_last_win_x = -1;
+static int  drm_vc_last_win_y = -1;
+static bool drm_vc_inited = false;
+
+// DRM function pointers
+static void*  drm_vc_lib = nullptr;
+static vc_drmGetDevices_t      p_vc_drmGetDevices = nullptr;
+static vc_drmFreeDevices_t     p_vc_drmFreeDevices = nullptr;
+static vc_drmModeGetCrtc_t     p_vc_drmModeGetCrtc = nullptr;
+static vc_drmModeFreeCrtc_t    p_vc_drmModeFreeCrtc = nullptr;
+static vc_drmHandleEvent_t     p_vc_drmHandleEvent = nullptr;
+static bool   drm_vc_loaded = false;
+
+// The vblank sequence counter - written by the event handler callback.
+static uint64_t vc_vblank_seq = 0;
+
+// Reuse VblankSource's DrmModeRes and its get/free functions for CRTC listing.
+// They are already loaded by the DrmState singleton and ABI-compatible.
+
+} // anonymous namespace
+
+// --- Wayland callback handler ---
+static void vc_wayland_frame_cb(void* /*data*/, struct wl_callback_vc* cb, uint32_t time) {
+    (void)data;
+    wl_vc_fired = true;
+    int64_t t10ns = (int64_t)time * 100000LL;
+    wl_vc_lastTime10ns = t10ns;
+
+    if (p_vc_wl_destroy) p_vc_wl_destroy(cb);
+
+    // Re-post one-shot callback
+    if (p_vc_wl_frame && p_vc_wl_add_listener && wl_vc_surface) {
+        wl_vc_callback = p_vc_wl_frame(wl_vc_surface);
+        p_vc_wl_add_listener(wl_vc_callback, &wl_vc_listener, wl_vc_surface);
+    }
+}
+
+// --- Public: set Wayland surface (call once before first Poll) ---
+inline void SetWaylandInfo(void* surface, void* /*display*/) {
+    (void)display;
+    if (wl_vc_loaded) return;
+    wl_vc_loaded = true;
+
+    wl_vc_lib = dlopen("libwayland-client.so.0", RTLD_LAZY);
+    if (!wl_vc_lib) return;
+
+    p_vc_wl_frame       = (wl_surface_frame_vc_t)dlsym(wl_vc_lib, "wl_surface_frame");
+    p_vc_wl_add_listener = (wl_callback_add_listener_vc_t)dlsym(wl_vc_lib, "wl_callback_add_listener");
+    p_vc_wl_destroy     = (wl_callback_destroy_vc_t)dlsym(wl_vc_lib, "wl_callback_destroy");
+
+    if (!p_vc_wl_frame || !p_vc_wl_add_listener || !p_vc_wl_destroy) {
+        dlclose(wl_vc_lib);
+        wl_vc_lib = nullptr;
+        return;
+    }
+
+    wl_vc_listener.done = vc_wayland_frame_cb;
+    wl_vc_surface = (struct wl_surface_vc*)surface;
+    wl_vc_available = (wl_vc_surface != nullptr);
+
+    if (wl_vc_available) {
+        wl_vc_callback = p_vc_wl_frame(wl_vc_surface);
+        p_vc_wl_add_listener(wl_vc_callback, &wl_vc_listener, wl_vc_surface);
+    }
+}
+
+// --- Load DRM library for event-based vblank ---
+inline bool LoadDrmVC() {
+    if (drm_vc_loaded) return (drm_vc_lib != nullptr);
+    drm_vc_loaded = true;
+
+    drm_vc_lib = dlopen("libdrm.so.2", RTLD_LAZY);
+    if (!drm_vc_lib) {
+        drm_vc_lib = dlopen("libdrm.so", RTLD_LAZY);
+    }
+    if (!drm_vc_lib) return false;
+
+    p_vc_drmGetDevices  = (vc_drmGetDevices_t)dlsym(drm_vc_lib, "drmGetDevices");
+    p_vc_drmFreeDevices = (vc_drmFreeDevices_t)dlsym(drm_vc_lib, "drmFreeDevices");
+    p_vc_drmModeGetCrtc = (vc_drmModeGetCrtc_t)dlsym(drm_vc_lib, "drmModeGetCrtc");
+    p_vc_drmModeFreeCrtc = (vc_drmModeFreeCrtc_t)dlsym(drm_vc_lib, "drmModeFreeCrtc");
+    p_vc_drmHandleEvent  = (vc_drmHandleEvent_t)dlsym(drm_vc_lib, "drmHandleEvent");
+
+    if (!p_vc_drmGetDevices || !p_vc_drmFreeDevices ||
+        !p_vc_drmModeGetCrtc || !p_vc_drmModeFreeCrtc || !p_vc_drmHandleEvent) {
+        dlclose(drm_vc_lib);
+        drm_vc_lib = nullptr;
+        return false;
+    }
+    return true;
+}
+
+// --- DRM: find the CRTC whose viewport contains (windowX, windowY) ---
+inline void DrmVcFindCrtc(int windowX, int windowY) {
+    if (!LoadDrmVC()) return;
+    // Also need VblankSource's drm resource functions loaded
+    DrmState& ds = GetDrmState();
+    if (!ds.p_getResources || !ds.p_freeResources || !ds.p_waitVBlank) return;
+
+    if (drm_vc_fd >= 0) { close(drm_vc_fd); drm_vc_fd = -1; }
+
+    VcDrmDevice* devices[16];
+    int deviceCount = p_vc_drmGetDevices(devices, 16);
+    if (deviceCount <= 0) return;
+
+    for (int i = 0; i < deviceCount; i++) {
+        VcDrmDevice* dev = devices[i];
+        if (!dev->nodes[VC_DRM_NODE_PRIMARY]) continue;
+
+        int fd = open(dev->nodes[VC_DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
+        if (fd < 0) continue;
+
+        DrmModeRes* res = ds.p_getResources(fd);
+        if (!res) { close(fd); continue; }
+
+        bool found = false;
+        for (int c = 0; c < res->count_crtcs && !found; c++) {
+            uint32_t crtcId = res->crtcs[c];
+            VcDrmModeCrtc* crtc = p_vc_drmModeGetCrtc(fd, crtcId);
+            if (!crtc) continue;
+
+            if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0) {
+                if (windowX >= (int)crtc->x && windowX < (int)(crtc->x + crtc->width) &&
+                    windowY >= (int)crtc->y && windowY < (int)(crtc->y + crtc->height)) {
+
+                    drm_vc_fd = fd;
+                    drm_vc_crtc_id = crtcId;
+                    drm_vc_inited = true;
+                    found = true;
+
+                    // Prime: request first vblank event (non-blocking, DRM_VBLANK_EVENT)
+                    VcDrmVBlank primeVbl;
+                    memset(&primeVbl, 0, sizeof(primeVbl));
+                    primeVbl.request.type = VC_DRM_VBLANK_RELATIVE | VC_DRM_VBLANK_EVENT;
+                    primeVbl.request.type |= (crtcId << VC_DRM_VBLANK_HIGH_CRTC_SHIFT);
+                    primeVbl.request.sequence = 1;
+                    primeVbl.request.signal = (unsigned long)&vc_vblank_seq;
+                    ds.p_waitVBlank(fd, (DrmVBlank*)&primeVbl);
+                }
+            }
+            p_vc_drmModeFreeCrtc(crtc);
+        }
+        ds.p_freeResources(res);
+        if (!found) close(fd);
+        if (found) break;
+    }
+    p_vc_drmFreeDevices(devices, deviceCount);
+}
+
+// --- DRM: non-blocking event poll ---
+inline bool DrmVcPoll(int64_t now10ns, int64_t renderPeriod10ns, Result& r) {
+    if (drm_vc_fd < 0 || drm_vc_crtc_id == 0) return false;
+
+    DrmState& ds = GetDrmState();
+    if (!ds.p_waitVBlank) return false;
+
+    struct pollfd pfd;
+    pfd.fd = drm_vc_fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+
+    int pr = poll(&pfd, 1, 0);
+    if (pr <= 0 || !(pfd.revents & POLLIN)) return false;
+
+    VcDrmEventContext evctx;
+    memset(&evctx, 0, sizeof(evctx));
+    evctx.version = VC_DRM_EVENT_CONTEXT_VERSION;
+    evctx.vblank_handler = [](int fd, unsigned int sequence,
+                               unsigned int tv_sec, unsigned int tv_usec,
+                               void *user_data) {
+        (void)fd; (void)tv_sec; (void)tv_usec;
+        uint64_t *seqPtr = (uint64_t *)user_data;
+        *seqPtr = sequence;
+    };
+
+    p_vc_drmHandleEvent(drm_vc_fd, &evctx);
+
+    if (vc_vblank_seq != drm_vc_last_seq) {
+        int64_t vsyncThreshold = renderPeriod10ns / 4;
+        int64_t timeSinceLastRender = now10ns - vc_lastRenderTime_;
+        if (timeSinceLastRender >= vsyncThreshold) {
+            r.shouldRender = true;
+            r.frameTime10ns = now10ns - vc_lastRenderTime_;
+            vc_lastRenderTime_ = now10ns;
+        }
+        drm_vc_last_seq = vc_vblank_seq;
+
+        // Request next vblank event
+        VcDrmVBlank nextVbl;
+        memset(&nextVbl, 0, sizeof(nextVbl));
+        nextVbl.request.type = VC_DRM_VBLANK_RELATIVE | VC_DRM_VBLANK_EVENT;
+        nextVbl.request.type |= (drm_vc_crtc_id << VC_DRM_VBLANK_HIGH_CRTC_SHIFT);
+        nextVbl.request.sequence = 1;
+        nextVbl.request.signal = (unsigned long)&vc_vblank_seq;
+        ds.p_waitVBlank(drm_vc_fd, (DrmVBlank*)&nextVbl);
+        return true;
+    }
+    return false;
+}
+
+// --- Main Poll ---
+inline Result Poll(int64_t now10ns, int64_t renderPeriod10ns,
+                   int windowX = 0, int windowY = 0) {
+    Result r;
+
+    if (vc_firstFrame_) {
+        vc_lastRenderTime_ = now10ns;
+        vc_nextRenderTime10ns_ = now10ns + renderPeriod10ns;
+        vc_firstFrame_ = false;
+    }
+
+    // 1. Wayland (non-blocking callback flag)
+    if (wl_vc_available) {
+        if (wl_vc_fired) {
+            int64_t vsyncThreshold = renderPeriod10ns / 4;
+            int64_t timeSinceLastRender = now10ns - vc_lastRenderTime_;
+            if (timeSinceLastRender >= vsyncThreshold) {
+                r.shouldRender = true;
+                r.frameTime10ns = now10ns - vc_lastRenderTime_;
+                vc_lastRenderTime_ = now10ns;
+                vc_nextRenderTime10ns_ = now10ns + renderPeriod10ns;
+            }
+            wl_vc_fired = false;
+            if (r.shouldRender) return r;
+        }
+    }
+    // 2. DRM event-based fallback (X11, etc.)
+    else {
+        // Re-init if window moved to a different monitor
+        if (!drm_vc_inited || windowX != drm_vc_last_win_x || windowY != drm_vc_last_win_y) {
+            drm_vc_last_win_x = windowX;
+            drm_vc_last_win_y = windowY;
+            DrmVcFindCrtc(windowX, windowY);
+        }
+
+        if (DrmVcPoll(now10ns, renderPeriod10ns, r)) {
+            return r;
+        }
+    }
+
+    // 3. Timer fallback
+    r = TimerFallback(now10ns, renderPeriod10ns);
+    return r;
+}
+
+inline int64_t GetPredictedNextVblank10ns() { return 0; }
+
+// =========================================================================
+#elif defined(__ANDROID__)
+// =========================================================================
+// Android: AChoreographer callback flag
+
+namespace {
+static AChoreographer* vc_choreo_ = nullptr;
+static bool vc_choreo_fired_ = false;
+static int64_t vc_choreo_frame_time_ = 0;
+
+static void vc_choreo_cb(long frameTimeNanos, void* /*data*/) {
+    (void)data;
+    vc_choreo_fired_ = true;
+    vc_choreo_frame_time_ = frameTimeNanos / 10;
+}
+} // anonymous namespace
+
+// Ensure the choreographer is posting callbacks
+inline void InitChoreographer() {
+    if (!vc_choreo_) {
+        vc_choreo_ = AChoreographer_getInstance();
+        if (vc_choreo_) {
+            AChoreographer_postFrameCallback(vc_choreo_, vc_choreo_cb, nullptr);
+        }
+    }
+}
+
+inline Result Poll(int64_t now10ns, int64_t renderPeriod10ns,
+                   int /*windowX*/ = 0, int /*windowY*/ = 0) {
+    (void)windowX; (void)windowY;
+    Result r;
+    InitChoreographer();
+
+    if (vc_choreo_ && vc_choreo_fired_) {
+        int64_t vsyncThreshold = renderPeriod10ns / 4;
+        int64_t timeSinceLastRender = now10ns - vc_lastRenderTime_;
+        if (timeSinceLastRender >= vsyncThreshold) {
+            r.shouldRender = true;
+            r.frameTime10ns = vc_choreo_frame_time_ - vc_lastRenderTime_;
+            vc_lastRenderTime_ = vc_choreo_frame_time_;
+            vc_choreo_fired_ = false;
+            AChoreographer_postFrameCallback(vc_choreo_, vc_choreo_cb, nullptr);
+            return r;
+        }
+        vc_choreo_fired_ = false;
+        AChoreographer_postFrameCallback(vc_choreo_, vc_choreo_cb, nullptr);
+    }
+
+    if (vc_firstFrame_) {
+        vc_lastRenderTime_ = now10ns;
+        vc_nextRenderTime10ns_ = now10ns + renderPeriod10ns;
+        vc_firstFrame_ = false;
+        return r;
+    }
+    r = TimerFallback(now10ns, renderPeriod10ns);
+    return r;
+}
+
+inline int64_t GetPredictedNextVblank10ns() { return 0; }
+
+// =========================================================================
+#else
+// =========================================================================
+// Fallback: timer-only (macOS, emscripten, etc.)
+
+inline Result Poll(int64_t now10ns, int64_t renderPeriod10ns,
+                   int /*windowX*/ = 0, int /*windowY*/ = 0) {
+    (void)windowX; (void)windowY;
+    return TimerFallback(now10ns, renderPeriod10ns);
+}
+
+inline int64_t GetPredictedNextVblank10ns() { return 0; }
+
+#endif
+
+// --- Cross-platform helpers ---
+
+inline void NotifyFrameRateChange() {
+    vc_lag_ = getTime10ns2();
+}
+
+} // namespace VsyncCounter
