@@ -119,31 +119,10 @@ inline int64_t GetCurrentVblank10ns() {
 // At 60Hz this is at most ~17 Sleep(1) calls. Returns the vblank timestamp
 // in 10ns units, or 0 on failure.
 inline int64_t WaitForNextVblank10ns() {
-    DWM_TIMING_INFO ti = {};
-    ti.cbSize = sizeof(ti);
-    if (FAILED(DwmGetCompositionTimingInfo(nullptr, &ti)))
-        return 0;
-    static LARGE_INTEGER freq = []{
-        LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f;
-    }();
-    QPC_TIME v1 = ti.qpcVBlank;
-    QPC_TIME v2 = v1;
-    // Timeout: 200ms (should never take more than ~17ms at 60Hz)
-    int64_t deadline = getTime10ns2() + 20000000;  // 200ms in 10ns units
-    while (v2 == v1) {
-        if (getTime10ns2() > deadline) break;
-        if (FAILED(DwmGetCompositionTimingInfo(nullptr, &ti))) break;
-        v2 = ti.qpcVBlank;
-#if defined(_MSC_VER)
-            _mm_pause();
-#elif defined(__x86_64__) || defined(__i386__)
-            __builtin_ia32_pause();
-#elif defined(__aarch64__) || defined(__arm__)
-            __asm__ __volatile__("yield" ::: "memory");
-#endif
-    }
-    if (v2 == v1) return 0;  // timed out
-    return (int64_t)((v2 * TICKS_PER_SECOND_10NS) / freq.QuadPart);
+    if (qpcFrequency2.QuadPart == 0)
+        QueryPerformanceFrequency(&qpcFrequency2);
+    DwmFlush();
+    return getTime10ns2();
 }
 
 #elif defined(__linux__) && !defined(__ANDROID__)
@@ -773,6 +752,74 @@ public:
             }
         }
 
+        #ifdef HX_WINDOWS
+        {
+            DWM_TIMING_INFO ti = {};
+            ti.cbSize = sizeof(ti);
+            if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &ti)) && ti.qpcVBlank != 0) {
+                static LARGE_INTEGER freq = []{
+                    LARGE_INTEGER f;
+                    QueryPerformanceFrequency(&f);
+                    return f;
+                }();
+
+                // --- Guard: 1:1 rate check ---
+                // Monitor period in 10ns from DWM's reported refresh rate.
+                // Skip PLL at 2:1 (120fps/60Hz) where phase doesn't matter.
+                int64_t monitorPeriod10ns = (int64_t)(
+                    (ti.rateRefresh.uiDenominator * TICKS_PER_SECOND_10NS) /
+                    ti.rateRefresh.uiNumerator
+                );
+                if (monitorPeriod10ns > 0) {
+                    int64_t periodDiff = framePeriod10ns_ > monitorPeriod10ns
+                        ? framePeriod10ns_ - monitorPeriod10ns
+                        : monitorPeriod10ns - framePeriod10ns_;
+
+                    if (periodDiff <= monitorPeriod10ns / 10) {
+                        // --- Phase comparison ---
+                        // Overflow-safe QPC → 10ns (same two-step as getTime10ns2)
+                        int64_t qpcVal   = (int64_t)ti.qpcVBlank;
+                        int64_t wholeSec = qpcVal / freq.QuadPart;
+                        int64_t rem      = qpcVal % freq.QuadPart;
+                        int64_t realVblank10ns = wholeSec * TICKS_PER_SECOND_10NS
+                            + (rem * TICKS_PER_SECOND_10NS) / freq.QuadPart;
+
+                        int64_t ourVblank10ns = anchor10ns_
+                            + frameCounter_ * framePeriod10ns_;
+                        int64_t phaseError    = ourVblank10ns - realVblank10ns;
+
+                        // --- Phase bias: target being ~1ms EARLY ---
+                        // DWM composites slightly before vblank. If we present
+                        // right at vblank, DWM already grabbed the old frame.
+                        // We want phaseError to be slightly negative (early).
+                        int64_t targetLead    = (TICKS_PER_SECOND_10NS / 1000) * 1; // 1ms in 10ns units
+                        int64_t excessPhase   = phaseError + targetLead;
+
+                        // --- Guard: unidirectional only ---
+                        // Only correct when we're LATER than our target lead.
+                        // Never shift anchor forward (being early is harmless).
+                        if (excessPhase > 0) {
+                            // --- Guard: cap per-frame correction to 5% of period ---
+                            int64_t maxCorrection = framePeriod10ns_ / 20;
+                            int64_t correction = excessPhase / 8;
+                            if (correction > maxCorrection)
+                                correction = maxCorrection;
+
+                            anchor10ns_ -= correction;
+
+                            // --- Guard: next target must stay in the future ---
+                            int64_t nextTarget = anchor10ns_
+                                + (frameCounter_ + 1) * framePeriod10ns_;
+                            if (nextTarget <= actualNow) {
+                                anchor10ns_ += correction; // revert
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        #endif
+
         return frameTime;
     }
 
@@ -870,7 +917,7 @@ inline bool FramePredictor::DoResync() {
     }
 
     // --- Rates match (or we couldn't measure) -- correct drift. ---
-    int64_t currentVblank10ns = VblankSource::GetCurrentVblank10ns();
+    int64_t currentVblank10ns = VblankSource::WaitForNextVblank10ns();
     if (currentVblank10ns == 0)
         return false;
 

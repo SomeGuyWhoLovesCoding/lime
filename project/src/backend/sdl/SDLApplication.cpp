@@ -769,8 +769,6 @@ namespace lime
 	// the exact measured frame time. Bypasses the 120Hz/60Hz grid math.
 	static bool useFramePredictor = false;
 	static FramePredictor g_predictor;
-	static int framePredictorResyncCounter = 0;
-	constexpr int FRAME_PREDICTOR_RESYNC_EVERY = 300;  // ~5s @ 60Hz
 
 #if HX_ANDROID
 	static AChoreographer *choreographer = nullptr;
@@ -1020,305 +1018,6 @@ namespace lime
 		}
 	}
 
-	namespace AsyncKB {
-		static constexpr size_t MAX_EVENTS = 512;
-		
-		// Queue: array of arrays of doubles
-		// [0] = scanCode, [1] = state (1.0 = down, 0.0 = up), [2] = timestamp
-		static std::array<std::array<double, 3>, MAX_EVENTS> eventQueue;
-		static std::atomic<size_t> writeIndex{0};
-		static std::atomic<size_t> readIndex{0};
-		static std::atomic<size_t> eventCount{0};
-		static std::mutex queueMutex;
-		
-		static std::atomic<bool> running{false};
-		static std::thread workerThread;
-		
-		static double getCurrentTimestamp() {
-			return AsyncKeyEvent::Timestamp();
-		}
-		
-		static void addEvent(double scanCode, double state, double timestamp) {
-			std::lock_guard<std::mutex> lock(queueMutex);
-			size_t currentWrite = writeIndex.load(std::memory_order_acquire);
-			eventQueue[currentWrite][0] = scanCode;
-			eventQueue[currentWrite][1] = state;
-			eventQueue[currentWrite][2] = timestamp;
-			writeIndex.store((currentWrite + 1) % MAX_EVENTS, std::memory_order_release);
-			
-			size_t count = eventCount.load(std::memory_order_acquire);
-			if (count < MAX_EVENTS) {
-				eventCount.store(count + 1, std::memory_order_release);
-			} else {
-				size_t currentRead = readIndex.load(std::memory_order_acquire);
-				readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
-			}
-		}
-		
-	#ifdef HX_WINDOWS
-		// Windows implementation
-		static HHOOK keyboardHook = nullptr;
-		static HANDLE quitEvent = nullptr;
-		static DWORD processId = 0;
-		
-		static int windowsToLimeKeyCode(int winKeyCode) {
-			if (winKeyCode >= 'A' && winKeyCode <= 'Z') return 0x61 + (winKeyCode - 'A');
-			if (winKeyCode >= '0' && winKeyCode <= '9') return winKeyCode;
-			
-			switch (winKeyCode) {
-				case VK_BACK: return 0x08; case VK_TAB: return 0x09; case VK_RETURN: return 0x0D;
-				case VK_ESCAPE: return 0x1B; case VK_SPACE: return 0x20; case VK_DELETE: return 0x7F;
-				case VK_INSERT: return 0x40000049; case VK_HOME: return 0x4000004A; case VK_END: return 0x4000004D;
-				case VK_PRIOR: return 0x4000004B; case VK_NEXT: return 0x4000004E; case VK_UP: return 0x40000052;
-				case VK_DOWN: return 0x40000051; case VK_LEFT: return 0x40000050; case VK_RIGHT: return 0x4000004F;
-				case VK_LCONTROL: return 0x400000E0; case VK_RCONTROL: return 0x400000E4; case VK_LSHIFT: return 0x400000E1;
-				case VK_RSHIFT: return 0x400000E5; case VK_LMENU: return 0x400000E2; case VK_RMENU: return 0x400000E6;
-				case VK_LWIN: return 0x400000E3; case VK_RWIN: return 0x400000E7; case VK_CAPITAL: return 0x40000039;
-				case VK_NUMLOCK: return 0x40000053; case VK_SCROLL: return 0x40000047; case VK_F1: return 0x4000003A;
-				case VK_F2: return 0x4000003B; case VK_F3: return 0x4000003C; case VK_F4: return 0x4000003D;
-				case VK_F5: return 0x4000003E; case VK_F6: return 0x4000003F; case VK_F7: return 0x40000040;
-				case VK_F8: return 0x40000041; case VK_F9: return 0x40000042; case VK_F10: return 0x40000043;
-				case VK_F11: return 0x40000044; case VK_F12: return 0x40000045; case VK_OEM_MINUS: return 0x2D;
-				case VK_OEM_PLUS: return 0x3D; case VK_OEM_4: return 0x5B; case VK_OEM_6: return 0x5D;
-				case VK_OEM_5: return 0x5C; case VK_OEM_1: return 0x3B; case VK_OEM_7: return 0x27;
-				case VK_OEM_3: return 0x60; case VK_OEM_COMMA: return 0x2C; case VK_OEM_PERIOD: return 0x2E;
-				case VK_OEM_2: return 0x2F; default: return 0x00;
-			}
-		}
-		
-		static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-			if (nCode >= 0) {
-				HWND foreground = GetForegroundWindow();
-				DWORD pid = 0;
-				if (foreground) GetWindowThreadProcessId(foreground, &pid);
-				bool isFocused = (pid == processId);
-
-				if (isFocused) {
-					KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
-					
-					if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN || 
-						wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
-						
-						double scanCode = (double)windowsToLimeKeyCode(kb->vkCode);
-						double state = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) ? 1.0 : 0.0;
-						double timestamp = getCurrentTimestamp();
-						addEvent(scanCode, state, timestamp);
-					}
-				}
-			}
-			return CallNextHookEx(NULL, nCode, wParam, lParam);
-		}
-		
-		static void workerFunction() {
-			quitEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-			processId = GetCurrentProcessId();
-			
-			keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
-			if (!keyboardHook) {
-				CloseHandle(quitEvent);
-				return;
-			}
-			
-			MSG msg;
-			HANDLE handles[] = { quitEvent };
-			while (running) {
-				DWORD result = MsgWaitForMultipleObjects(1, handles, FALSE, 100, QS_ALLINPUT);
-				if (result == WAIT_OBJECT_0) break;
-				else if (result == WAIT_OBJECT_0 + 1) {
-					while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-						TranslateMessage(&msg);
-						DispatchMessage(&msg);
-					}
-				}
-			}
-			UnhookWindowsHookEx(keyboardHook);
-			CloseHandle(quitEvent);
-		}
-	#elif defined(HX_LINUX)
-		// Linux implementation using SDL_GetKeyboardState with focus check
-		static std::array<int, SDL_NUM_SCANCODES> lastState;
-		static std::once_flag initFlag;
-		
-		static int linuxToLimeKeycode(SDL_Scancode scancode) {
-			// Convert SDL_Scancode to Lime keycodes (matching Windows virtual keycodes)
-			switch (scancode) {
-				case SDL_SCANCODE_A: return 0x61;
-				case SDL_SCANCODE_B: return 0x62;
-				case SDL_SCANCODE_C: return 0x63;
-				case SDL_SCANCODE_D: return 0x64;
-				case SDL_SCANCODE_E: return 0x65;
-				case SDL_SCANCODE_F: return 0x66;
-				case SDL_SCANCODE_G: return 0x67;
-				case SDL_SCANCODE_H: return 0x68;
-				case SDL_SCANCODE_I: return 0x69;
-				case SDL_SCANCODE_J: return 0x6A;
-				case SDL_SCANCODE_K: return 0x6B;
-				case SDL_SCANCODE_L: return 0x6C;
-				case SDL_SCANCODE_M: return 0x6D;
-				case SDL_SCANCODE_N: return 0x6E;
-				case SDL_SCANCODE_O: return 0x6F;
-				case SDL_SCANCODE_P: return 0x70;
-				case SDL_SCANCODE_Q: return 0x71;
-				case SDL_SCANCODE_R: return 0x72;
-				case SDL_SCANCODE_S: return 0x73;
-				case SDL_SCANCODE_T: return 0x74;
-				case SDL_SCANCODE_U: return 0x75;
-				case SDL_SCANCODE_V: return 0x76;
-				case SDL_SCANCODE_W: return 0x77;
-				case SDL_SCANCODE_X: return 0x78;
-				case SDL_SCANCODE_Y: return 0x79;
-				case SDL_SCANCODE_Z: return 0x7A;
-				
-				case SDL_SCANCODE_0: return 0x30;
-				case SDL_SCANCODE_1: return 0x31;
-				case SDL_SCANCODE_2: return 0x32;
-				case SDL_SCANCODE_3: return 0x33;
-				case SDL_SCANCODE_4: return 0x34;
-				case SDL_SCANCODE_5: return 0x35;
-				case SDL_SCANCODE_6: return 0x36;
-				case SDL_SCANCODE_7: return 0x37;
-				case SDL_SCANCODE_8: return 0x38;
-				case SDL_SCANCODE_9: return 0x39;
-				
-				case SDL_SCANCODE_BACKSPACE: return 0x08;
-				case SDL_SCANCODE_TAB: return 0x09;
-				case SDL_SCANCODE_RETURN: return 0x0D;
-				case SDL_SCANCODE_ESCAPE: return 0x1B;
-				case SDL_SCANCODE_SPACE: return 0x20;
-				case SDL_SCANCODE_DELETE: return 0x7F;
-				case SDL_SCANCODE_INSERT: return 0x40000049;
-				case SDL_SCANCODE_HOME: return 0x4000004A;
-				case SDL_SCANCODE_END: return 0x4000004D;
-				case SDL_SCANCODE_PAGEUP: return 0x4000004B;
-				case SDL_SCANCODE_PAGEDOWN: return 0x4000004E;
-				case SDL_SCANCODE_UP: return 0x40000052;
-				case SDL_SCANCODE_DOWN: return 0x40000051;
-				case SDL_SCANCODE_LEFT: return 0x40000050;
-				case SDL_SCANCODE_RIGHT: return 0x4000004F;
-				
-				case SDL_SCANCODE_LCTRL: return 0x400000E0;
-				case SDL_SCANCODE_RCTRL: return 0x400000E4;
-				case SDL_SCANCODE_LSHIFT: return 0x400000E1;
-				case SDL_SCANCODE_RSHIFT: return 0x400000E5;
-				case SDL_SCANCODE_LALT: return 0x400000E2;
-				case SDL_SCANCODE_RALT: return 0x400000E6;
-				case SDL_SCANCODE_LGUI: return 0x400000E3;
-				case SDL_SCANCODE_RGUI: return 0x400000E7;
-				case SDL_SCANCODE_CAPSLOCK: return 0x40000039;
-				case SDL_SCANCODE_NUMLOCKCLEAR: return 0x40000053;
-				case SDL_SCANCODE_SCROLLLOCK: return 0x40000047;
-				
-				case SDL_SCANCODE_F1: return 0x4000003A;
-				case SDL_SCANCODE_F2: return 0x4000003B;
-				case SDL_SCANCODE_F3: return 0x4000003C;
-				case SDL_SCANCODE_F4: return 0x4000003D;
-				case SDL_SCANCODE_F5: return 0x4000003E;
-				case SDL_SCANCODE_F6: return 0x4000003F;
-				case SDL_SCANCODE_F7: return 0x40000040;
-				case SDL_SCANCODE_F8: return 0x40000041;
-				case SDL_SCANCODE_F9: return 0x40000042;
-				case SDL_SCANCODE_F10: return 0x40000043;
-				case SDL_SCANCODE_F11: return 0x40000044;
-				case SDL_SCANCODE_F12: return 0x40000045;
-				
-				case SDL_SCANCODE_MINUS: return 0x2D;
-				case SDL_SCANCODE_EQUALS: return 0x3D;
-				case SDL_SCANCODE_LEFTBRACKET: return 0x5B;
-				case SDL_SCANCODE_RIGHTBRACKET: return 0x5D;
-				case SDL_SCANCODE_BACKSLASH: return 0x5C;
-				case SDL_SCANCODE_SEMICOLON: return 0x3B;
-				case SDL_SCANCODE_APOSTROPHE: return 0x27;
-				case SDL_SCANCODE_GRAVE: return 0x60;
-				case SDL_SCANCODE_COMMA: return 0x2C;
-				case SDL_SCANCODE_PERIOD: return 0x2E;
-				case SDL_SCANCODE_SLASH: return 0x2F;
-				
-				default: return 0x00;
-			}
-		}
-		
-		static void initLastState() {
-			lastState.fill(0);
-		}
-		
-		static void workerFunction() {
-			std::call_once(initFlag, initLastState);
-			
-			while (running) {
-				// Check if our window has focus
-				SDL_Window* focusedWindow = SDL_GetKeyboardFocus();
-				bool hasFocus = (focusedWindow != nullptr);
-				
-				if (hasFocus) {
-					const Uint8* keyboardState = SDL_GetKeyboardState(nullptr);
-					
-					// Check all possible key scancodes
-					for (int i = 0; i < SDL_NUM_SCANCODES; i++) {
-						Uint8 currentState = keyboardState[i];
-						if (currentState != lastState[i]) {
-							double scanCode = (double)linuxToLimeKeycode((SDL_Scancode)i);
-							double state = (double)(currentState ? 1 : 0);
-							double timestamp = getCurrentTimestamp();
-							addEvent(scanCode, state, timestamp);
-							lastState[i] = currentState;
-						}
-					}
-					
-					// Poll aggressively when focused (1ms sleep)
-					coolSleepUntil10ns(getTime10ns() + (TICKS_PER_SECOND_10NS * 0.001));
-				} else {
-					// When not focused, conserve CPU
-					coolSleepUntil10ns(getTime10ns() + (TICKS_PER_SECOND_10NS * 0.01));
-				}
-			}
-		}
-	#else
-		// Empty implementation for other platforms
-		static void workerFunction() {
-			while (running) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(10));
-			}
-		}
-	#endif
-
-		static void start() {
-			if (running) return;
-			running = true;
-			workerThread = std::thread(workerFunction);
-		}
-		
-		static void stop() {
-			if (!running) return;
-			running = false;
-			if (workerThread.joinable()) {
-				workerThread.join();
-			}
-		}
-		
-		bool hasEvent() {
-			return eventCount.load(std::memory_order_acquire) > 0;
-		}
-		
-		bool getEvent(double& scanCode, double& state, double& timestamp) {
-			// Quick check without lock first
-			if (eventCount.load(std::memory_order_acquire) == 0) return false;
-			
-			// Minimal critical section
-			{
-				std::lock_guard<std::mutex> lock(queueMutex);
-				if (eventCount.load(std::memory_order_acquire) == 0) return false;
-				
-				size_t currentRead = readIndex.load(std::memory_order_acquire);
-				scanCode = eventQueue[currentRead][0];
-				state = eventQueue[currentRead][1];
-				timestamp = eventQueue[currentRead][2];
-				readIndex.store((currentRead + 1) % MAX_EVENTS, std::memory_order_release);
-				eventCount.fetch_sub(1, std::memory_order_release);
-			}
-			return true;
-		}
-	}
-
 	static int64_t minimalSleepCalc10ns = 0;
 
 	// The canonical sleep chunk size for the current refresh rate.
@@ -1392,6 +1091,63 @@ namespace lime
 		minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 	}
 
+	// ------------------------------------------------------------------
+	// FramePredictor bootstrap.
+	//
+	// Captures getTime10ns2() as the anchor and uses the current
+	// UPDATE_PERIOD_10NS to derive the frame rate. No swaps, no
+	// glFinish, no DWM/DRM/Choreographer polling — just a plain
+	// spin-wait predictor driven by the caller-supplied rate.
+	// ------------------------------------------------------------------
+	void InitFramePredictor()
+	{
+		if (UPDATE_PERIOD_10NS <= 0) {
+			printf("[FramePredictor] UPDATE_PERIOD_10NS is 0 — cannot init (no frame rate)\n");
+			return;
+		}
+
+		// --- On Linux, try to initialize Wayland vblank source ---
+		// This must happen BEFORE FramePredictor::Init() so that
+		// Init() can anchor to a real vblank via Wayland.
+#if HX_LINUX
+		{
+			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+			if (kbFocus) {
+				SDL_SysWMinfo wmInfo;
+				SDL_VERSION(&wmInfo.version);
+				if (SDL_GetWindowWMInfo(kbFocus, &wmInfo)) {
+					#if defined(SDL_VIDEO_DRIVER_WAYLAND)
+					if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
+						VblankSource::SetWaylandSurface(
+							wmInfo.info.wl.surface,
+							wmInfo.info.wl.display);
+					}
+					#endif
+				}
+			}
+		}
+#endif
+
+		double frameRate = (double)TICKS_PER_SECOND_10NS / (double)UPDATE_PERIOD_10NS;
+
+		FramePredictor::InitResult ir = FramePredictor::Init(frameRate);
+		if (!ir.ok) {
+			printf("[FramePredictor] Init FAILED: %s\n", ir.error ? ir.error : "(unknown)");
+			return;
+		}
+
+		printf("[FramePredictor] initialized:\n");
+		printf("  anchor       : %lld (10ns)\n", (long long)ir.anchor10ns);
+		printf("  refresh rate : %.4f Hz\n", ir.refreshRateHz);
+		printf("  frame period : %lld (10ns) = %.3f us\n",
+			(long long)ir.framePeriod10ns, (double)ir.framePeriod10ns / 100.0);
+
+		g_predictor.Configure(ir);
+
+		useFramePredictor = true;
+		printf("[FramePredictor] active - Update() will use predictor path\n");
+	}
+
 	int SDLApplication::Exec()
 	{
 		Init();
@@ -1402,6 +1158,7 @@ namespace lime
 
         int sleeptimeclocktimer = 0;
 
+		InitFramePredictor();
 		while (active)
 		{
             if (sleeptimeclocktimer > 100) {
@@ -1435,8 +1192,6 @@ namespace lime
 		
 		// Give the main loop time to exit gracefully
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-		AsyncKB::stop();
 
 		applicationEvent.type = EXIT;
 		ApplicationEvent::Dispatch(&applicationEvent);
@@ -1476,10 +1231,6 @@ namespace lime
 		SDL_iPhoneSetAnimationCallback(focusedWindow->sdlWindow, 1, Update, NULL);
 #endif
 	}
-
-	/*static double GetGlobalKeyboardTimestampComparison() {
-		return AysncKeyboard::getCurrentTimestamp();
-	}*/
 
 	void SDLApplication::SetUncappedFrameRate(bool value)
 	{
@@ -1528,63 +1279,6 @@ namespace lime
 	static int64_t lag = 0;
 	int64_t startTimestamp10ns = 0;
 
-	// ------------------------------------------------------------------
-	// FramePredictor bootstrap.
-	//
-	// Captures getTime10ns2() as the anchor and uses the current
-	// UPDATE_PERIOD_10NS to derive the frame rate. No swaps, no
-	// glFinish, no DWM/DRM/Choreographer polling — just a plain
-	// spin-wait predictor driven by the caller-supplied rate.
-	// ------------------------------------------------------------------
-	void InitFramePredictor()
-	{
-		if (UPDATE_PERIOD_10NS <= 0) {
-			printf("[FramePredictor] UPDATE_PERIOD_10NS is 0 — cannot init (no frame rate)\n");
-			return;
-		}
-
-		// --- On Linux, try to initialize Wayland vblank source ---
-		// This must happen BEFORE FramePredictor::Init() so that
-		// Init() can anchor to a real vblank via Wayland.
-#if HX_LINUX
-		{
-			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
-			if (kbFocus) {
-				SDL_SysWMinfo wmInfo;
-				SDL_VERSION(&wmInfo.version);
-				if (SDL_GetWindowWMInfo(kbFocus, &wmInfo)) {
-					#if defined(SDL_VIDEO_DRIVER_WAYLAND).
-					if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
-						VblankSource::SetWaylandSurface(
-							wmInfo.info.wl.surface,
-							wmInfo.info.wl.display);
-					}
-					#endif
-				}
-			}
-		}
-#endif
-
-		double frameRate = (double)TICKS_PER_SECOND_10NS / (double)UPDATE_PERIOD_10NS;
-
-		FramePredictor::InitResult ir = FramePredictor::Init(frameRate);
-		if (!ir.ok) {
-			printf("[FramePredictor] Init FAILED: %s\n", ir.error ? ir.error : "(unknown)");
-			return;
-		}
-
-		printf("[FramePredictor] initialized:\n");
-		printf("  anchor       : %lld (10ns)\n", (long long)ir.anchor10ns);
-		printf("  refresh rate : %.4f Hz\n", ir.refreshRateHz);
-		printf("  frame period : %lld (10ns) = %.3f us\n",
-			(long long)ir.framePeriod10ns, (double)ir.framePeriod10ns / 100.0);
-
-		g_predictor.Configure(ir);
-
-		useFramePredictor = true;
-		printf("[FramePredictor] active - Update() will use predictor path\n");
-	}
-
 	void SDLApplication::Init()
 	{
 		active = true;
@@ -1593,7 +1287,6 @@ namespace lime
 #if HX_WINDOWS
 		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
-		AsyncKB::start();
 
 #ifdef HX_ANDROID
 		if (!choreographer)
@@ -1607,8 +1300,6 @@ namespace lime
 			}
 		}
 #endif
-
-		InitFramePredictor();
 	}
 
 	bool SDLApplication::IsWindowValid()
@@ -1629,20 +1320,6 @@ namespace lime
 
 	void SDLApplication::PollInputs()
 	{
-		// Process async keyboard events first
-		double scanCode, state, timestamp;
-		while (AsyncKB::hasEvent()) {
-			if (AsyncKB::getEvent(scanCode, state, timestamp)) {
-					
-				//printf("Keycode: %.3f, state: %.0f, timestamp: %.9f\n", scanCode, state, timestamp);
-				asyncKeyEvent.keyCode = (int)scanCode;
-				asyncKeyEvent.state = (int)state;
-				asyncKeyEvent.timestamp = timestamp;
-				AsyncKeyEvent::Dispatch(&asyncKeyEvent);
-				
-			}
-		}
-
 		SDL_Event event;
 		while (SDL_PollEvent(&event))
 		{
@@ -1683,6 +1360,19 @@ namespace lime
 		}
 	}
 
+	void RenderPresent() {
+		SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+		if (!kbFocus) {
+			minimalSleepCalcBase10ns = minimalSleepCalc10ns = 100000;
+		}
+		uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+		SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+		
+		if (!focusedWindow || !focusedWindow->sdlWindow) return;
+
+		SDL_RenderPresent(SDL_GetRenderer(focusedWindow->sdlWindow));
+	}
+
     // --- Static anchors for precise 10ns pacing using frame units ---
     static int64_t startAnchor10ns = 0;
     static int64_t nextUpdateFrame = 0;
@@ -1695,32 +1385,74 @@ namespace lime
 		if (!active)
 			return false;
 
+		// --- SubLoopTick + PollInputs (keep input responsive) ---
+		int64_t subNow = getTime10ns();
+		subLoopTickEvent.timestamp = subNow;
+		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+
+		PollInputs();
+
 		// ================================================================
 		// FramePredictor path - when active, dispatch UPDATE+RENDER together
 		// at the monitor's actual vblank with the exact measured frame time.
 		// ================================================================
 		if (useFramePredictor)
 		{
-			// ================================================================
-			// Synchronous FramePredictor path.
-			//
-			// PredictorRun() blocks until the next predicted frame boundary,
-			// then returns the exact frame time. No polling, no chunked sleep
-			// -- the predictor handles all timing internally.
-			// ================================================================
-
-			// --- SubLoopTick + PollInputs (keep input responsive) ---
-			int64_t subNow = getTime10ns();
-			subLoopTickEvent.timestamp = subNow;
-			SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-
-			PollInputs();
-
-			// --- Block until next frame boundary ---
 			int64_t frameTime10ns = g_predictor.PredictorRun();
 
 			if (frameTime10ns > 0)
 			{
+		#ifdef HX_WINDOWS
+				{
+					// --- Conditional DwmFlush for phase re-anchor ---
+					static int64_t lastFlushTime10ns = 0;
+					static int64_t ftRing[16];
+					static int ftIdx = 0;
+					static int ftFill = 0;
+
+					// Record frame time for jitter detection
+					ftRing[ftIdx & 15] = frameTime10ns;
+					ftIdx++;
+					if (ftFill < 16) ftFill++;
+
+					bool doFlush = false;
+					int64_t now10ns = getTime10ns();
+
+					// Init: no flush on the very first frame
+					if (lastFlushTime10ns == 0)
+						lastFlushTime10ns = now10ns;
+
+					// Condition 1: frame took > 50ms (GC pause, OS deschedule, etc.)
+					if (frameTime10ns > 5000000)
+						doFlush = true;
+
+					// Condition 2: 3 seconds since last flush
+					if ((now10ns - lastFlushTime10ns) >= 300000000)
+						doFlush = true;
+
+					// Condition 3: frame time inconsistency
+					// At 1:1 with good phase, frame times should be within ~0.5ms of target.
+					// Range > 3ms over last 16 frames means something is off.
+					if (ftFill >= 8 && !doFlush) {
+						int64_t lo = ftRing[0], hi = ftRing[0];
+						for (int i = 1; i < ftFill; i++) {
+							if (ftRing[i] < lo) lo = ftRing[i];
+							if (ftRing[i] > hi) hi = ftRing[i];
+						}
+						if (hi - lo > 300000)  // 3ms range in 10ns units
+							doFlush = true;
+					}
+
+					if (doFlush) {
+						g_predictor.RequestResync();
+						lastFlushTime10ns = getTime10ns();
+						ftFill = 0;  // reset ring — next check starts fresh
+					}
+				}
+		#endif
+
+				RenderPresent();
+
 				// --- Dispatch UPDATE with exact frame time ---
 				applicationEvent.type = UPDATE;
 				applicationEvent.deltaTime = frameTime10ns;
@@ -1729,12 +1461,6 @@ namespace lime
 				// --- Dispatch RENDER with exact frame time ---
 				renderEvent.type = RENDER;
 				RenderEvent::Dispatch(&renderEvent);
-
-				// --- Periodic resync ---
-				if (++framePredictorResyncCounter >= FRAME_PREDICTOR_RESYNC_EVERY) {
-					g_predictor.RequestResync();
-					framePredictorResyncCounter = 0;
-				}
 			}
 
 			return active;
@@ -1770,11 +1496,6 @@ namespace lime
 		coolSleepUntil10ns(targetTime);
 
 		now10ns = getTime10ns();
-
-		subLoopTickEvent.timestamp = now10ns;
-		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
-
-		PollInputs();
 
 		int64_t to_units_update = (now10ns - startAnchor10ns) / UPDATE_PERIOD_10NS;
 		int64_t to_units_render = (now10ns - startAnchor10ns) / RENDER_PERIOD_10NS;

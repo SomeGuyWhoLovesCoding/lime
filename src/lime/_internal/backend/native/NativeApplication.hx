@@ -44,7 +44,6 @@ import haxe.Int64;
 class NativeApplication
 {
 	private var applicationEventInfo = new ApplicationEventInfo(UPDATE);
-	private var asyncKeyEventInfo = new AsyncKeyEventInfo();
 	private var subLoopTickEventInfo = new SubLoopTickEventInfo(10000); // 10 microseconds, usually
 	private var clipboardEventInfo = new ClipboardEventInfo();
 	private var currentTouches = new Map<Int, Touch>();
@@ -110,7 +109,6 @@ class NativeApplication
 		#if !macro
 		#if lime_cffi
 		NativeCFFI.lime_application_event_manager_register(handleApplicationEvent, applicationEventInfo);
-		NativeCFFI.lime_asynckey_event_manager_register(handleAsyncKeyEvent, asyncKeyEventInfo);
 		NativeCFFI.lime_subloop_event_manager_register(handleSubLoopEvent, subLoopTickEventInfo);
 		NativeCFFI.lime_clipboard_event_manager_register(handleClipboardEvent, clipboardEventInfo);
 		NativeCFFI.lime_drop_event_manager_register(handleDropEvent, dropEventInfo);
@@ -189,10 +187,6 @@ class NativeApplication
 	private function handleSubLoopEvent():Void {
 		if (@:privateAccess parent.onSubLoopTick.__listeners.length != 0)
 			parent.onSubLoopTick.dispatch(subLoopTickEventInfo.timestamp);
-	}
-
-	private function handleAsyncKeyEvent():Void {
-		// nothing to see here
 	}
 
 	private function handleClipboardEvent():Void
@@ -684,25 +678,6 @@ class NativeApplication
 	public function clone():SubLoopTickEventInfo
 	{
 		return new SubLoopTickEventInfo(timestamp);
-	}
-}
-
-@:keep /*private*/ class AsyncKeyEventInfo
-{
-	public var keyCode:Int;
-	public var state:Int;
-	public var timestamp:Float;
-
-	public function new(keyCode:Int = 0, state:Int = 0, timestamp:Float = 0)
-	{
-		this.keyCode = keyCode;
-		this.state = state;
-		this.timestamp = timestamp;
-	}
-
-	public function clone():AsyncKeyEventInfo
-	{
-		return new AsyncKeyEventInfo(keyCode, state, timestamp);
 	}
 }
 
