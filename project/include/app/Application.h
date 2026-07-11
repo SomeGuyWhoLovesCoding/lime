@@ -22,7 +22,6 @@ namespace lime {
 			virtual int Quit () = 0;
 			virtual void SetFrameRate (double frameRate) = 0;
 			virtual void SetRenderFrameRate (double frameRate) = 0;
-			virtual void SetUncappedFrameRate (bool value) = 0;
 			virtual bool Update () = 0;
 
 

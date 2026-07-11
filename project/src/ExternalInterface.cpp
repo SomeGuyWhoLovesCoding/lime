@@ -344,7 +344,6 @@ namespace lime {
 	void lime_application_set_uncapped_frame_rate (value application, bool value) {
 
 		Application* app = (Application*)val_data (application);
-		app->SetUncappedFrameRate (value);
 
 	}
 
@@ -352,7 +351,6 @@ namespace lime {
 	HL_PRIM void HL_NAME(hl_application_set_uncapped_frame_rate) (HL_CFFIPointer* application, bool value) {
 
 		Application* app = (Application*)application->ptr;
-		app->SetUncappedFrameRate (value);
 
 	}
 

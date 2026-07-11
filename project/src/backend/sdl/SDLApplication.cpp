@@ -63,6 +63,16 @@ using namespace std;
 #include <immintrin.h>
 #else
 #include <sched.h>
+#if HX_LINUX
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <poll.h>
+#include <x86intrin.h>
+#include <dlfcn.h>
+#endif
+#if HX_ANDROID
+#include <android/choreographer.h>
+#endif
 #ifdef __APPLE__
 #include <thread>
 #include <mach/thread_policy.h>
@@ -79,7 +89,6 @@ namespace lime
 	const int analogAxisDeadZone = 1000;
 	std::map<int, std::map<int, int>> gamepadsAxisMap;
 	bool inBackground = false;
-	static bool uncappedFramerate = false;
 
 	void SDLApplication::HandleEvent(SDL_Event *event)
 	{
@@ -756,19 +765,16 @@ namespace lime
 		}
 	}
 
+	// ---------- Timing configuration in 10ns ticks ----------
+	// 1 second = 100000000 ticks of 10ns
+	constexpr int64_t TICKS_PER_SECOND_10NS = 100000000LL;
+
 	// Default target frame rates
 	static int64_t UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / 120LL;
 	static int64_t RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60LL;
 
 	static int64_t lastRenderTime = 0;
 	static int64_t render_timestamp = 0;
-
-	// ---------- FramePredictor integration ----------
-	// When true, Update() uses the FramePredictor's isTime() flag to dispatch
-	// both UPDATE and RENDER together at the monitor's actual vblank, with
-	// the exact measured frame time. Bypasses the 120Hz/60Hz grid math.
-	static bool useFramePredictor = false;
-	static FramePredictor g_predictor;
 
 #if HX_ANDROID
 	static AChoreographer *choreographer = nullptr;
@@ -879,6 +885,7 @@ namespace lime
 #endif
 
 #if HX_WINDOWS
+		QueryPerformanceFrequency(&qpcFrequency);
 		fixTimeResolution();
 #endif
 		
@@ -899,11 +906,7 @@ namespace lime
 #ifdef HX_WINDOWS
 		LARGE_INTEGER now;
 		QueryPerformanceCounter(&now);
-		if (qpcFrequency2.QuadPart == 0)
-			QueryPerformanceFrequency(&qpcFrequency);
-		int64_t wholeSeconds = now.QuadPart / qpcFrequency.QuadPart;
-		int64_t remainder    = now.QuadPart % qpcFrequency.QuadPart;
-		return wholeSeconds * TICKS_PER_SECOND_10NS + (remainder * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+		return (now.QuadPart * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
 #else
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -970,12 +973,7 @@ namespace lime
 				due.QuadPart = -(LONGLONG)(sleep_ns / 100LL);
 				if (due.QuadPart == 0) due.QuadPart = -1;
 				if (SetWaitableTimer(localTimer, &due, 0, nullptr, nullptr, FALSE)) {
-					// Finite timeout: sleep_ms + 50ms grace. If the timer
-					// fails to fire (system sleep/resume, driver issue),
-					// WaitForSingleObject returns WAIT_TIMEOUT instead of
-					// blocking forever.
-					DWORD timeoutMs = (DWORD)(sleep_ns / 1000000LL) + 50;
-					WaitForSingleObject(localTimer, timeoutMs);
+					WaitForSingleObject(localTimer, INFINITE);
 				} else {
 					Sleep(0);
 				}
@@ -1091,6 +1089,13 @@ namespace lime
 		minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 	}
 
+	// ---------- FramePredictor integration ----------
+	// When true, Update() uses the FramePredictor's isTime() flag to dispatch
+	// both UPDATE and RENDER together at the monitor's actual vblank, with
+	// the exact measured frame time. Bypasses the 120Hz/60Hz grid math.
+	static bool useFramePredictor = false;
+	static FramePredictor g_predictor;
+
 	// ------------------------------------------------------------------
 	// FramePredictor bootstrap.
 	//
@@ -1159,6 +1164,7 @@ namespace lime
         int sleeptimeclocktimer = 0;
 
 		InitFramePredictor();
+
 		while (active)
 		{
             if (sleeptimeclocktimer > 100) {
@@ -1166,7 +1172,8 @@ namespace lime
                 calculateMinimalSleepTime();
             }
             sleeptimeclocktimer++;
-            Update ();
+            if (UPDATE_PERIOD_10NS == 0) Update_Vsync();
+            else Update ();
 		}
 
 		return 0;
@@ -1174,16 +1181,6 @@ namespace lime
 
 	int SDLApplication::Quit()
 	{
-		// Stop FramePredictor FIRST so it doesn't dispatch into a
-		// tearing-down app.
-		if (useFramePredictor) {
-			printf("[FramePredictor] stats: dispatched=%llu missed=%llu resyncs=%llu\n",
-				(unsigned long long)g_predictor.FramesDispatched(),
-				(unsigned long long)g_predictor.FramesMissed(),
-				(unsigned long long)g_predictor.ResyncsDone());
-			useFramePredictor = false;
-		}
-
 		if (alreadyQuit)
 			return 0;
 
@@ -1232,31 +1229,17 @@ namespace lime
 #endif
 	}
 
-	void SDLApplication::SetUncappedFrameRate(bool value)
-	{
-		printf("Setting uncapped framerate to %i\n", (int)value);
-		uncappedFramerate = value;
-
-		if (value) {
-			render_timestamp = 0;
-		}
-
-		printf("Uncapped framerate set to %i\n", (int)uncappedFramerate);
-	}
-
 	void SDLApplication::SetFrameRate(double frameRate)
 	{
-		if (frameRate <= 0) frameRate = 60;
-
-		UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / frameRate;
-		RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
-
-		// If the FramePredictor is active, reset it with the new rate.
-		// The anchor is re-captured to now; the next isTime() fires one
-		// frame period after this call.
-		if (useFramePredictor) {
-			g_predictor.SetFrameRate(frameRate);
-			printf("[FramePredictor] reset to %.4f Hz\n", frameRate);
+		if (frameRate > 0)
+		{
+			UPDATE_PERIOD_10NS = TICKS_PER_SECOND_10NS / frameRate;
+			RENDER_PERIOD_10NS = TICKS_PER_SECOND_10NS / 60.0;
+		}
+		else
+		{
+			UPDATE_PERIOD_10NS = 0;
+			RENDER_PERIOD_10NS = 0;
 		}
 	}
 
@@ -1360,6 +1343,290 @@ namespace lime
 		}
 	}
 
+	#if defined(HX_LINUX)
+
+	static uint64_t VblankSequence = 0;
+
+	// Minimal Wayland definitions to avoid compile-time dependency on libwayland-dev
+	struct wl_surface;
+	struct wl_callback;
+
+	struct wl_callback_listener {
+		void (*done)(void *data, struct wl_callback *callback, uint32_t time);
+	};
+
+	// Function pointer types
+	typedef struct wl_callback* (*wl_surface_frame_t)(struct wl_surface *surface);
+	typedef int (*wl_callback_add_listener_t)(struct wl_callback *callback, const struct wl_callback_listener *listener, void *data);
+	typedef void (*wl_callback_destroy_t)(struct wl_callback *callback);
+
+	// Global function pointers
+	static void* wl_lib_handle = nullptr;
+	static wl_surface_frame_t p_wl_surface_frame = nullptr;
+	static wl_callback_add_listener_t p_wl_callback_add_listener = nullptr;
+	static wl_callback_destroy_t p_wl_callback_destroy = nullptr;
+
+	static bool waylandLoaded = false;
+
+	void loadWaylandDynamically() {
+		if (waylandLoaded) return;
+		waylandLoaded = true;
+
+		wl_lib_handle = dlopen("libwayland-client.so.0", RTLD_LAZY);
+		if (wl_lib_handle) {
+			p_wl_surface_frame = (wl_surface_frame_t)dlsym(wl_lib_handle, "wl_surface_frame");
+			p_wl_callback_add_listener = (wl_callback_add_listener_t)dlsym(wl_lib_handle, "wl_callback_add_listener");
+			p_wl_callback_destroy = (wl_callback_destroy_t)dlsym(wl_lib_handle, "wl_callback_destroy");
+			
+			if (!p_wl_surface_frame || !p_wl_callback_add_listener || !p_wl_callback_destroy) {
+				dlclose(wl_lib_handle);
+				wl_lib_handle = nullptr;
+			}
+		}
+	}
+
+	    // --- Wayland Vsync Support ---
+    static bool waylandVsyncFired = false;
+    static int64_t waylandLastCallbackTime10ns = 0;
+    static struct wl_surface* cachedWaylandSurface = nullptr;
+    static struct wl_callback* cachedWaylandCallback = nullptr;
+
+    // 1. Define the struct FIRST, but leave the function pointer null
+    static struct wl_callback_listener waylandFrameListener = { nullptr };
+
+    // 2. Define the function SECOND (it can now see the struct above it)
+    static void waylandFrameCallbackHandler(void* data, struct wl_callback* callback, uint32_t time) {
+        waylandVsyncFired = true;
+        
+        int64_t now = getTime10ns();
+        if (waylandLastCallbackTime10ns > 0) {
+            render_timestamp = now - waylandLastCallbackTime10ns;
+        } else {
+            render_timestamp = RENDER_PERIOD_10NS;
+        }
+        waylandLastCallbackTime10ns = now;
+        lastRenderTime = now; // Keep consistent with DRM logic
+        
+        if (p_wl_callback_destroy) p_wl_callback_destroy(callback); // One-shot callback, destroy it
+        
+        // We can just use the global cachedWaylandSurface here directly
+        if (p_wl_surface_frame && p_wl_callback_add_listener && cachedWaylandSurface) {
+            cachedWaylandCallback = p_wl_surface_frame(cachedWaylandSurface);
+            p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
+        }
+    }
+
+    void initWaylandVsync(SDL_Window* sdlWindow) {
+        loadWaylandDynamically();
+        if (!p_wl_surface_frame || !p_wl_callback_add_listener) return;
+
+        // 3. Wire them together HERE at runtime (no forward declarations needed!)
+        waylandFrameListener.done = waylandFrameCallbackHandler;
+
+        // FIX 2: Guard the SDL2 Wayland info access. 
+        // If the user's SDL2 was compiled without Wayland support, this safely skips.
+    #if defined(SDL_VIDEO_DRIVER_WAYLAND)
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        if (SDL_GetWindowWMInfo(sdlWindow, &wmInfo)) {
+            if (wmInfo.subsystem == SDL_SYSWM_WAYLAND) {
+                cachedWaylandSurface = wmInfo.info.wl.surface;
+                if (cachedWaylandSurface && !cachedWaylandCallback) {
+                    cachedWaylandCallback = p_wl_surface_frame(cachedWaylandSurface);
+                    p_wl_callback_add_listener(cachedWaylandCallback, &waylandFrameListener, cachedWaylandSurface);
+                }
+            }
+        }
+    #endif
+    }
+
+	// --- DRM Vsync Support (Extracted) ---
+	static int drmFd = -1;
+	static uint32_t drmCrtcId = 0;
+	static uint64_t lastVBlankSeq = 0;
+	static int lastWindowX = -1, lastWindowY = -1;
+	static bool drmInitializedLocal = false;
+
+	void updateDrmVsync(SDL_Window* sdlWindow, int64_t now10ns, bool& shouldRender) {
+		int windowX = 0, windowY = 0;
+		SDL_GetWindowPosition(sdlWindow, &windowX, &windowY);
+
+		// Automatically re-initialize if the window moved to a different monitor
+		if (!drmInitializedLocal || windowX != lastWindowX || windowY != lastWindowY) {
+			lastWindowX = windowX;
+			lastWindowY = windowY;
+
+			if (drmFd >= 0) {
+				close(drmFd);
+				drmFd = -1;
+			}
+
+			drmDevicePtr devices[16];
+			int deviceCount = drmGetDevices(devices, 16);
+
+			if (deviceCount > 0) {
+				bool foundDevice = false;
+
+				for (int i = 0; i < deviceCount && !foundDevice; i++) {
+					drmDevicePtr dev = devices[i];
+					if (!dev->nodes[DRM_NODE_PRIMARY]) continue;
+
+					int fd = open(dev->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
+					if (fd < 0) continue;
+
+					drmModeResPtr res = drmModeGetResources(fd);
+					if (!res) {
+						close(fd);
+						continue;
+					}
+
+					for (int c = 0; c < res->count_crtcs && !foundDevice; c++) {
+						uint32_t crtcId = res->crtcs[c];
+						drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtcId);
+
+						if (!crtc) continue;
+
+						if (crtc->mode_valid && crtc->width > 0 && crtc->height > 0) {
+							if (windowX >= crtc->x && windowX < crtc->x + crtc->width &&
+								windowY >= crtc->y && windowY < crtc->y + crtc->height) {
+								
+								drmFd = fd;
+								drmCrtcId = crtcId;
+								drmInitializedLocal = true;
+								foundDevice = true;
+
+								drmVBlank primeVbl;
+								memset(&primeVbl, 0, sizeof(primeVbl));
+								primeVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
+	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+								primeVbl.request.type = (drmVBlankSeqType)(primeVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
+	#endif
+								primeVbl.request.sequence = 1;
+								primeVbl.request.signal = (unsigned long)&VblankSequence;
+								drmWaitVBlank(fd, &primeVbl);
+							}
+						}
+						drmModeFreeCrtc(crtc);
+					}
+					drmModeFreeResources(res);
+					if (!foundDevice) close(fd);
+				}
+				drmFreeDevices(devices, deviceCount);
+			}
+		}
+
+		if (drmFd >= 0 && drmCrtcId != 0) {
+			struct pollfd pfd;
+			pfd.fd = drmFd;
+			pfd.events = POLLIN;
+			pfd.revents = 0;
+
+			int pollResult = poll(&pfd, 1, 0);
+
+			if (pollResult > 0 && (pfd.revents & POLLIN)) {
+				drmEventContext evctx;
+				memset(&evctx, 0, sizeof(evctx));
+				evctx.version = DRM_EVENT_CONTEXT_VERSION;
+
+				evctx.vblank_handler = [](int fd, unsigned int sequence,
+										unsigned int tv_sec, unsigned int tv_usec,
+										void *user_data) {
+					uint64_t *seqPtr = (uint64_t *)user_data;
+					*seqPtr = sequence;
+				};
+
+				drmHandleEvent(drmFd, &evctx);
+
+				if (VblankSequence != lastVBlankSeq) {
+					shouldRender = true;
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					lastVBlankSeq = VblankSequence;
+				}
+			}
+
+			if (shouldRender) {
+				drmVBlank nextVbl;
+				memset(&nextVbl, 0, sizeof(nextVbl));
+				nextVbl.request.type = (drmVBlankSeqType)(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT);
+	#if defined(DRM_VBLANK_HIGH_CRTC_MASK)
+				nextVbl.request.type = (drmVBlankSeqType)(nextVbl.request.type | (crtcId << DRM_VBLANK_HIGH_CRTC_SHIFT));
+	#endif
+				nextVbl.request.sequence = 1;
+				nextVbl.request.signal = (unsigned long)&VblankSequence;
+				drmWaitVBlank(drmFd, &nextVbl);
+			}
+		}
+	}
+
+	// --- Unified Linux Vsync Wrapper ---
+	void handleLinuxVsync(SDL_Window* sdlWindow, int64_t now10ns, int64_t lag, int64_t& nextRenderTime10ns, bool& shouldRender) {
+		shouldRender = false;
+
+		// 1. Try Wayland first
+		if (!cachedWaylandSurface) {
+			initWaylandVsync(sdlWindow);
+		}
+
+		if (cachedWaylandSurface) {
+			if (waylandVsyncFired) {
+				shouldRender = true;
+				waylandVsyncFired = false;
+				nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			}
+		} 
+		// 2. Fallback to DRM if not on Wayland (e.g., X11)
+		else {
+			updateDrmVsync(sdlWindow, now10ns, shouldRender);
+		}
+
+		// 3. Universal timer-based fallback
+		if (!shouldRender) {
+			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+			if (shouldRender) {
+				render_timestamp = now10ns - lastRenderTime;
+				lastRenderTime = now10ns;
+				nextRenderTime10ns += RENDER_PERIOD_10NS;
+			}
+		}
+	}
+
+	#endif
+
+    static bool schedulerUnthrottled = false;
+    static double currentUpdate = 0.0;
+    static double nextUpdate = 0.0;
+    static double framePeriod = 0.0;
+
+    static bool IsFrameDueLocal(double now)
+    {
+        if (schedulerUnthrottled)
+            return true;
+        return (now >= nextUpdate);
+    }
+
+    static void AdvanceNextUpdateLocal()
+    {
+        if (schedulerUnthrottled || framePeriod <= 0.0)
+        {
+            nextUpdate = currentUpdate;
+            return;
+        }
+
+        nextUpdate += framePeriod;
+        while (nextUpdate <= currentUpdate)
+        {
+            nextUpdate += framePeriod;
+        }
+    }
+
+    // --- Static anchors for precise 10ns pacing using frame units ---
+    static int64_t startAnchor10ns = 0;
+    static int64_t nextUpdateFrame = 0;
+    static int64_t nextRenderFrame = 0;
+    static double lastUpdate = 0.0;
+    static bool firstFrame = true;
+
 	void RenderPresent() {
 		SDL_Window* kbFocus = SDL_GetKeyboardFocus();
 		if (!kbFocus) {
@@ -1373,24 +1640,17 @@ namespace lime
 		SDL_RenderPresent(SDL_GetRenderer(focusedWindow->sdlWindow));
 	}
 
-    // --- Static anchors for precise 10ns pacing using frame units ---
-    static int64_t startAnchor10ns = 0;
-    static int64_t nextUpdateFrame = 0;
-    static int64_t nextRenderFrame = 0;
-    static double lastUpdate = 0.0;
-    static bool firstFrame = true;
+    bool SDLApplication::Update()
+    {
+        if (!active)
+            return false;
 
-	bool SDLApplication::Update()
-	{
-		if (!active)
-			return false;
+        int64_t now10ns = getTime10ns();
 
-		// --- SubLoopTick + PollInputs (keep input responsive) ---
-		int64_t subNow = getTime10ns();
-		subLoopTickEvent.timestamp = subNow;
-		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
+        subLoopTickEvent.timestamp = now10ns;
+        SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
-		PollInputs();
+        PollInputs();
 
 		// ================================================================
 		// FramePredictor path - when active, dispatch UPDATE+RENDER together
@@ -1399,6 +1659,7 @@ namespace lime
 		if (useFramePredictor)
 		{
 			int64_t frameTime10ns = g_predictor.PredictorRun();
+			now10ns = getTime10ns();
 
 			if (frameTime10ns > 0)
 			{
@@ -1421,90 +1682,229 @@ namespace lime
 			}
 		}
 
-		
-		if (useFramePredictor)
-		{
-			return active;
-		}
+        return active;
+    }
 
-		int64_t now10ns = getTime10ns();
+	bool SDLApplication::Update_Vsync()
+	{
+		static int64_t nextUpdateTime10ns = 0;
+		static int64_t nextRenderTime10ns = 0;
+		static int64_t lastRenderTime = getTime10ns();
+		static int64_t renderCounter = 0;
+		static bool firstFrame = true;
+		static unsigned int lastVBlankCounter = 0;
 
-		if (firstFrame)
-		{
-			startAnchor10ns = now10ns;
-			nextUpdateFrame = 1;
-			nextRenderFrame = 1;
-			lastUpdate = (double)now10ns / 100000.0;
-			firstFrame = false;
-		}
+		int64_t now10ns = 0;
 
+		// FIX: Restore minimalSleepCalc10ns to the base value at the top of every
+		// frame. The vblank-approach shrink below is intentionally transient — it
+		// applies only for the last few iterations before the predicted vblank, then
+		// resets here so a bad prediction or a missed vblank can never leave
+		// minimalSleepCalc10ns permanently at its 50µs floor.
 		if (minimalSleepCalcBase10ns > 0)
 			minimalSleepCalc10ns = minimalSleepCalcBase10ns;
 
-		int64_t nextUpdateTarget10ns = startAnchor10ns + ((nextUpdateFrame * TICKS_PER_SECOND_10NS) / 120LL);
-		int64_t nextRenderTarget10ns = startAnchor10ns + ((nextRenderFrame * TICKS_PER_SECOND_10NS) / 60LL);
+		now10ns = getTime10ns();
 
-		int64_t nextBoundary10ns = nextUpdateTarget10ns;
-		if (RENDER_PERIOD_10NS > 0 && nextRenderTarget10ns < nextBoundary10ns) {
-			nextBoundary10ns = nextRenderTarget10ns;
+		if (firstFrame)
+		{
+			startTimestamp10ns = now10ns;
+			nextUpdateTime10ns = now10ns + UPDATE_PERIOD_10NS;
+			nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+			firstFrame = false;
 		}
 
 		int64_t targetTime = now10ns + minimalSleepCalc10ns;
-		if (nextBoundary10ns > now10ns && targetTime > nextBoundary10ns) {
-			targetTime = nextBoundary10ns;
-		}
-
 		coolSleepUntil10ns(targetTime);
 
 		now10ns = getTime10ns();
 
-		int64_t to_units_update = (now10ns - startAnchor10ns) / UPDATE_PERIOD_10NS;
-		int64_t to_units_render = (now10ns - startAnchor10ns) / RENDER_PERIOD_10NS;
+		subLoopTickEvent.timestamp = now10ns;
+		SubLoopTickEvent::Dispatch(&subLoopTickEvent);
 
-		int64_t updatePhaseErr10 = 0;
-		bool     renderFired     = false;
-		int64_t renderDur10      = 0;
-		int64_t updateDur10      = 0;
+		// --- Render scheduling ---
+		bool shouldRender = false;
+		int64_t timeSinceLastRender = now10ns - lastRenderTime;
+		int64_t vsyncThreshold = RENDER_PERIOD_10NS / 4; // 1/4 of vsync interval
 
-		// --- Update Condition ---
-		if (to_units_update >= nextUpdateFrame)
+#ifdef HX_WINDOWS
+	{
+		static QPC_TIME lastQpcVBlank = 0;
+		static int64_t predictedNextVBlank10ns = 0;
+
+		static DWM_TIMING_INFO timingInfo = {};
+		timingInfo.cbSize = sizeof(DWM_TIMING_INFO);
+
+		HRESULT hr = DwmGetCompositionTimingInfo(NULL, &timingInfo);
+
+		if (SUCCEEDED(hr))
 		{
-			updatePhaseErr10 = now10ns - nextUpdateTarget10ns;
+			if (lastQpcVBlank == 0 || lastQpcVBlank != timingInfo.qpcVBlank)
+			{
+				// Only render if enough time has passed since last render
+				if (timeSinceLastRender >= vsyncThreshold) {
+					shouldRender = true;
 
-			applicationEvent.type = UPDATE;
-			applicationEvent.deltaTime = (int64_t)((now10ns / 100000.0 - lastUpdate) * 100000.0);
-			if (applicationEvent.deltaTime < 0) applicationEvent.deltaTime = 0;
-			lastUpdate = now10ns / 100000.0;
+					if (lastQpcVBlank != 0)
+					{
+						int64_t qpcDelta = (int64_t)(timingInfo.qpcVBlank - lastQpcVBlank);
+						render_timestamp = (qpcDelta * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+					}
+					else
+					{
+						render_timestamp = RENDER_PERIOD_10NS;
+					}
 
-			int64_t updStart10 = getTime10ns();
-			ApplicationEvent::Dispatch(&applicationEvent);
-			updateDur10 = getTime10ns() - updStart10;
+					lastQpcVBlank = timingInfo.qpcVBlank;
+					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
 
-			nextUpdateFrame++;
-			while (to_units_update >= nextUpdateFrame) {
-				nextUpdateFrame++;
+					int64_t vblank10ns = (timingInfo.qpcVBlank * TICKS_PER_SECOND_10NS) / qpcFrequency.QuadPart;
+					predictedNextVBlank10ns = vblank10ns + render_timestamp;
+				}
+			}
+			else if (now10ns >= nextRenderTime10ns + RENDER_PERIOD_10NS)
+			{
+				// Only render if enough time has passed since last render
+				if (timeSinceLastRender >= vsyncThreshold) {
+					shouldRender = true;
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns = now10ns + RENDER_PERIOD_10NS;
+				}
+			}
+
+			// Shrink sleep chunk as we approach the predicted vblank.
+			// This only affects minimalSleepCalc10ns for the remaining iterations
+			// this frame; it resets to minimalSleepCalcBase10ns at the top of the
+			// next frame so a bad prediction cannot cause permanent spin-lock.
+			if (predictedNextVBlank10ns > 0)
+			{
+				int64_t timeUntilVBlank = predictedNextVBlank10ns - now10ns;
+				if (timeUntilVBlank > 0 && timeUntilVBlank < minimalSleepCalcBase10ns * 2)
+				{
+					minimalSleepCalc10ns = std::max<int64_t>(timeUntilVBlank / 2, 5000LL);
+				}
 			}
 		}
-
-		// --- Render Condition ---
-		if (RENDER_PERIOD_10NS > 0 && to_units_render >= nextRenderFrame)
+		else
 		{
-			renderFired = true;
-			int64_t renderStart10 = getTime10ns();
+			// Fallback timer-based approach
+			shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+			if (shouldRender)
+			{
+				// Only render if enough time has passed since last render
+				if (timeSinceLastRender >= vsyncThreshold) {
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns += RENDER_PERIOD_10NS;
+				} else {
+					shouldRender = false;
+				}
+			}
+		}
+	}
+#elif defined(HX_LINUX)
+		{
+			SDL_Window* kbFocus = SDL_GetKeyboardFocus();
+			if (kbFocus) {
+				uint32_t focusedWindowID = SDL_GetWindowID(kbFocus);
+				SDLWindow* focusedWindow = SDLWindow::windows[focusedWindowID];
+				if (focusedWindow && focusedWindow->sdlWindow) {
+					handleLinuxVsync(focusedWindow->sdlWindow, now10ns, lag, nextRenderTime10ns, shouldRender);
+					// Check if we should skip rendering due to too small delta
+					if (shouldRender && timeSinceLastRender < vsyncThreshold) {
+						shouldRender = false;
+					}
+				} else {
+					shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+					if (shouldRender) {
+						// Only render if enough time has passed since last render
+						if (timeSinceLastRender >= vsyncThreshold) {
+							render_timestamp = now10ns - lastRenderTime;
+							lastRenderTime = now10ns;
+							nextRenderTime10ns += RENDER_PERIOD_10NS;
+						} else {
+							shouldRender = false;
+						}
+					}
+				}
+			} else {
+				shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+				if (shouldRender) {
+					// Only render if enough time has passed since last render
+					if (timeSinceLastRender >= vsyncThreshold) {
+						render_timestamp = now10ns - lastRenderTime;
+						lastRenderTime = now10ns;
+						nextRenderTime10ns += RENDER_PERIOD_10NS;
+					} else {
+						shouldRender = false;
+					}
+				}
+			}
+		}
+#elif defined(HX_ANDROID)
+		if (choreographer)
+		{
+			if (shouldRenderFromCallback)
+			{
+				// Only render if enough time has passed since last render
+				if (timeSinceLastRender >= vsyncThreshold) {
+					shouldRender = true;
+					shouldRenderFromCallback = false;
+					AChoreographer_postFrameCallback(choreographer,
+													 choreographer_callback,
+													 nullptr);
+				} else {
+					shouldRenderFromCallback = false;
+					shouldRender = false;
+				}
+			}
+		}
+		else
+		{
+			shouldRender = (now10ns >= nextRenderTime10ns);
+			if (shouldRender)
+			{
+				// Only render if enough time has passed since last render
+				if (timeSinceLastRender >= vsyncThreshold) {
+					render_timestamp = now10ns - lastRenderTime;
+					lastRenderTime = now10ns;
+					nextRenderTime10ns += RENDER_PERIOD_10NS;
+				} else {
+					shouldRender = false;
+				}
+			}
+		}
+#else
+		shouldRender = (now10ns >= (nextRenderTime10ns - std::max<int64_t>(getTime10ns() - lag, RENDER_PERIOD_10NS / 2)));
+		if (shouldRender)
+		{
+			// Only render if enough time has passed since last render
+			if (timeSinceLastRender >= vsyncThreshold) {
+				render_timestamp = RENDER_PERIOD_10NS;
+				nextRenderTime10ns += RENDER_PERIOD_10NS;
+			} else {
+				shouldRender = false;
+			}
+		}
+#endif
+
+		PollInputs();
+
+		if (shouldRender)
+		{
+			applicationEvent.type = UPDATE;
+			applicationEvent.deltaTime = render_timestamp;
+			ApplicationEvent::Dispatch(&applicationEvent);
 
 			renderEvent.type = RENDER;
 			RenderEvent::Dispatch(&renderEvent);
 
-			renderDur10 = getTime10ns() - renderStart10;
-
-			nextRenderFrame++;
-			while (to_units_render >= nextRenderFrame) {
-				nextRenderFrame++;
-			}
+			lag = getTime10ns();
 		}
 
 		return active;
-	}
+    }
 
 	Application *CreateApplication()
 	{
