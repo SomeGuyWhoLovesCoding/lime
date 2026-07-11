@@ -1402,56 +1402,7 @@ namespace lime
 
 			if (frameTime10ns > 0)
 			{
-		#ifdef HX_WINDOWS
-				{
-					// --- Conditional DwmFlush for phase re-anchor ---
-					static int64_t lastFlushTime10ns = 0;
-					static int64_t ftRing[16];
-					static int ftIdx = 0;
-					static int ftFill = 0;
-
-					// Record frame time for jitter detection
-					ftRing[ftIdx & 15] = frameTime10ns;
-					ftIdx++;
-					if (ftFill < 16) ftFill++;
-
-					bool doFlush = false;
-					int64_t now10ns = getTime10ns();
-
-					// Init: no flush on the very first frame
-					if (lastFlushTime10ns == 0)
-						lastFlushTime10ns = now10ns;
-
-					// Condition 1: frame took > 50ms (GC pause, OS deschedule, etc.)
-					if (frameTime10ns > 5000000)
-						doFlush = true;
-
-					// Condition 2: 3 seconds since last flush
-					if ((now10ns - lastFlushTime10ns) >= 300000000)
-						doFlush = true;
-
-					// Condition 3: frame time inconsistency
-					// At 1:1 with good phase, frame times should be within ~0.5ms of target.
-					// Range > 3ms over last 16 frames means something is off.
-					if (ftFill >= 8 && !doFlush) {
-						int64_t lo = ftRing[0], hi = ftRing[0];
-						for (int i = 1; i < ftFill; i++) {
-							if (ftRing[i] < lo) lo = ftRing[i];
-							if (ftRing[i] > hi) hi = ftRing[i];
-						}
-						if (hi - lo > 300000)  // 3ms range in 10ns units
-							doFlush = true;
-					}
-
-					if (doFlush) {
-						g_predictor.RequestResync();
-						lastFlushTime10ns = getTime10ns();
-						ftFill = 0;  // reset ring — next check starts fresh
-					}
-				}
-		#endif
-
-				RenderPresent();
+				int64_t frameTimeNow = getTime10ns();
 
 				// --- Dispatch UPDATE with exact frame time ---
 				applicationEvent.type = UPDATE;
@@ -1461,8 +1412,18 @@ namespace lime
 				// --- Dispatch RENDER with exact frame time ---
 				renderEvent.type = RENDER;
 				RenderEvent::Dispatch(&renderEvent);
-			}
 
+				// --- This is actually what keeps it smooth ---
+				// wow. i found the perfect thing in mind. you should call this strictly after renderevent.
+				// i love my life
+				if (getTime10ns() - frameTimeNow > frameTime10ns + 100000)
+					RenderPresent();
+			}
+		}
+
+		
+		if (useFramePredictor)
+		{
 			return active;
 		}
 
